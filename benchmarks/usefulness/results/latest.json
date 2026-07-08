@@ -1,0 +1,438 @@
+{
+  "generated": "2026-07-08T08:22:59.987700Z",
+  "fixture": "test/fixture.dart",
+  "scenarios": 12,
+  "summary": {
+    "codegraphAvgF1": 0.958,
+    "grepAvgF1": 0.707,
+    "codegraphAvgRecall": 1.0,
+    "grepAvgRecall": 0.818,
+    "codegraphAvgPrecision": 0.944,
+    "grepAvgPrecision": 0.661,
+    "codegraphWins": 9,
+    "grepWins": 0,
+    "ties": 3
+  },
+  "results": [
+    {
+      "id": "locate-symbol",
+      "category": "locate",
+      "agentQuestion": "Where is class HomePage declared?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 0.333,
+        "f1": 0.5,
+        "truthCount": 1,
+        "foundCount": 3,
+        "intersectionCount": 1,
+        "falsePositives": [
+          "lib/impact_area/home_page_importer.dart",
+          "lib/impact_area/home_page_reimporter.dart"
+        ],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 119
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 0.333,
+        "f1": 0.5,
+        "truthCount": 1,
+        "foundCount": 3,
+        "intersectionCount": 1,
+        "falsePositives": [
+          "lib/impact_area/home_page_importer.dart",
+          "lib/impact_area/home_page_reimporter.dart"
+        ],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 3
+      },
+      "winner": "tie"
+    },
+    {
+      "id": "locate-member",
+      "category": "locate",
+      "agentQuestion": "Where is method render() declared? (SamplePage)",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 108
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1
+      },
+      "winner": "tie"
+    },
+    {
+      "id": "locate-member-cap",
+      "category": "locate",
+      "agentQuestion": "Where is method m13() (past 12-member render cap)?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 113
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1
+      },
+      "winner": "tie"
+    },
+    {
+      "id": "provider-readers",
+      "category": "wiring",
+      "agentQuestion": "Who watches/reads/listens to homeProvider?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 112
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 0.5,
+        "f1": 0.667,
+        "truthCount": 1,
+        "foundCount": 2,
+        "intersectionCount": 1,
+        "falsePositives": [
+          "test/home_test.dart"
+        ],
+        "misses": [],
+        "toolCalls": 3,
+        "outputLines": 2
+      },
+      "winner": "codegraph"
+    },
+    {
+      "id": "provider-readers-precision",
+      "category": "trust",
+      "agentQuestion": "Readers of counterProvider — must EXCLUDE the non-ref `_Bag().listen` and the bare-token mention (false-positive guard)",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 3,
+        "foundCount": 3,
+        "intersectionCount": 3,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 124
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 0.6,
+        "f1": 0.75,
+        "truthCount": 3,
+        "foundCount": 5,
+        "intersectionCount": 3,
+        "falsePositives": [
+          "lib/barrel/barrel_and_chain_importer.dart",
+          "lib/notif/non_ref_cascade.dart"
+        ],
+        "misses": [],
+        "toolCalls": 3,
+        "outputLines": 5
+      },
+      "winner": "codegraph"
+    },
+    {
+      "id": "call-sites",
+      "category": "refs",
+      "agentQuestion": "Who CALLS pingTarget (not references / not declaration)?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 2,
+        "foundCount": 2,
+        "intersectionCount": 2,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 171
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 0.5,
+        "f1": 0.667,
+        "truthCount": 2,
+        "foundCount": 4,
+        "intersectionCount": 2,
+        "falsePositives": [
+          "lib/calls/caller_b.dart:4",
+          "lib/calls/target.dart:1"
+        ],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 4
+      },
+      "winner": "codegraph"
+    },
+    {
+      "id": "subtype-tree",
+      "category": "hierarchy",
+      "agentQuestion": "Every transitive subtype of Shape (not just direct extends)?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 121
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 2,
+        "outputLines": 1
+      },
+      "winner": "codegraph (tie, fewer tools)"
+    },
+    {
+      "id": "cross-package-importers",
+      "category": "boundary",
+      "agentQuestion": "Which lib files import FancyButton from fixture_ui?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 111
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 2,
+        "outputLines": 1
+      },
+      "winner": "codegraph (tie, fewer tools)"
+    },
+    {
+      "id": "impact-one-hop",
+      "category": "impact",
+      "agentQuestion": "What depends on home_page.dart within 1 hop?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 96
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "truthCount": 1,
+        "foundCount": 0,
+        "intersectionCount": 0,
+        "falsePositives": [],
+        "misses": [
+          "lib/impact_area/home_page_importer.dart"
+        ],
+        "toolCalls": 4,
+        "outputLines": 0
+      },
+      "winner": "codegraph"
+    },
+    {
+      "id": "duplicate-provider-readers",
+      "category": "wiring",
+      "agentQuestion": "Readers of dupProvider (two declarations — both readers)?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 2,
+        "foundCount": 2,
+        "intersectionCount": 2,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 93
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 2,
+        "foundCount": 2,
+        "intersectionCount": 2,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 3,
+        "outputLines": 2
+      },
+      "winner": "codegraph (tie, fewer tools)"
+    },
+    {
+      "id": "untested-providers",
+      "category": "coverage",
+      "agentQuestion": "Providers with zero test references in the graph?",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 11,
+        "foundCount": 11,
+        "intersectionCount": 11,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 1,
+        "outputLines": 1,
+        "wallMs": 109
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 0.818,
+        "precision": 1.0,
+        "f1": 0.9,
+        "truthCount": 11,
+        "foundCount": 9,
+        "intersectionCount": 9,
+        "falsePositives": [],
+        "misses": [
+          "partNotImportedProvider",
+          "unreachableProvider"
+        ],
+        "toolCalls": 15,
+        "outputLines": 9
+      },
+      "winner": "codegraph"
+    },
+    {
+      "id": "ambiguous-class-refusal",
+      "category": "trust",
+      "agentQuestion": "DupUser extends DupBase — graph must refuse, not first-wins a file",
+      "codegraph": {
+        "arm": "codegraph",
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 1,
+        "falsePositives": [],
+        "misses": [],
+        "toolCalls": 0,
+        "outputLines": 1,
+        "wallMs": 0
+      },
+      "grep": {
+        "arm": "grep",
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "truthCount": 1,
+        "foundCount": 1,
+        "intersectionCount": 0,
+        "falsePositives": [
+          "lib/ambig/a/dup_base.dart"
+        ],
+        "misses": [
+          "refused"
+        ],
+        "toolCalls": 1,
+        "outputLines": 1
+      },
+      "winner": "codegraph",
+      "structuralOk": true
+    }
+  ]
+}

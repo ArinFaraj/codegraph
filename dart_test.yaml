@@ -1,0 +1,3 @@
+# Tests mutate the process-global Directory.current (each spins up a temp
+# fixture project) — concurrent tests would race on that shared global.
+concurrency: 1

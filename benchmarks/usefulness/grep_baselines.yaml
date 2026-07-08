@@ -1,0 +1,74 @@
+# Grep/rg baseline recipes for benchmarks/usefulness/run.dart
+#
+# Each scenario's grep arm is implemented in grep_baseline.dart. These are the
+# documented equivalents an agent would run manually.
+
+scenarios:
+  locate-symbol:
+    agent_habit: "Where is class X?"
+    grep_steps:
+      - rg -l 'class HomePage' lib packages
+    known_weakness: Matches comments/strings; misses re-exports without class keyword
+
+  locate-member:
+    agent_habit: "Find method render"
+    grep_steps:
+      - rg -l render lib packages
+    known_weakness: High false-positive rate (parameters, unrelated symbols)
+
+  locate-member-cap:
+    agent_habit: "Find method beyond sym member cap"
+    grep_steps:
+      - rg -l m13 lib
+    known_weakness: Same as locate-member; codegraph uses memberIndex (mi)
+
+  provider-readers:
+    agent_habit: "Who uses this provider?"
+    grep_steps:
+      - rg -l homeProvider lib packages test
+      - "per file: rg 'watch|read|listen' + provider name"
+      - subtract declaration files
+    known_weakness: Misses extension-on-Ref, ProviderContainer.read, cascades
+
+  call-sites:
+    agent_habit: "Who calls this function?"
+    grep_steps:
+      - rg -n '\\bpingTarget\\b' lib test
+    known_weakness: Includes declaration, tear-offs, strings, comments
+
+  subtype-tree:
+    agent_habit: "All subtypes of Shape"
+    grep_steps:
+      - rg -l 'extends Shape' lib
+    known_weakness: Misses transitive subtypes (NamedCircle extends Circle extends Shape)
+
+  cross-package-importers:
+    agent_habit: "Who imports this widget?"
+    grep_steps:
+      - rg -l fancy_button lib packages
+    known_weakness: Path/package string matching only
+
+  impact-one-hop:
+    agent_habit: "What breaks if I change this file?"
+    grep_steps:
+      - rg -l home_page lib
+      - manual import reverse scan
+    known_weakness: No provider wiring, no transitive closure
+
+  duplicate-provider-readers:
+    agent_habit: "Readers when provider name is duplicated"
+    grep_steps:
+      - same as provider-readers
+    known_weakness: Cannot resolve which declaration without import graph
+
+  untested-providers:
+    agent_habit: "Which providers lack tests?"
+    grep_steps:
+      - for each provider name, rg in test/
+    known_weakness: Token match without import closure; false +/- vs graph testRefs
+
+  ambiguous-class-refusal:
+    agent_habit: "Resolve extends DupBase when two exist"
+    grep_steps:
+      - rg -l 'class DupBase' → picks first / lists both with no refusal signal
+    known_weakness: Confident wrong edge — codegraph refuses with ambiguous:true

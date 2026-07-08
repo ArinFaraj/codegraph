@@ -1,0 +1,13 @@
+{
+  "generated": "2026-07-08T06:38:14.685768Z",
+  "iterations": 5,
+  "metrics": {
+    "build_ms": 49,
+    "find_home_ms": 1,
+    "sym_home_ms": 0,
+    "readers_homeProvider_ms": 0,
+    "impls_shape_ms": 0,
+    "callers_pingTarget_ms": 8,
+    "callchain_chainEntry_ms": 23
+  }
+}
