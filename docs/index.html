@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>codegraph: query, don't grep</title>
-<meta name="description" content="An analyzer-built code graph + query CLI so AI coding agents navigate a Dart/Flutter codebase without grepping. Install in one line.">
+<title>codegraph: resolved knowledge + actuator for Dart / Flutter</title>
+<meta name="description" content="codegraph v3 is a resolved knowledge + actuator CLI for AI agents on Dart/Flutter code. It does not just find code; it can change it without breaking it.">
 <meta name="theme-color" content="#08090a">
 
-<meta property="og:title" content="codegraph: query, don't grep">
-<meta property="og:description" content="A resolved code graph + CLI for AI coding agents. ~1s relationship queries instead of blind grepping. No pub get required.">
+<meta property="og:title" content="codegraph: resolved knowledge + actuator for Dart / Flutter">
+<meta property="og:description" content="A resolved code graph + actuator CLI so AI agents change Dart/Flutter code without breaking it. v3 adds element-precise analysis and a safe rename actuator.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://arinfaraj.github.io/codegraph/">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="codegraph: query, don't grep">
-<meta name="twitter:description" content="A resolved code graph + CLI so AI coding agents navigate a codebase without grepping.">
+<meta name="twitter:title" content="codegraph: resolved knowledge + actuator for Dart / Flutter">
+<meta name="twitter:description" content="A resolved code graph + actuator CLI so AI agents change code without breaking it.">
 
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2308090a'/%3E%3Cline x1='7' y1='9' x2='24' y2='16' stroke='%236fe3d9' stroke-width='1.6'/%3E%3Cline x1='7' y1='9' x2='11' y2='25' stroke='%236fe3d9' stroke-width='1.6'/%3E%3Cline x1='24' y1='16' x2='11' y2='25' stroke='%236fe3d9' stroke-width='1.6'/%3E%3Ccircle cx='7' cy='9' r='3.4' fill='%23ffb454'/%3E%3Ccircle cx='24' cy='16' r='3.4' fill='%23ffb454'/%3E%3Ccircle cx='11' cy='25' r='3.4' fill='%23ffb454'/%3E%3C/svg%3E">
 
@@ -21,403 +21,593 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 
+<script>
+(function () {
+  const stored = (function () { try { return localStorage.getItem('codegraph-theme'); } catch (e) { return null; } })();
+  const prefers = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', stored || prefers);
+})();
+</script>
+
 <style>
-:root{
-  --bg:#08090a;
-  --bg-raised:#101214;
-  --bg-inset:#0c0d0f;
-  --ink:#eae7df;
-  --ink-dim:#9c988e;
-  --ink-faint:#57544c;
-  --amber:#ffb454;
-  --amber-dim:#a8763a;
-  --cyan:#6fe3d9;
-  --cyan-dim:#3f7d78;
-  --red:#ff6b6b;
-  --red-dim:#7a3d3d;
-  --line:rgba(234,231,223,.09);
-  --line-strong:rgba(234,231,223,.16);
-  --mono-display:'Space Mono',ui-monospace,'IBM Plex Mono',monospace;
-  --mono-body:'IBM Plex Mono',ui-monospace,'SFMono-Regular',monospace;
-  --space:8px;
-  --maxw:1080px;
+:root {
+  color-scheme: light dark;
+  --bg: oklch(0.04 0.003 90);
+  --bg-raised: oklch(0.08 0.004 90);
+  --bg-inset: oklch(0.06 0.003 90);
+  --ink: oklch(0.93 0.01 90);
+  --ink-dim: oklch(0.65 0.015 90);
+  --ink-faint: oklch(0.45 0.015 90);
+  --cyan: oklch(0.82 0.13 190);
+  --cyan-dim: oklch(0.5 0.08 190);
+  --amber: oklch(0.82 0.14 75);
+  --amber-dim: oklch(0.55 0.08 75);
+  --red: oklch(0.65 0.18 25);
+  --red-dim: oklch(0.4 0.1 25);
+  --line: oklch(0.93 0.01 90 / 0.1);
+  --line-strong: oklch(0.93 0.01 90 / 0.16);
+  --bad-bg: oklch(0.65 0.18 25 / 0.05);
+  --good-bg: oklch(0.82 0.13 190 / 0.05);
+  --amber-shadow: oklch(0.82 0.14 75 / 0.25);
+  --hero-vignette: radial-gradient(circle 460px at 34% 40%, oklch(0.04 0.003 90 / 0.65) 0%, oklch(0.04 0.003 90 / 0.3) 55%, oklch(0.04 0.003 90 / 0) 100%);
+  --theme-color: #08090a;
+  --canvas-node: rgba(111, 227, 217, 0.72);
+  --canvas-node-accent: rgba(255, 180, 84, 0.85);
+  --canvas-edge: rgba(111, 227, 217, 1);
+  --canvas-pulse: rgba(255, 180, 84, 0.9);
+  --grain: 0.04;
+  --mono-display: 'Space Mono', ui-monospace, 'IBM Plex Mono', monospace;
+  --mono-body: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --maxw: 1080px;
+  --space: 8px;
 }
 
-*{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:smooth}
-@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-
-body{
-  background:var(--bg);
-  color:var(--ink);
-  font-family:var(--mono-body);
-  font-size:15px;
-  line-height:1.65;
-  -webkit-font-smoothing:antialiased;
-  overflow-x:hidden;
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: oklch(0.97 0.01 90);
+    --bg-raised: oklch(0.94 0.01 90);
+    --bg-inset: oklch(0.91 0.01 90);
+    --ink: oklch(0.15 0.01 90);
+    --ink-dim: oklch(0.42 0.015 90);
+    --ink-faint: oklch(0.58 0.015 90);
+    --cyan: oklch(0.42 0.12 190);
+    --cyan-dim: oklch(0.65 0.08 190);
+    --amber: oklch(0.5 0.12 75);
+    --amber-dim: oklch(0.65 0.08 75);
+    --red: oklch(0.45 0.18 25);
+    --red-dim: oklch(0.6 0.1 25);
+    --line: oklch(0.15 0.01 90 / 0.1);
+    --line-strong: oklch(0.15 0.01 90 / 0.16);
+    --bad-bg: oklch(0.45 0.18 25 / 0.05);
+    --good-bg: oklch(0.42 0.12 190 / 0.05);
+    --amber-shadow: oklch(0.5 0.12 75 / 0.25);
+    --hero-vignette: radial-gradient(circle 460px at 34% 40%, oklch(0.97 0.01 90 / 0.65) 0%, oklch(0.97 0.01 90 / 0.3) 55%, oklch(0.97 0.01 90 / 0) 100%);
+    --theme-color: #f7f5f0;
+    --canvas-node: rgba(0, 110, 104, 0.72);
+    --canvas-node-accent: rgba(180, 107, 0, 0.85);
+    --canvas-edge: rgba(0, 110, 104, 1);
+    --canvas-pulse: rgba(180, 107, 0, 0.9);
+    --grain: 0.03;
+  }
 }
 
-::selection{background:var(--amber);color:#12100a}
-
-/* faint grain overlay for depth, across the whole page */
-body::before{
-  content:"";
-  position:fixed;inset:0;
-  z-index:1;
-  pointer-events:none;
-  opacity:.035;
-  mix-blend-mode:overlay;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+:root[data-theme="light"] {
+  --bg: oklch(0.97 0.01 90);
+  --bg-raised: oklch(0.94 0.01 90);
+  --bg-inset: oklch(0.91 0.01 90);
+  --ink: oklch(0.15 0.01 90);
+  --ink-dim: oklch(0.42 0.015 90);
+  --ink-faint: oklch(0.58 0.015 90);
+  --cyan: oklch(0.42 0.12 190);
+  --cyan-dim: oklch(0.65 0.08 190);
+  --amber: oklch(0.5 0.12 75);
+  --amber-dim: oklch(0.65 0.08 75);
+  --red: oklch(0.45 0.18 25);
+  --red-dim: oklch(0.6 0.1 25);
+  --line: oklch(0.15 0.01 90 / 0.1);
+  --line-strong: oklch(0.15 0.01 90 / 0.16);
+  --bad-bg: oklch(0.45 0.18 25 / 0.05);
+  --good-bg: oklch(0.42 0.12 190 / 0.05);
+  --amber-shadow: oklch(0.5 0.12 75 / 0.25);
+  --hero-vignette: radial-gradient(circle 460px at 34% 40%, oklch(0.97 0.01 90 / 0.65) 0%, oklch(0.97 0.01 90 / 0.3) 55%, oklch(0.97 0.01 90 / 0) 100%);
+  --theme-color: #f7f5f0;
+  --canvas-node: rgba(0, 110, 104, 0.72);
+  --canvas-node-accent: rgba(180, 107, 0, 0.85);
+  --canvas-edge: rgba(0, 110, 104, 1);
+  --canvas-pulse: rgba(180, 107, 0, 0.9);
+  --grain: 0.03;
 }
 
-::-webkit-scrollbar{width:11px}
-::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:var(--bg-raised);border:2px solid var(--bg);border-radius:6px}
-::-webkit-scrollbar-thumb:hover{background:var(--line-strong)}
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
-a{color:var(--cyan)}
-a:focus-visible,button:focus-visible,.copy:focus-visible{outline:1.5px solid var(--amber);outline-offset:2px}
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 
-.wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
-
-/* ---------- nav ---------- */
-header.nav{
-  position:sticky;top:0;z-index:40;
-  background:rgba(8,9,10,.82);
-  backdrop-filter:blur(10px) saturate(1.1);
-  border-bottom:1px solid var(--line);
-}
-header.nav .wrap{
-  display:flex;align-items:center;justify-content:space-between;
-  height:56px;
-}
-.brand{
-  display:flex;align-items:center;gap:9px;
-  font-family:var(--mono-display);
-  font-weight:700;font-size:15px;letter-spacing:-.02em;
-  color:var(--ink);text-decoration:none;
-}
-.brand .dot{width:7px;height:7px;background:var(--cyan);border-radius:50%;box-shadow:0 0 8px var(--cyan)}
-.navlinks{display:flex;align-items:center;gap:26px;font-size:13px}
-.navlinks a{color:var(--ink-dim);text-decoration:none;transition:color .15s}
-.navlinks a:hover{color:var(--ink)}
-.gh-btn{
-  display:flex;align-items:center;gap:7px;
-  border:1px solid var(--line-strong);
-  padding:6px 12px;font-size:12.5px;color:var(--ink);
-  text-decoration:none;border-radius:3px;
-  transition:border-color .15s,background .15s;
-}
-.gh-btn:hover{border-color:var(--cyan-dim);background:rgba(111,227,217,.06)}
-@media(max-width:680px){.navlinks a:not(.gh-btn){display:none}}
-
-/* ---------- hero ---------- */
-.hero{
-  position:relative;
-  min-height:min(92vh,860px);
-  display:flex;flex-direction:column;justify-content:center;
-  border-bottom:1px solid var(--line);
-  overflow:hidden;
-}
-#graph-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0}
-.hero::after{
-  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
-  background:radial-gradient(circle 460px at 34% 40%, rgba(8,9,10,.65) 0%, rgba(8,9,10,.3) 55%, transparent 100%);
-}
-.hero .wrap{position:relative;z-index:2;padding-top:64px;padding-bottom:64px}
-
-.kicker{
-  display:inline-flex;align-items:center;gap:8px;
-  font-size:12px;color:var(--cyan);
-  border:1px solid var(--cyan-dim);
-  padding:4px 10px;border-radius:20px;
-  margin-bottom:28px;
-  letter-spacing:.02em;
-}
-.kicker::before{content:"●";font-size:8px;color:var(--cyan)}
-
-h1.title{
-  font-family:var(--mono-display);
-  font-weight:700;
-  font-size:clamp(48px,9vw,104px);
-  line-height:.95;
-  letter-spacing:-.03em;
-  color:var(--ink);
-}
-h1.title .prompt{color:var(--ink-faint);font-weight:400;margin-right:.16em}
-h1.title .cursor{
-  display:inline-block;width:.5em;height:.82em;background:var(--amber);
-  vertical-align:-.08em;
-  animation:blink 1.1s steps(1) infinite;
-}
-@keyframes blink{0%,45%{opacity:1}50%,95%{opacity:0}100%{opacity:1}}
-@media(prefers-reduced-motion:reduce){h1.title .cursor{animation:none}}
-
-.tagline{
-  margin-top:22px;
-  font-size:clamp(16px,2.4vw,20px);
-  color:var(--ink-dim);
-  max-width:640px;
-  line-height:1.6;
-}
-.tagline b{color:var(--ink);font-weight:600}
-
-.hero-ctas{margin-top:38px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;max-width:100%}
-
-.copy{
-  font-family:var(--mono-body);
-  display:flex;align-items:center;gap:12px;
-  background:var(--bg-raised);
-  border:1px solid var(--line-strong);
-  color:var(--ink);
-  padding:13px 16px;
-  font-size:13.5px;
-  border-radius:3px;
-  cursor:pointer;
-  transition:border-color .15s,transform .1s;
-  box-shadow:0 0 0 0 rgba(255,180,84,0);
-  max-width:100%;
-  min-width:0;
-}
-.copy:hover{border-color:var(--amber-dim);box-shadow:0 0 24px -8px rgba(255,180,84,.25)}
-.copy:active{transform:scale(.985)}
-.copy .p{color:var(--cyan);flex-shrink:0}
-.copy .ico{color:var(--ink-faint);flex-shrink:0;transition:color .15s}
-.copy.copied .ico{color:var(--amber)}
-.copy .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-
-.ghlink{
-  display:inline-flex;align-items:center;gap:6px;
-  color:var(--ink-dim);text-decoration:none;font-size:13.5px;
-  border-bottom:1px solid transparent;
-  transition:color .15s,border-color .15s;
-}
-.ghlink:hover{color:var(--ink);border-color:var(--line-strong)}
-
-.hero-meta{
-  margin-top:46px;display:flex;gap:28px;flex-wrap:wrap;
-  font-size:12px;color:var(--ink-faint);
-}
-.hero-meta span{display:flex;align-items:center;gap:6px}
-.hero-meta b{color:var(--ink-dim);font-weight:600}
-
-/* ---------- generic section scaffolding ---------- */
-section{padding:88px 0;border-bottom:1px solid var(--line)}
-section:last-of-type{border-bottom:none}
-.eyebrow{
-  font-size:12px;color:var(--cyan);letter-spacing:.08em;text-transform:uppercase;
-  margin-bottom:14px;display:flex;align-items:center;gap:10px;
-}
-.eyebrow::before{content:"";width:22px;height:1px;background:var(--cyan-dim)}
-h2{
-  font-family:var(--mono-display);
-  font-size:clamp(26px,4vw,38px);
-  font-weight:700;letter-spacing:-.02em;
-  color:var(--ink);
-  max-width:680px;
-}
-.lede{margin-top:16px;color:var(--ink-dim);font-size:15.5px;max-width:600px;line-height:1.7}
-
-/* visible by default (progressive enhancement) — JS adds .pending to animate in,
-   so a slow/failed observer never leaves content stuck invisible */
-.reveal{transition:opacity .6s ease,transform .6s ease}
-.reveal.pending{opacity:0;transform:translateY(18px)}
-
-/* ---------- demo terminal ---------- */
-.term{
-  margin-top:44px;
-  background:var(--bg-inset);
-  border:1px solid var(--line-strong);
-  border-radius:6px;
-  overflow:hidden;
-  box-shadow:0 30px 80px -40px rgba(0,0,0,.7);
-}
-.term-bar{
-  display:flex;align-items:center;gap:8px;
-  padding:11px 14px;
-  background:var(--bg-raised);
-  border-bottom:1px solid var(--line);
-}
-.term-bar .dots{display:flex;gap:6px}
-.term-bar .dots span{width:10px;height:10px;border-radius:50%}
-.term-bar .dots span:nth-child(1){background:#4a4a4a}
-.term-bar .dots span:nth-child(2){background:#4a4a4a}
-.term-bar .dots span:nth-child(3){background:#4a4a4a}
-.term-bar .path{margin-left:6px;font-size:12px;color:var(--ink-faint)}
-.term-body{
-  padding:22px 22px 28px;
-  font-size:13.5px;
-  line-height:1.8;
-  min-height:340px;
-  white-space:pre-wrap;
-  word-break:break-word;
-}
-.term-body .ln-cmd{color:var(--ink)}
-.term-body .ln-cmd .p{color:var(--cyan)}
-.term-body .ln-out{color:var(--ink-dim)}
-.term-body .ln-out b{color:var(--amber);font-weight:500}
-.term-body .ln-note{color:var(--ink-faint);font-style:italic}
-.term-caret{
-  display:inline-block;width:7px;height:15px;background:var(--amber);
-  vertical-align:-2px;animation:blink 1s steps(1) infinite;
-}
-@media(prefers-reduced-motion:reduce){.term-caret{animation:none}}
-
-/* ---------- compare (grep vs codegraph) ---------- */
-.compare-grid{
-  margin-top:44px;
-  display:grid;grid-template-columns:1fr 1fr;gap:0;
-  border:1px solid var(--line-strong);
-  border-radius:6px;overflow:hidden;
-}
-@media(max-width:780px){.compare-grid{grid-template-columns:1fr}}
-.compare-col{padding:26px 24px}
-.compare-col.bad{background:linear-gradient(180deg,rgba(255,107,107,.05),transparent 60%);border-right:1px solid var(--line-strong)}
-.compare-col.good{background:linear-gradient(180deg,rgba(111,227,217,.05),transparent 60%)}
-@media(max-width:780px){.compare-col.bad{border-right:none;border-bottom:1px solid var(--line-strong)}}
-.compare-label{
-  font-size:11px;letter-spacing:.08em;text-transform:uppercase;
-  display:flex;align-items:center;gap:7px;margin-bottom:16px;
-}
-.compare-col.bad .compare-label{color:var(--red)}
-.compare-col.good .compare-label{color:var(--cyan)}
-.compare-col.bad .compare-label::before{content:"✕";font-size:10px}
-.compare-col.good .compare-label::before{content:"✓";font-size:10px}
-.compare-log{font-size:12.5px;line-height:1.85;color:var(--ink-faint)}
-.compare-log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.compare-col.good .compare-log{color:var(--ink-dim)}
-.compare-log .go{color:var(--ink)}
-.compare-log .fade{opacity:.55}
-.compare-stat{
-  margin-top:20px;padding-top:16px;border-top:1px solid var(--line);
-  font-size:12.5px;color:var(--ink-faint);
-}
-.compare-col.bad .compare-stat b{color:var(--red);font-weight:600}
-.compare-col.good .compare-stat b{color:var(--cyan);font-weight:600}
-
-/* ---------- features ---------- */
-.grid{
-  margin-top:44px;
-  display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
-  background:var(--line);
-  border:1px solid var(--line);
-}
-@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:520px){.grid{grid-template-columns:1fr}}
-.card{
-  background:var(--bg);
-  padding:24px 20px;
-  position:relative;
-  transition:background .18s;
-}
-.card:hover{background:var(--bg-raised)}
-.card:hover .card-chip{border-color:var(--amber-dim);color:var(--amber)}
-.card-chip{
-  display:inline-block;font-size:11.5px;color:var(--cyan);
-  border:1px solid var(--cyan-dim);border-radius:3px;
-  padding:2px 7px;margin-bottom:14px;
-  transition:border-color .18s,color .18s;
-}
-.card h3{font-size:14.5px;font-weight:600;color:var(--ink);margin-bottom:8px}
-.card p{font-size:12.8px;color:var(--ink-dim);line-height:1.65}
-
-/* ---------- quickstart ---------- */
-.steps{margin-top:44px;position:relative}
-.step{display:grid;grid-template-columns:44px 1fr;gap:20px;position:relative;padding-bottom:36px}
-.step:last-child{padding-bottom:0}
-.step-num{
-  width:34px;height:34px;border:1px solid var(--line-strong);border-radius:50%;
-  display:flex;align-items:center;justify-content:center;
-  font-size:13px;color:var(--amber);background:var(--bg);
-  position:relative;z-index:2;
-}
-.step:not(:last-child)::before{
-  content:"";position:absolute;left:16px;top:34px;bottom:0;width:1px;
-  background:linear-gradient(var(--cyan-dim),var(--line-strong));
-}
-.step-body h4{font-size:15px;color:var(--ink);margin-bottom:8px;font-weight:600}
-.step-body p{font-size:13px;color:var(--ink-dim);margin-bottom:14px;max-width:520px}
-.snippet{
-  display:flex;align-items:center;gap:12px;
-  background:var(--bg-inset);border:1px solid var(--line);border-radius:4px;
-  padding:11px 14px;font-size:13px;width:max-content;max-width:100%;
-  cursor:pointer;transition:border-color .15s;
-}
-.snippet:hover{border-color:var(--line-strong)}
-.snippet .p{color:var(--cyan);flex-shrink:0}
-.snippet .cmd{color:var(--ink);overflow-x:auto;white-space:nowrap}
-.snippet .ico{margin-left:auto;color:var(--ink-faint);flex-shrink:0}
-.snippet.copied .ico{color:var(--amber)}
-
-/* ---------- freshness note ---------- */
-.note{
-  margin-top:44px;
-  border-left:2px solid var(--amber-dim);
-  padding:4px 0 4px 20px;
-  color:var(--ink-dim);font-size:13.5px;line-height:1.75;max-width:640px;
-}
-.note b{color:var(--ink)}
-.note code{color:var(--cyan)}
-
-code, .mono{font-family:var(--mono-body)}
-.inline-code{
-  background:var(--bg-inset);border:1px solid var(--line);
-  border-radius:3px;padding:1px 6px;font-size:.92em;color:var(--cyan);
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono-body);
+  font-size: 15px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 
-/* ---------- footer ---------- */
-footer{padding:56px 0 70px}
-footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:24px}
-.foot-brand{font-family:var(--mono-display);font-weight:700;color:var(--ink-dim);font-size:14px}
-.foot-links{display:flex;gap:22px;font-size:13px}
-.foot-links a{color:var(--ink-dim);text-decoration:none}
-.foot-links a:hover{color:var(--cyan)}
-.foot-sub{color:var(--ink-faint);font-size:12px;margin-top:10px}
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 1;
+  pointer-events: none;
+  opacity: var(--grain);
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection { background: var(--amber); color: var(--bg); }
+
+::-webkit-scrollbar { width: 11px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--bg-raised); border: 2px solid var(--bg); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
+
+a { color: var(--cyan); text-decoration: none; transition: color .15s; }
+a:hover { color: var(--amber); }
+a:focus-visible, button:focus-visible, .copy:focus-visible { outline: 1.5px solid var(--amber); outline-offset: 2px; }
+
+code, .mono { font-family: var(--mono-body); }
+
+.inline-code {
+  background: var(--bg-inset);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: .92em;
+  color: var(--cyan);
+}
+
+.wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
+
+.skip-link {
+  position: absolute;
+  top: -40px; left: 0; z-index: 50;
+  background: var(--amber);
+  color: var(--bg);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top .2s;
+}
+.skip-link:focus { top: 0; }
+
+header.nav {
+  position: sticky; top: 0; z-index: 40;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+header.nav .wrap {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 56px;
+}
+.brand {
+  display: flex; align-items: center; gap: 9px;
+  font-family: var(--mono-display);
+  font-weight: 700; font-size: 15px; letter-spacing: -.02em;
+  color: var(--ink); text-decoration: none;
+}
+.brand .dot {
+  width: 7px; height: 7px;
+  background: var(--cyan); border-radius: 50%;
+  box-shadow: 0 0 8px var(--cyan);
+}
+.navlinks {
+  display: flex; align-items: center; gap: 26px;
+  font-size: 13px;
+}
+.navlinks a {
+  color: var(--ink-dim); padding: 8px 0;
+  transition: color .15s;
+}
+.navlinks a:hover { color: var(--ink); }
+.theme-toggle {
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--line-strong); border-radius: 3px;
+  color: var(--ink-dim); cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--cyan-dim); }
+.gh-btn {
+  display: flex; align-items: center; gap: 7px;
+  border: 1px solid var(--line-strong);
+  padding: 6px 12px; font-size: 12.5px; color: var(--ink);
+  text-decoration: none; border-radius: 3px;
+  transition: border-color .15s, color .15s;
+}
+.gh-btn:hover { border-color: var(--cyan-dim); color: var(--cyan); }
+@media (max-width: 760px) {
+  .navlinks a { display: none; }
+  .theme-toggle { order: 1; }
+}
+
+.hero {
+  position: relative;
+  min-height: min(92vh, 860px);
+  display: flex; flex-direction: column; justify-content: center;
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+#graph-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
+.hero::after {
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: var(--hero-vignette);
+}
+.hero .wrap { position: relative; z-index: 2; padding-top: 64px; padding-bottom: 64px; }
+
+.kicker {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--cyan);
+  border: 1px solid var(--cyan-dim);
+  padding: 4px 10px; border-radius: 20px;
+  margin-bottom: 28px;
+  letter-spacing: .02em;
+}
+.kicker .dot {
+  width: 6px; height: 6px; background: var(--cyan); border-radius: 50%;
+}
+
+h1.title {
+  font-family: var(--mono-display);
+  font-weight: 700;
+  font-size: clamp(48px, 9vw, 104px);
+  line-height: .95;
+  letter-spacing: -.03em;
+  color: var(--ink);
+}
+h1.title .prompt { color: var(--ink-faint); font-weight: 400; margin-right: .16em; }
+h1.title .cursor {
+  display: inline-block; width: .5em; height: .82em; background: var(--amber);
+  vertical-align: -.08em;
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 0%, 45% { opacity: 1; } 50%, 95% { opacity: 0; } 100% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { h1.title .cursor { animation: none; } }
+
+.tagline {
+  margin-top: 22px;
+  font-size: clamp(16px, 2.4vw, 20px);
+  color: var(--ink-dim);
+  max-width: 640px;
+  line-height: 1.6;
+}
+.tagline b { color: var(--ink); font-weight: 600; }
+
+.hero-ctas {
+  margin-top: 38px;
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start;
+  max-width: 100%;
+}
+.copy {
+  font-family: var(--mono-body);
+  display: flex; align-items: flex-start; gap: 12px;
+  flex: 1 1 0; min-width: 0; max-width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  padding: 13px 16px;
+  font-size: 13.5px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+  box-shadow: 0 0 0 0 var(--amber-shadow);
+}
+.copy:hover { border-color: var(--amber-dim); box-shadow: 0 0 24px -8px var(--amber-shadow); }
+.copy:active { transform: scale(.985); }
+.copy .p { color: var(--cyan); flex-shrink: 0; padding-top: 2px; }
+.copy .ico { color: var(--ink-faint); flex-shrink: 0; padding-top: 2px; transition: color .15s; }
+.copy.copied .ico { color: var(--amber); }
+.copy .txt { white-space: normal; word-break: break-word; flex: 1 1 0; min-width: 0; line-height: 1.5; }
+.ghlink {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ink-dim); font-size: 13.5px;
+  border-bottom: 1px solid transparent;
+  transition: color .15s, border-color .15s;
+  align-self: center;
+}
+.ghlink:hover { color: var(--ink); border-color: var(--line-strong); }
+.hero-meta {
+  margin-top: 46px; display: flex; gap: 28px; flex-wrap: wrap;
+  font-size: 12px; color: var(--ink-faint);
+}
+.hero-meta span { display: flex; align-items: center; gap: 6px; }
+.hero-meta b { color: var(--ink-dim); font-weight: 600; }
+
+section { padding: 96px 0; border-bottom: 1px solid var(--line); }
+section:last-of-type { border-bottom: none; }
+.eyebrow {
+  font-size: 12px; color: var(--cyan); letter-spacing: .08em; text-transform: uppercase;
+  margin-bottom: 14px; display: flex; align-items: center; gap: 10px;
+}
+.eyebrow::before { content: ""; width: 22px; height: 1px; background: var(--cyan-dim); }
+h2 {
+  font-family: var(--mono-display);
+  font-size: clamp(26px, 4vw, 38px);
+  font-weight: 700; letter-spacing: -.02em;
+  color: var(--ink);
+  max-width: 680px;
+}
+.lede {
+  margin-top: 16px;
+  color: var(--ink-dim);
+  font-size: 15.5px;
+  max-width: 60ch;
+  line-height: 1.7;
+}
+
+.reveal {
+  transition: opacity .6s cubic-bezier(0.16, 1, 0.3, 1),
+              transform .6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal.pending { opacity: 0; transform: translateY(18px); }
+@media (prefers-reduced-motion: reduce) { .reveal.pending { opacity: 1; transform: none; } }
+
+.term {
+  margin-top: 44px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 30px 80px -40px rgba(0, 0, 0, .7);
+}
+.term-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+}
+.term-bar .dots { display: flex; gap: 6px; }
+.term-bar .dots span { width: 10px; height: 10px; border-radius: 50%; background: var(--ink-faint); }
+.term-bar .path { margin-left: 6px; font-size: 12px; color: var(--ink-faint); }
+.term-body {
+  padding: 22px 22px 28px;
+  font-size: 13.5px;
+  line-height: 1.8;
+  min-height: 400px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.term-body .ln-cmd { color: var(--ink); }
+.term-body .ln-cmd .p { color: var(--cyan); }
+.term-body .ln-out { color: var(--ink-dim); }
+.term-body .ln-out b { color: var(--amber); font-weight: 500; }
+.term-body .ln-note { color: var(--ink-faint); }
+.term-caret {
+  display: inline-block; width: 7px; height: 15px; background: var(--amber);
+  vertical-align: -2px; animation: blink 1s steps(1) infinite;
+}
+@media (prefers-reduced-motion: reduce) { .term-caret { animation: none; } }
+
+.compare-grid {
+  margin-top: 44px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px; overflow: hidden;
+}
+@media (max-width: 780px) { .compare-grid { grid-template-columns: 1fr; } }
+.compare-col { padding: 26px 24px; }
+.compare-col.bad { background: var(--bad-bg); border-right: 1px solid var(--line-strong); }
+.compare-col.good { background: var(--good-bg); }
+@media (max-width: 780px) { .compare-col.bad { border-right: none; border-bottom: 1px solid var(--line-strong); } }
+.compare-label {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 7px; margin-bottom: 16px;
+}
+.compare-col.bad .compare-label { color: var(--red); }
+.compare-col.good .compare-label { color: var(--cyan); }
+.compare-label svg { width: 14px; height: 14px; }
+.compare-log {
+  font-size: 12.5px; line-height: 1.85;
+  color: var(--ink-faint);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.compare-col.good .compare-log { color: var(--ink-dim); }
+.compare-log .go { color: var(--ink); font-weight: 500; }
+.compare-log .fade { opacity: .55; }
+.compare-stat {
+  margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line);
+  font-size: 12.5px; color: var(--ink-faint);
+}
+.compare-col.bad .compare-stat b { color: var(--red); font-weight: 600; }
+.compare-col.good .compare-stat b { color: var(--cyan); font-weight: 600; }
+
+.features { list-style: none; padding: 0; margin: 44px 0 0; }
+.feature { padding: 36px 0; border-top: 1px solid var(--line); }
+.feature:first-child { border-top: none; padding-top: 0; }
+.feature-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start;
+}
+@media (max-width: 780px) { .feature-grid { grid-template-columns: 1fr; } }
+.feature-text { max-width: 60ch; }
+.feature-num {
+  display: block; font-family: var(--mono-display); font-weight: 700;
+  font-size: 14px; color: var(--amber); margin-bottom: 8px;
+}
+.feature-text h3 {
+  font-family: var(--mono-display);
+  font-size: 18px; font-weight: 600; color: var(--ink); margin-bottom: 12px;
+}
+.feature-text p {
+  color: var(--ink-dim); font-size: 14.5px; line-height: 1.7; margin-bottom: 12px;
+}
+.feature-text ul {
+  color: var(--ink-dim); font-size: 13.5px; line-height: 1.7;
+  padding-left: 18px; margin: 0;
+}
+.feature-text li { margin-bottom: 6px; }
+.feature-text li:last-child { margin-bottom: 0; }
+.feature-text code { color: var(--cyan); }
+.feature-code { max-width: 100%; }
+
+.code-block {
+  background: var(--bg-inset);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.code-block code {
+  display: block;
+  font-family: var(--mono-body);
+  color: var(--ink-dim);
+}
+.code-block .p { color: var(--cyan); }
+.code-block .c { color: var(--cyan); }
+.code-block .hl { color: var(--amber); font-weight: 500; }
+.code-block .ref { color: var(--ink-faint); }
+
+.queries-list {
+  list-style: none; padding: 0; margin: 44px 0 0;
+  border-top: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0;
+}
+.queries-list li {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.queries-list code {
+  min-width: 140px;
+  color: var(--cyan);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.queries-list span {
+  color: var(--ink-dim);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.queries-list .actuator {
+  display: inline-flex; align-items: center;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--amber-dim);
+  border-radius: 3px;
+  color: var(--amber);
+  font-size: 10.5px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.steps { margin-top: 44px; position: relative; max-width: 640px; }
+.step {
+  display: grid; grid-template-columns: 44px 1fr; gap: 20px;
+  position: relative; padding-bottom: 36px;
+}
+.step:last-child { padding-bottom: 0; }
+.step-num {
+  width: 34px; height: 34px; border: 1px solid var(--line-strong); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: var(--amber); background: var(--bg);
+  position: relative; z-index: 2;
+}
+.step:not(:last-child)::before {
+  content: ""; position: absolute; left: 16px; top: 34px; bottom: 0; width: 1px;
+  background: linear-gradient(var(--cyan-dim), var(--line-strong));
+}
+.step-body h4 {
+  font-family: var(--mono-display);
+  font-size: 15px; color: var(--ink); margin-bottom: 8px; font-weight: 600;
+}
+.step-body p {
+  color: var(--ink-dim); font-size: 13px; margin-bottom: 14px; max-width: 520px; line-height: 1.7;
+}
+.snippet {
+  display: flex; align-items: flex-start; gap: 12px;
+  width: 100%; max-width: 100%;
+  background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px;
+  padding: 11px 14px; font-size: 13px;
+  cursor: pointer; transition: border-color .15s;
+}
+.snippet:hover { border-color: var(--line-strong); }
+.snippet .p { color: var(--cyan); flex-shrink: 0; padding-top: 2px; }
+.snippet .cmd { color: var(--ink); white-space: normal; word-break: break-word; flex: 1 1 0; min-width: 0; }
+.snippet .ico { margin-left: auto; color: var(--ink-faint); flex-shrink: 0; padding-top: 2px; }
+.snippet.copied .ico { color: var(--amber); }
+
+.note {
+  margin-top: 44px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 16px;
+  color: var(--ink-dim); font-size: 13.5px; line-height: 1.75; max-width: 640px;
+}
+.note b { color: var(--ink); }
+.note code { color: var(--cyan); }
+
+footer { padding: 56px 0 70px; border-top: 1px solid var(--line); }
+footer .wrap { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 24px; }
+.foot-brand { font-family: var(--mono-display); font-weight: 700; color: var(--ink-dim); font-size: 14px; }
+.foot-sub { color: var(--ink-faint); font-size: 12px; margin-top: 10px; }
+.foot-links { display: flex; gap: 22px; font-size: 13px; }
+.foot-links a { color: var(--ink-dim); text-decoration: none; }
+.foot-links a:hover { color: var(--cyan); }
 </style>
 </head>
 <body>
 
+<a class="skip-link" href="#main">Skip to content</a>
+
 <header class="nav">
   <div class="wrap">
     <a href="#top" class="brand"><span class="dot"></span>codegraph</a>
-    <nav class="navlinks">
+    <nav class="navlinks" aria-label="Primary">
       <a href="#demo">Demo</a>
-      <a href="#why">Why</a>
-      <a href="#features">Queries</a>
-      <a href="#quickstart">Install</a>
+      <a href="#v3">v3</a>
+      <a href="#queries">Queries</a>
+      <a href="#install">Install</a>
+    </nav>
+    <div style="display:flex;align-items:center;gap:14px;">
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to light mode">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
       <a class="gh-btn" href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
         GitHub
       </a>
-    </nav>
+    </div>
   </div>
 </header>
 
-<main id="top">
+<main id="main">
 
-<section class="hero">
-  <canvas id="graph-canvas"></canvas>
+<section class="hero" id="top">
+  <canvas id="graph-canvas" aria-hidden="true"></canvas>
   <div class="wrap">
-    <div class="kicker">v0.9.7 · MIT · Dart / Flutter</div>
+    <div class="kicker"><span class="dot"></span>v3.0.0 | MIT | Dart / Flutter</div>
     <h1 class="title"><span class="prompt">&gt;</span>codegraph<span class="cursor"></span></h1>
-    <p class="tagline">A resolved code graph and query CLI, so your <b>AI coding agent</b> answers
-      "who reads this?" or "where is this defined?" in about a second,
-      instead of grepping the whole tree and hoping.</p>
+    <p class="tagline">Resolved knowledge + actuator for Dart / Flutter agents. It does not just find code; it lets an agent <b>change code without breaking it</b>.</p>
 
     <div class="hero-ctas">
-      <button class="copy" id="hero-copy" data-copy="dart pub global activate -sgit https://github.com/ArinFaraj/codegraph">
+      <button class="copy" id="hero-copy" data-copy="dart pub global activate -sgit https://github.com/ArinFaraj/codegraph" aria-label="Copy install command">
         <span class="p">$</span>
-        <span class="txt">dart pub global activate -sgit github.com/ArinFaraj/codegraph</span>
-        <svg class="ico" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
+        <span class="txt">dart pub global activate -sgit https://github.com/ArinFaraj/codegraph</span>
+        <svg class="ico" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
       </button>
-      <a class="ghlink" href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">View source ↗</a>
+      <a class="ghlink" href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">View source</a>
     </div>
 
     <div class="hero-meta">
       <span><b>~1s</b> per query</span>
-      <span><b>zero</b> config</span>
-      <span><b>no</b> pub get required</span>
-      <span>built on <b>package:analyzer</b>, not regex</span>
+      <span><b>zero</b> project config</span>
+      <span><b>resolved</b> builds need host pub get</span>
+      <span><b>syntax</b> fallback stays zero-setup</span>
     </div>
   </div>
 </section>
@@ -425,9 +615,8 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
 <section id="demo">
   <div class="wrap reveal">
     <div class="eyebrow">Live example</div>
-    <h2>Ask it a relationship question.</h2>
-    <p class="lede">This is a real session against a Riverpod + GoRouter app. Same shape of
-      answer for any Dart/Flutter codebase you point it at.</p>
+    <h2>See it act, not just answer.</h2>
+    <p class="lede">A real v3 session: element-precise callers, a refused unsafe rename, and an applied safe rename.</p>
 
     <div class="term">
       <div class="term-bar">
@@ -442,137 +631,226 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
 <section id="why">
   <div class="wrap reveal">
     <div class="eyebrow">The problem</div>
-    <h2>Grep finds text. It doesn't know what's related.</h2>
-    <p class="lede">"What breaks if I change this provider" is a graph question, not a text-search
-      question. Text-search is all an agent has by default.</p>
+    <h2>Grep finds text. It does not know what is related.</h2>
+    <p class="lede">"What breaks if I change this?" is a whole-program question, not a text search. A blind agent can read files one by one. The graph knows the whole program.</p>
 
     <div class="compare-grid">
       <div class="compare-col bad">
-        <div class="compare-label">Grepping blind</div>
-        <div class="compare-log">
-          <div class="go">$ grep -rl "authRepositoryProvider" .</div>
-          <div class="fade">$ grep -rl "class AuthRepository" .</div>
-          <div class="fade">$ grep -rl "ref.watch(authRepositoryProvider" .</div>
-          <div class="fade">$ open lib/auth/view/login_page.dart</div>
-          <div class="fade">$ open lib/auth/view/signup_page.dart</div>
-          <div class="fade">$ open lib/settings/view/account_page.dart</div>
-          <div class="fade">$ open lib/legacy/old_login_flow.dart</div>
-          <div class="fade">… 40+ hits, half of them unrelated basename matches</div>
+        <div class="compare-label">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          Grep + manual edits
         </div>
-        <div class="compare-stat">7+ commands · dozens of files opened · <b>still guessing</b></div>
+        <div class="compare-log">
+          <div class="go">$ grep -rl "logout" .</div>
+          <div>lib/auth/auth_controller.dart</div>
+          <div>lib/home/home_screen.dart</div>
+          <div>lib/profile/profile_screen.dart</div>
+          <div>lib/router.dart</div>
+          <div>lib/settings/settings_controller.dart</div>
+          <div class="fade">... 35 more files</div>
+          <div class="fade">$ sed -i 's/\.logout\(/\.handleLogout(/g' lib/**/*.dart</div>
+          <div class="fade">$ sed -i 's/logout/handleLogout/g' lib/**/*.dart</div>
+          <div class="fade">$ flutter build</div>
+          <div class="fade">lib/router.dart: error: method not found: 'logout'</div>
+          <div class="fade">test/settings_controller_test.dart: error: method not found</div>
+        </div>
+        <div class="compare-stat">5+ commands | 40 files touched | <b>build still broken</b></div>
       </div>
       <div class="compare-col good">
-        <div class="compare-label">Querying the graph</div>
-        <div class="compare-log">
-          <div class="go">$ codegraph readers authRepositoryProvider</div>
-          <div>provider authRepositoryProvider — Provider — declared in lib/auth/data/auth_repository.dart</div>
-          <div>watches (3):</div>
-          <div>&nbsp;&nbsp;lib/auth/view/login_page.dart</div>
-          <div>&nbsp;&nbsp;lib/auth/view/signup_page.dart</div>
-          <div>&nbsp;&nbsp;lib/settings/view/account_page.dart</div>
+        <div class="compare-label">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 9l3 3 7-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          codegraph v3 rename
         </div>
-        <div class="compare-stat">1 command · exact consumers · <b>resolved in ~0.9s</b></div>
+        <div class="compare-log">
+          <div class="go">$ codegraph rename SettingsController.logout handleLogout --apply</div>
+          <div>applied 6 changes in 4 files</div>
+          <div> </div>
+          <div>$ flutter build</div>
+          <div>build green</div>
+        </div>
+        <div class="compare-stat">1 command | every resolved reference updated | <b>0 broken builds</b></div>
       </div>
     </div>
   </div>
 </section>
 
-<section id="features">
+<section id="v3">
   <div class="wrap reveal">
-    <div class="eyebrow">The query surface</div>
-    <h2>Every relationship an agent asks about — down to the call chain.</h2>
-    <p class="lede">From "where is X" to "who calls this method" to "what actually runs when this fires, and where does it skip." Output is line-budgeted so a query never blows an agent's context window.</p>
-  </div>
-  <div class="wrap">
-    <div class="grid">
-      <div class="card">
-        <span class="card-chip">brief</span>
-        <h3>Everything about X, one call</h3>
-        <p>A single context card for a provider, file, area, or symbol — the fields the other verbs would take several calls to assemble.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">find</span>
-        <h3>Where is X?</h3>
-        <p>Locate a file, provider, or symbol (class, enum, function) by name, across <span class="inline-code">lib/</span> and every local package.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">readers</span>
-        <h3>What uses this?</h3>
-        <p>Every watcher, reader, and listener of a provider. The blast radius before you change it.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">callers</span>
-        <h3>Who calls this method?</h3>
-        <p>Every call site of a method or function — exact <span class="inline-code">file:line</span>, across <span class="inline-code">lib/</span> and the test dirs. AST-accurate, so no comment or string false hits. The refactor-safety answer grep can't give.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">callchain</span>
-        <h3>What runs — and where does it skip?</h3>
-        <p>A static call tree from any method, each hop flagged with the control-flow hazards you'd otherwise read the body to find: <span class="inline-code">[guard]</span> early-return, <span class="inline-code">[try]</span>, <span class="inline-code">[swallow]</span> empty catch, <span class="inline-code">[async]</span> fire-and-forget.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">impact</span>
-        <h3>What breaks if I change this?</h3>
-        <p>Transitive dependents of a provider or file, several hops out, with a count of screens affected. The blast radius, resolved — not grepped.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">wiring</span>
-        <h3>What does this depend on?</h3>
-        <p>A file's full wiring in both directions: declares, watches, imports, imported-by, navigates.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">impls</span>
-        <h3>Who implements this?</h3>
-        <p>The whole subtype tree of an interface — transitive, not just direct children — each resolved to its declaration site. Includes <span class="inline-code">test/</span> fakes scanned on demand.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">path</span>
-        <h3>How do these connect?</h3>
-        <p>The shortest relationship path between two files, through imports and shared providers.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">unused</span>
-        <h3>What's dead?</h3>
-        <p>Providers and files with zero consumers. A candidate list to confirm, not a delete list.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">sym</span>
-        <h3>The API without the file</h3>
-        <p>A symbol's signature, doc comment, and members — plus every file that imports it — without opening the source. Resolves methods by name, not just top-level symbols.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">skeleton</span>
-        <h3>The outline without the file</h3>
-        <p>A file's declarations with line numbers, so an agent orients before reading the whole thing.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">passport</span>
-        <h3>Session orientation for free</h3>
-        <p>A ~450-token project digest a session-start hook injects automatically — counts, entry points, hot providers, no query needed.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">attention</span>
-        <h3>What needs a human</h3>
-        <p>Ambiguous providers, dead code, orphan files, and stale notes — a triage list for a reviewer, not a verdict.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">init</span>
-        <h3>Wire up an agent</h3>
-        <p>Installs a <span class="inline-code">CLAUDE.md</span> quickstart, a session hook, and a skill into any project, so agents reach for the graph by default.</p>
-      </div>
-      <div class="card">
-        <span class="card-chip">build / check</span>
-        <h3>Stay fresh</h3>
-        <p>Regenerate on demand, or gate CI on drift with <span class="inline-code">codegraph check</span>.</p>
-      </div>
-    </div>
+    <div class="eyebrow">The 3.0.0 release</div>
+    <h2>Resolved knowledge, then an actuator.</h2>
+    <p class="lede">v3 changes the default build to resolved analysis, makes the NEVER-GUESS doctrine visible as data, and adds the first actuator: a rename that refuses before it can break anything.</p>
+
+    <ol class="features">
+      <li class="feature">
+        <div class="feature-grid">
+          <div class="feature-text">
+            <span class="feature-num">01</span>
+            <h3>Resolved analysis is the default build</h3>
+            <p><code>codegraph build</code> now uses the Dart analyzer's element model. Syntax-only is the automatic zero-setup fallback when <code>.dart_tool/package_config.json</code> is missing, and can be forced with <code>--syntax</code>. If you explicitly ask for <code>--resolved</code> and the package config is missing, it refuses with a <code>pub get</code> instruction instead of silently degrading.</p>
+            <ul>
+              <li>default is resolved</li>
+              <li>syntax-only is the zero-setup fallback</li>
+              <li>explicit <code>--resolved</code> without <code>package_config</code> refuses</li>
+            </ul>
+          </div>
+          <div class="feature-code">
+            <pre class="code-block" aria-label="Resolved build output"><code><span class="p">$</span> <span class="c">codegraph build</span>
+Indexing 1546 files... done in 34s
+resolved: 1542/1546 files (99.7%)
+4 files fell back to syntax (package_config missing)
+graph written to docs/maps/code_graph.json</code></pre>
+          </div>
+        </div>
+      </li>
+
+      <li class="feature">
+        <div class="feature-grid">
+          <div class="feature-text">
+            <span class="feature-num">02</span>
+            <h3>Element-precise readers and callers --resolved</h3>
+            <p><code>readers</code> and <code>callers|refs &lt;Symbol&gt; --resolved</code> attribute every call site to its real target. <code>HomeScreen.build</code> and <code>SettingsScreen.build</code> are separate result sets, not a same-name union.</p>
+            <ul>
+              <li>receiver type, not just name, decides reader edges</li>
+              <li>same-named methods in different classes stay split</li>
+              <li>subtypes and implements edges carry element-confirmed identity</li>
+            </ul>
+          </div>
+          <div class="feature-code">
+            <pre class="code-block" aria-label="Element-precise callers output"><code><span class="p">$</span> <span class="c">codegraph callers HomeScreen.build --resolved</span>
+HomeScreen.build - 2 call sites
+  lib/main.dart:22
+  lib/router.dart:18
+override chain: HomeScreen.build <span class="ref">-></span> StatelessWidget.build <span class="ref">-></span> Widget
+
+<span class="p">$</span> <span class="c">codegraph callers SettingsScreen.build --resolved</span>
+SettingsScreen.build - 3 call sites
+  lib/settings/view/settings_screen.dart:44
+  lib/profile/view/profile_section.dart:12
+  test/settings/settings_screen_test.dart:29
+override chain: SettingsScreen.build <span class="ref">-></span> StatelessWidget.build <span class="ref">-></span> Widget</code></pre>
+          </div>
+        </div>
+      </li>
+
+      <li class="feature">
+        <div class="feature-grid">
+          <div class="feature-text">
+            <span class="feature-num">03</span>
+            <h3>Confidence column: resolved, heuristic, guessed</h3>
+            <p>Every <code>GraphEdge</code> carries a confidence value. It is emitted only when it is not heuristic. <code>readers</code> marks <code>[unconfirmed]</code> when a reader is name-matched but not element-confirmed. The build prints an honesty metric so you know the resolved fraction.</p>
+            <ul>
+              <li>resolved: element-confirmed</li>
+              <li>heuristic: name/reachability only, normal in syntax builds</li>
+              <li>guessed: never emitted; the tool refuses instead</li>
+            </ul>
+          </div>
+          <div class="feature-code">
+            <pre class="code-block" aria-label="Confidence column output"><code><span class="p">$</span> <span class="c">codegraph readers authRepositoryProvider</span>
+provider authRepositoryProvider - declared in lib/auth/data/auth_repository.dart
+watches (3):
+  lib/auth/view/login_page.dart  <span class="hl">[resolved]</span>
+  lib/auth/view/signup_page.dart  <span class="hl">[resolved]</span>
+  lib/auth/view/account_page.dart  <span class="hl">[unconfirmed]</span></code></pre>
+          </div>
+        </div>
+      </li>
+
+      <li class="feature">
+        <div class="feature-grid">
+          <div class="feature-text">
+            <span class="feature-num">04</span>
+            <h3>Inheritance and override safety</h3>
+            <p><code>callers --resolved</code> reports the target's inheritance override chain. If the chain reaches an external or framework base, the tool flags the method as unsafe to touch. The rename actuator refuses before it can break a framework contract.</p>
+            <ul>
+              <li>override chain shown with every resolved call</li>
+              <li>framework/base override = unsafe to rename</li>
+              <li>refusal is the default, not a warning</li>
+            </ul>
+          </div>
+          <div class="feature-code">
+            <pre class="code-block" aria-label="Override safety output"><code><span class="p">$</span> <span class="c">codegraph callers HomeScreen.build --resolved</span>
+HomeScreen.build - 2 call sites
+  lib/main.dart:22
+  lib/router.dart:18
+override chain: HomeScreen.build <span class="ref">-></span> StatelessWidget.build <span class="ref">-></span> Widget
+framework base: <span class="hl">unsafe to rename</span>
+
+<span class="p">$</span> <span class="c">codegraph rename HomeScreen.build _buildHome</span>
+<span class="hl">Refusing</span>: override chain reaches external/framework base StatelessWidget.build
+reason: unsafe (cannot rename a framework override contract)
+exit code 3</code></pre>
+          </div>
+        </div>
+      </li>
+
+      <li class="feature">
+        <div class="feature-grid">
+          <div class="feature-text">
+            <span class="feature-num">05</span>
+            <h3>The rename actuator</h3>
+            <p><code>codegraph rename &lt;Symbol|Class.method&gt; &lt;newName&gt;</code> is the first write actuator. It renames the declaration and every element-resolved reference, including the whole in-project override set, together. It refuses if the target is ambiguous, unsafe, incomplete, or missing <code>package_config</code>. Dry-run by default; <code>--apply</code> writes.</p>
+            <ul>
+              <li>dry-run shows every file that would change</li>
+              <li>--apply writes the resolved edit set</li>
+              <li>refuses with exit code 3 when it cannot be safe</li>
+            </ul>
+          </div>
+          <div class="feature-code">
+            <pre class="code-block" aria-label="Rename actuator output"><code><span class="p">$</span> <span class="c">codegraph rename SettingsController.logout handleLogout</span>
+dry-run: 6 changes in 4 files
+  lib/settings/settings_controller.dart:31  declaration
+  lib/settings/settings_controller.dart:56  self-call
+  lib/home/home_screen.dart:88  call
+  lib/profile/profile_screen.dart:102  call
+  lib/router.dart:19  tear-off
+  test/settings_controller_test.dart:41  call
+override set: SettingsController.logout (no framework base, safe)
+
+<span class="p">$</span> <span class="c">codegraph rename SettingsController.logout handleLogout --apply</span>
+<span class="hl">applied</span> 6 changes in 4 files</code></pre>
+          </div>
+        </div>
+      </li>
+    </ol>
   </div>
 </section>
 
-<section id="quickstart">
+<section id="queries">
+  <div class="wrap reveal">
+    <div class="eyebrow">Query surface</div>
+    <h2>Every question an agent asks, with the right precision.</h2>
+    <p class="lede">Five intent verbs cover the common questions in one call. Low-level verbs give precise control. The <code>rename</code> actuator is the first write verb.</p>
+
+    <ul class="queries-list">
+      <li><code>codegraph find</code><span>Locate files, providers, symbols, and members by name.</span></li>
+      <li><code>codegraph uses</code><span>Every inbound relation, sections picked by what X resolves to.</span></li>
+      <li><code>codegraph change</code><span>Dependents + subtype tree + state follow-ups + untested in blast radius.</span></li>
+      <li><code>codegraph review</code><span>Branch safety: blast radius, untested code, lint violations.</span></li>
+      <li><code>codegraph health</code><span>Triage, dead-code candidates, and coverage gaps.</span></li>
+      <li><code>codegraph plan</code><span>Build-order plan from a feature exemplar.</span></li>
+      <li><code>codegraph callers</code><span>Every call site of a method or function.</span></li>
+      <li><code>codegraph refs</code><span>References to a symbol.</span></li>
+      <li><code>codegraph callchain</code><span>Static call tree with control-flow hazards.</span></li>
+      <li><code>codegraph readers</code><span>Every watcher, reader, and listener of a provider.</span></li>
+      <li><code>codegraph impls</code><span>Full subtype tree of an interface, including test fakes.</span></li>
+      <li><code>codegraph wiring</code><span>A file's dependencies in both directions.</span></li>
+      <li><code>codegraph path</code><span>Shortest relationship path between two files.</span></li>
+      <li><code>codegraph sym</code><span>Signature, doc comment, members, and importers.</span></li>
+      <li><code>codegraph skeleton</code><span>A file's declarations with line numbers.</span></li>
+      <li><code>codegraph unused</code><span>Dead-code candidates to confirm, not a delete list.</span></li>
+      <li><code>codegraph untested</code><span>Coverage gaps ranked by impact.</span></li>
+      <li><code>codegraph impact</code><span>Transitive dependents of a provider or file.</span></li>
+      <li><code>codegraph diff</code><span>Branch blast radius and changed-but-untested.</span></li>
+      <li><code>codegraph rename</code><span>Element-precise rename actuator, dry-run, --apply.<span class="actuator">actuator</span></span></li>
+    </ul>
+  </div>
+</section>
+
+<section id="install">
   <div class="wrap reveal">
     <div class="eyebrow">Get running</div>
     <h2>Three commands. Zero project-specific setup.</h2>
+    <p class="lede">Install the CLI, wire the project, and build the graph. The resolved build needs the host project's <code>pub get</code> to be complete; if the package config is missing, the build falls back to syntax-only and tells you.</p>
 
     <div class="steps">
       <div class="step">
@@ -582,7 +860,7 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
           <p>Global, once per machine. Re-run the same command any time to update.</p>
           <div class="snippet" data-copy="dart pub global activate -sgit https://github.com/ArinFaraj/codegraph">
             <span class="p">$</span><span class="cmd">dart pub global activate -sgit https://github.com/ArinFaraj/codegraph</span>
-            <svg class="ico" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
+            <svg class="ico" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
           </div>
         </div>
       </div>
@@ -590,10 +868,10 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
         <div class="step-num">2</div>
         <div class="step-body">
           <h4>Wire the project</h4>
-          <p>Stamps a <span class="inline-code">CLAUDE.md</span> block, a freshness hook, and an agent skill. Idempotent, safe to re-run.</p>
+          <p>Stamps a <code>CLAUDE.md</code> block, a freshness hook, and an agent skill. Idempotent, safe to re-run.</p>
           <div class="snippet" data-copy="codegraph init --ci">
             <span class="p">$</span><span class="cmd">codegraph init --ci</span>
-            <svg class="ico" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
+            <svg class="ico" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
           </div>
         </div>
       </div>
@@ -601,20 +879,17 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
         <div class="step-num">3</div>
         <div class="step-body">
           <h4>Build the graph</h4>
-          <p>Generates the graph JSON (untracked; the hook and CI rebuild it) and per-area maps — commit the markdown maps. From here, the session hook injects a ~450-token project passport at the start of every session — free orientation, no query needed.</p>
+          <p>Generates the graph JSON (untracked; the hook and CI rebuild it) and per-area maps. The resolved build uses the analyzer element model by default and falls back to syntax-only when the host package config is missing.</p>
           <div class="snippet" data-copy="codegraph build">
             <span class="p">$</span><span class="cmd">codegraph build</span>
-            <svg class="ico" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
+            <svg class="ico" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1"/><path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
           </div>
         </div>
       </div>
     </div>
 
     <div class="note">
-      <b>Freshness, without the cost.</b> A session-start hook regenerates only when
-      <span class="inline-code">lib/</span> or <span class="inline-code">packages/*/lib</span> changed:
-      fail-safe, zero cost per edit. CI can gate on drift with <code>codegraph check</code>.
-      Per-edit regeneration was tried and rejected: seconds of latency for marginal freshness.
+      <b>Honest setup, two modes.</b> For a resolved build, run <code>dart pub get</code> in the host project first. If <code>.dart_tool/package_config.json</code> is missing, <code>codegraph build</code> falls back to syntax-only and tells you. The syntax fallback is still zero-setup and never breaks on unresolvable dependencies; it is just less precise.
     </div>
   </div>
 </section>
@@ -625,7 +900,7 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
   <div class="wrap">
     <div>
       <div class="foot-brand">codegraph</div>
-      <div class="foot-sub">MIT licensed · built on the real Dart analyzer, not tree-sitter or regex.</div>
+      <div class="foot-sub">MIT licensed | resolved analysis with a syntax fallback.</div>
     </div>
     <div class="foot-links">
       <a href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">GitHub</a>
@@ -640,15 +915,41 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
 (() => {
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  /* ---------- copy to clipboard ---------- */
-  function wireCopy(el, getText){
+  const sunSvg = '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="currentColor" stroke="none"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+  const moonSvg = '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function updateThemeUI(theme) {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      meta.content = getComputedStyle(document.body).getPropertyValue('--theme-color').trim() || '#08090a';
+    }
+    const toggle = document.getElementById('theme-toggle');
+    if (!toggle) return;
+    const isDark = theme === 'dark';
+    toggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+    toggle.innerHTML = isDark ? moonSvg : sunSvg;
+  }
+
+  const toggle = document.getElementById('theme-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('codegraph-theme', next); } catch (e) {}
+      updateThemeUI(next);
+    });
+  }
+  updateThemeUI(document.documentElement.getAttribute('data-theme') || 'dark');
+
+  function wireCopy(el, getText) {
     el.addEventListener('click', async () => {
       const text = getText();
       try { await navigator.clipboard.writeText(text); }
-      catch(e){
+      catch (e) {
         const ta = document.createElement('textarea');
         ta.value = text; document.body.appendChild(ta); ta.select();
-        try{document.execCommand('copy');}catch(_){}
+        try { document.execCommand('copy'); } catch (_) {}
         ta.remove();
       }
       el.classList.add('copied');
@@ -657,10 +958,6 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
   }
   document.querySelectorAll('[data-copy]').forEach(el => wireCopy(el, () => el.getAttribute('data-copy')));
 
-  /* ---------- scroll reveal ---------- */
-  // Content is visible by default (see .reveal CSS) — only mark elements
-  // below the fold as .pending so there's something to animate in. If the
-  // observer never fires for any reason, nothing stays stuck invisible.
   if (!reduced && 'IntersectionObserver' in window) {
     const revealEls = document.querySelectorAll('.reveal');
     const vh = window.innerHeight;
@@ -673,246 +970,241 @@ footer .wrap{display:flex;justify-content:space-between;align-items:flex-end;fle
     });
   }
 
-  /* ---------- terminal typewriter ---------- */
   const SESSIONS = [
     [
-      { t: 'cmd', v: 'codegraph find PrimaryButton' },
-      { t: 'out', v: 'symbol: PrimaryButton — packages/design_system/lib/widgets/primary_button.dart' },
+      { t: 'cmd', v: 'codegraph callers HomeScreen.build --resolved' },
+      { t: 'out', v: 'HomeScreen.build - 2 call sites' },
+      { t: 'out', v: '  lib/main.dart:22' },
+      { t: 'out', v: '  lib/router.dart:18' },
+      { t: 'out', v: 'override chain: HomeScreen.build -> StatelessWidget.build -> Widget' },
       { t: 'note', v: '' },
+      { t: 'cmd', v: 'codegraph callers SettingsScreen.build --resolved' },
+      { t: 'out', v: 'SettingsScreen.build - 3 call sites' },
+      { t: 'out', v: '  lib/settings/view/settings_screen.dart:44' },
+      { t: 'out', v: '  lib/profile/view/profile_section.dart:12' },
+      { t: 'out', v: '  test/settings/settings_screen_test.dart:29' },
+      { t: 'out', v: 'override chain: SettingsScreen.build -> StatelessWidget.build -> Widget' },
+    ],
+    [
       { t: 'cmd', v: 'codegraph readers authRepositoryProvider' },
-      { t: 'out', v: 'provider authRepositoryProvider — Provider — declared in lib/auth/data/auth_repository.dart' },
+      { t: 'out', v: 'provider authRepositoryProvider - declared in lib/auth/data/auth_repository.dart' },
       { t: 'out', v: 'watches (3):' },
-      { t: 'out', v: '  lib/auth/view/login_page.dart' },
-      { t: 'out', v: '  lib/auth/view/signup_page.dart' },
-      { t: 'out', v: '  lib/settings/view/account_page.dart' },
+      { t: 'out', v: '  lib/auth/view/login_page.dart  [resolved]' },
+      { t: 'out', v: '  lib/auth/view/signup_page.dart  [resolved]' },
+      { t: 'out', v: '  lib/auth/view/account_page.dart  [unconfirmed]' },
     ],
     [
-      { t: 'cmd', v: 'codegraph callers deleteSession' },
-      { t: 'out', v: 'callers of deleteSession — 4 call sites' },
-      { t: 'out', v: '  lib/auth/logout_controller.dart:22  ref.read(sessionProvider.notifier).deleteSession()' },
-      { t: 'out', v: '  lib/core/session_cleanup_service.dart:51  _ref.read(sessionProvider.notifier).deleteSession()' },
-      { t: 'out', v: '  test/auth/logout_test.dart:18  container.read(sessionProvider.notifier).deleteSession()' },
-      { t: 'note', v: '' },
-      { t: 'cmd', v: 'codegraph callchain handleSignOut' },
-      { t: 'out', v: 'handleSignOut  (lib/auth/logout_controller.dart:14)  [guard async]' },
-      { t: 'out', v: '  deleteSession  (lib/core/session.dart:40)  [try]' },
-      { t: 'out', v: '  clearCaches  (lib/core/cache.dart:88)  [swallow]' },
-      { t: 'out', v: '  redirectToLogin  (lib/core/router/redirect.dart:12)' },
+      { t: 'cmd', v: 'codegraph rename HomeScreen.build _buildHome' },
+      { t: 'out', v: 'Refusing: override chain reaches external/framework base StatelessWidget.build' },
+      { t: 'out', v: 'reason: unsafe (cannot rename a framework override contract)' },
+      { t: 'out', v: 'exit code 3' },
     ],
     [
-      { t: 'cmd', v: 'codegraph wiring login_page.dart' },
-      { t: 'out', v: 'lib/auth/view/login_page.dart  [view]' },
-      { t: 'out', v: 'watches (2):' },
-      { t: 'out', v: '  authRepositoryProvider' },
-      { t: 'out', v: '  sessionProvider' },
-      { t: 'out', v: 'navigates (1):' },
-      { t: 'out', v: "  '/home'" },
-      { t: 'out', v: 'imports (3):' },
-      { t: 'out', v: '  lib/auth/data/auth_repository.dart' },
-      { t: 'out', v: '  lib/core/session_provider.dart' },
-      { t: 'out', v: '  packages/design_system/lib/widgets/primary_button.dart' },
+      { t: 'cmd', v: 'codegraph rename SettingsController.logout handleLogout' },
+      { t: 'out', v: 'dry-run: 6 changes in 4 files' },
+      { t: 'out', v: '  lib/settings/settings_controller.dart:31  declaration' },
+      { t: 'out', v: '  lib/settings/settings_controller.dart:56  self-call' },
+      { t: 'out', v: '  lib/home/home_screen.dart:88  call' },
+      { t: 'out', v: '  lib/profile/profile_screen.dart:102  call' },
+      { t: 'out', v: '  lib/router.dart:19  tear-off' },
+      { t: 'out', v: '  test/settings_controller_test.dart:41  call' },
+      { t: 'out', v: 'override set: SettingsController.logout (no framework base, safe)' },
       { t: 'note', v: '' },
-      { t: 'cmd', v: 'codegraph impls Repository' },
-      { t: 'out', v: 'implementers / subtypes of Repository (transitive):' },
-      { t: 'out', v: '  AuthRepository -> Repository  (lib/auth/data/auth_repository.dart)' },
-      { t: 'out', v: '    MockAuthRepository -> AuthRepository  (test/mocks/mock_auth_repository.dart)' },
-      { t: 'out', v: '  VehicleRepository -> Repository  (lib/vehicles/data/vehicle_repository.dart)' },
-    ],
-    [
-      { t: 'cmd', v: 'codegraph sym submitSession' },
-      { t: 'out', v: 'member submitSession — 4 declarations:' },
-      { t: 'out', v: '  AuthRepository (packages/auth_api/lib/…) — Future<void> submitSession({required String sessionId})' },
-      { t: 'out', v: '  HttpAuthRepository (packages/auth_api/lib/…) — same signature (token param removed)' },
-      { t: 'note', v: '' },
-      { t: 'cmd', v: 'codegraph impls AuthRepository' },
-      { t: 'out', v: 'implementers / subtypes of AuthRepository (transitive):' },
-      { t: 'out', v: '  HttpAuthRepository -> AuthRepository  (packages/auth_api/lib/…)' },
-      { t: 'out', v: 'test fakes (17):' },
-      { t: 'out', v: '  _FakeAuthRepository  (test/auth_repository_test.dart:42)' },
-      { t: 'out', v: '  _FakeConfigRepository  (integration_test/startup_batch_test.dart:88)' },
-      { t: 'out', v: '  … 15 more' },
+      { t: 'cmd', v: 'codegraph rename SettingsController.logout handleLogout --apply' },
+      { t: 'out', v: 'applied 6 changes in 4 files' },
     ],
   ];
 
   const body = document.getElementById('term-body');
 
-  function renderStatic(session){
-    body.innerHTML = session.map(l => {
-      if (l.t === 'cmd') return `<div class="ln-cmd"><span class="p">$</span> ${escapeHtml(l.v.replace('codegraph ',''))}</div>`;
-      if (l.t === 'out') return `<div class="ln-out">${escapeHtml(l.v)}</div>`;
-      return '<div class="ln-note">&nbsp;</div>';
-    }).join('');
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  function escapeHtml(s){
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function renderStatic(session) {
+    body.innerHTML = session.map(l => {
+      if (l.t === 'cmd') return `<div class="ln-cmd"><span class="p">$</span> ${escapeHtml(l.v.replace('codegraph ', ''))}</div>`;
+      if (l.t === 'out') return `<div class="ln-out">${escapeHtml(l.v)}</div>`;
+      return '<div class="ln-note"> </div>';
+    }).join('');
   }
 
   if (reduced) {
     renderStatic(SESSIONS[0]);
   } else {
     let sIdx = 0;
-    async function playSession(session){
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+    async function playSession(session) {
       body.innerHTML = '';
-      for (const line of session){
+      for (const line of session) {
         const div = document.createElement('div');
-        if (line.t === 'cmd'){
+        if (line.t === 'cmd') {
           div.className = 'ln-cmd';
           body.appendChild(div);
           let shown = '<span class="p">$</span> ';
           div.innerHTML = shown;
-          const text = line.v.replace('codegraph ','');
-          for (let i=0;i<text.length;i++){
+          const text = line.v.replace('codegraph ', '');
+          for (let i = 0; i < text.length; i++) {
             shown += escapeHtml(text[i]);
             div.innerHTML = shown + '<span class="term-caret"></span>';
-            await sleep(14 + Math.random()*20);
+            await sleep(14 + Math.random() * 20);
           }
           div.innerHTML = shown;
           await sleep(220);
-        } else if (line.t === 'out'){
+        } else if (line.t === 'out') {
           div.className = 'ln-out';
           div.textContent = line.v;
           body.appendChild(div);
           await sleep(55);
         } else {
           div.className = 'ln-note';
-          div.innerHTML = '&nbsp;';
+          div.textContent = ' ';
           body.appendChild(div);
+          await sleep(55);
         }
       }
       await sleep(2600);
     }
-    async function loop(){
-      while (true){
+    async function loop() {
+      while (true) {
         await playSession(SESSIONS[sIdx % SESSIONS.length]);
         sIdx++;
       }
     }
-    function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
     loop();
   }
 
-  /* ---------- canvas node graph ---------- */
   const canvas = document.getElementById('graph-canvas');
   const ctx = canvas.getContext('2d');
   const hero = document.querySelector('.hero');
-  let W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
-  let nodes=[], pulses=[];
+  let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let nodes = [], pulses = [];
+  let edgeColor, nodeColor, nodeAccentColor, pulseColor;
   const LINK_DIST = 190;
   const N_NODES = 42;
 
-  function resize(){
-    const r = hero.getBoundingClientRect();
-    W = r.width; H = r.height;
-    canvas.width = W*DPR; canvas.height = H*DPR;
-    canvas.style.width = W+'px'; canvas.style.height = H+'px';
-    ctx.setTransform(DPR,0,0,DPR,0,0);
+  function refreshCanvasColors() {
+    const s = getComputedStyle(canvas);
+    edgeColor = s.getPropertyValue('--canvas-edge').trim();
+    nodeColor = s.getPropertyValue('--canvas-node').trim();
+    nodeAccentColor = s.getPropertyValue('--canvas-node-accent').trim();
+    pulseColor = s.getPropertyValue('--canvas-pulse').trim();
   }
 
-  function initNodes(){
-    nodes = Array.from({length:N_NODES}, (_,i) => ({
-      x: Math.random()*W, y: Math.random()*H,
-      vx: (Math.random()-.5)*.16, vy:(Math.random()-.5)*.16,
-      r: Math.random()<.28 ? 3.2 : 2.1,
+  if ('MutationObserver' in window) {
+    const observer = new MutationObserver(refreshCanvasColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  }
+
+  function resize() {
+    const r = hero.getBoundingClientRect();
+    W = r.width; H = r.height;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  function initNodes() {
+    nodes = Array.from({ length: N_NODES }, (_, i) => ({
+      x: Math.random() * W, y: Math.random() * H,
+      vx: (Math.random() - .5) * .16, vy: (Math.random() - .5) * .16,
+      r: Math.random() < .28 ? 3.2 : 2.1,
       amber: Math.random() < .3,
     }));
   }
 
-  function step(){
-    for (const n of nodes){
+  function step() {
+    for (const n of nodes) {
       n.x += n.vx; n.y += n.vy;
-      if (n.x < -20) n.x = W+20; if (n.x > W+20) n.x = -20;
-      if (n.y < -20) n.y = H+20; if (n.y > H+20) n.y = -20;
+      if (n.x < -20) n.x = W + 20; if (n.x > W + 20) n.x = -20;
+      if (n.y < -20) n.y = H + 20; if (n.y > H + 20) n.y = -20;
     }
   }
 
-  function maybeSpawnPulse(){
+  function maybeSpawnPulse() {
     if (Math.random() > 0.045) return;
     if (nodes.length < 2) return;
-    const a = nodes[Math.floor(Math.random()*nodes.length)];
+    const a = nodes[Math.floor(Math.random() * nodes.length)];
     let best = null, bestD = Infinity;
-    for (const b of nodes){
-      if (b===a) continue;
-      const d = Math.hypot(a.x-b.x, a.y-b.y);
-      if (d < LINK_DIST && d < bestD){ bestD = d; best = b; }
+    for (const b of nodes) {
+      if (b === a) continue;
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d < LINK_DIST && d < bestD) { bestD = d; best = b; }
     }
-    if (best) pulses.push({a, b:best, t:0, dur: 700 + Math.random()*500});
+    if (best) pulses.push({ a, b: best, t: 0, dur: 700 + Math.random() * 500 });
   }
 
   let last = performance.now();
-  function draw(now){
+  function draw(now) {
     const dt = now - last; last = now;
     step();
     maybeSpawnPulse();
 
-    ctx.clearRect(0,0,W,H);
+    ctx.clearRect(0, 0, W, H);
 
-    // edges
-    for (let i=0;i<nodes.length;i++){
-      for (let j=i+1;j<nodes.length;j++){
-        const a=nodes[i], b=nodes[j];
-        const d = Math.hypot(a.x-b.x, a.y-b.y);
-        if (d < LINK_DIST){
-          const alpha = (1 - d/LINK_DIST) * 0.32;
-          ctx.strokeStyle = `rgba(111,227,217,${alpha})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    ctx.lineWidth = 1;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d < LINK_DIST) {
+          ctx.globalAlpha = (1 - d / LINK_DIST) * 0.32;
+          ctx.strokeStyle = edgeColor;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
     }
+    ctx.globalAlpha = 1;
 
-    // pulses (traveling query dots)
+    ctx.shadowColor = pulseColor;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = pulseColor;
     pulses = pulses.filter(p => {
       p.t += dt;
       const k = Math.min(1, p.t / p.dur);
-      const x = p.a.x + (p.b.x - p.a.x)*k;
-      const y = p.a.y + (p.b.y - p.a.y)*k;
-      ctx.save();
-      ctx.shadowColor = '#ffb454'; ctx.shadowBlur = 10;
-      ctx.fillStyle = '#ffb454';
-      ctx.beginPath(); ctx.arc(x,y,2.4,0,Math.PI*2); ctx.fill();
-      ctx.restore();
+      const x = p.a.x + (p.b.x - p.a.x) * k;
+      const y = p.a.y + (p.b.y - p.a.y) * k;
+      ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
       return k < 1;
     });
+    ctx.shadowBlur = 0;
 
-    // nodes
-    for (const n of nodes){
-      ctx.fillStyle = n.amber ? 'rgba(255,180,84,.85)' : 'rgba(111,227,217,.72)';
-      ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2); ctx.fill();
+    for (const n of nodes) {
+      ctx.fillStyle = n.amber ? nodeAccentColor : nodeColor;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
     }
 
     requestAnimationFrame(draw);
   }
 
-  function drawStatic(){
+  function drawStatic() {
     step();
-    ctx.clearRect(0,0,W,H);
-    for (let i=0;i<nodes.length;i++){
-      for (let j=i+1;j<nodes.length;j++){
-        const a=nodes[i], b=nodes[j];
-        const d = Math.hypot(a.x-b.x, a.y-b.y);
-        if (d < LINK_DIST){
-          const alpha = (1 - d/LINK_DIST) * 0.32;
-          ctx.strokeStyle = `rgba(111,227,217,${alpha})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    ctx.clearRect(0, 0, W, H);
+    ctx.lineWidth = 1;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d < LINK_DIST) {
+          ctx.globalAlpha = (1 - d / LINK_DIST) * 0.32;
+          ctx.strokeStyle = edgeColor;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
     }
-    for (const n of nodes){
-      ctx.fillStyle = n.amber ? 'rgba(255,180,84,.8)' : 'rgba(111,227,217,.7)';
-      ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+    for (const n of nodes) {
+      ctx.fillStyle = n.amber ? nodeAccentColor : nodeColor;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
     }
   }
 
-  // The hero can report a 0-width layout box on the very first frame (before
-  // the browser has settled initial layout) — retry via rAF rather than seed
-  // nodes into a collapsed canvas.
-  function start(){
+  function start() {
     resize();
-    if (W < 10 || H < 10){ requestAnimationFrame(start); return; }
+    if (W < 10 || H < 10) { requestAnimationFrame(start); return; }
     initNodes();
-    window.addEventListener('resize', () => { resize(); });
+    refreshCanvasColors();
+    window.addEventListener('resize', () => { resize(); if (reduced) drawStatic(); });
     if (reduced) drawStatic();
     else requestAnimationFrame(draw);
   }
