@@ -10,21 +10,11 @@ import 'dart:io';
 
 import 'cli_util.dart';
 import 'init.dart' show scaffoldVersion, hasClaudeBeginLine;
+import 'freshness.dart';
 import 'model.dart';
 import 'query.dart' show findMemberHits;
+import 'resolve.dart';
 import 'version_skew.dart';
-
-void emit(List<String> lines, int budget, {String? hint}) {
-  for (final l in lines.take(budget)) {
-    stdout.writeln(l);
-  }
-  if (lines.length > budget) {
-    stdout.writeln(
-      '… ${lines.length - budget} more (raise --budget to see all)',
-    );
-    if (hint != null) stdout.writeln('  ($hint)');
-  }
-}
 
 /// `int run(List<String> args)` — dispatches `brief <thing>` (args[0] ==
 /// 'brief') and `passport` (args[0] == 'passport').
@@ -40,7 +30,7 @@ int run(List<String> args) {
     stderr.writeln('usage: brief <provider|area|file|symbol>');
     return 64;
   }
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
   return _brief(graph, positional[1], budget);
 }
@@ -68,17 +58,15 @@ int _brief(Graph graph, String arg, int budget) {
     return 0;
   }
 
-  // 3. unique file-substring match.
-  final fileHits =
-      graph.nodes.where((n) => n.isFile && n.id.contains(arg)).toList();
-  if (fileHits.length == 1) {
-    emit(_fileBrief(graph, fileHits.single), budget, hint: 'raise --budget N');
-    return 0;
-  }
-  if (fileHits.length > 1) {
-    final exact = fileHits.where((h) => h.id.endsWith('/$arg'));
-    if (exact.length == 1) {
-      emit(_fileBrief(graph, exact.single), budget, hint: 'raise --budget N');
+  // 3. file-substring match via the shared resolver (unique substring, else
+  // exact-suffix tiebreak). An ambiguous hit does NOT refuse yet - the arg
+  // may still name a symbol or member below; the refusal only fires when
+  // every later stage also misses.
+  final fileRes = resolveFileArg(graph, arg);
+  if (fileRes is ResolvedFile) {
+    final node = graph.byId['file:${fileRes.path}'];
+    if (node != null) {
+      emit(_fileBrief(graph, node), budget, hint: 'raise --budget N');
       return 0;
     }
   }
@@ -115,7 +103,15 @@ int _brief(Graph graph, String arg, int budget) {
     return 0;
   }
 
-  stdout.writeln('no match — try: find $arg');
+  // Nothing else matched; if the file stage saw multiple candidates, that
+  // ambiguity is the real answer (exit 2, the cannot-answer code).
+  if (fileRes is AmbiguousFile) {
+    printAmbiguous(arg, fileRes.candidates);
+    return 2;
+  }
+
+  stdout.writeln('no match '
+      '(${freshnessClause(graph.stats['files'] ?? 0)}) — try: find $arg');
   return 1;
 }
 
@@ -269,9 +265,7 @@ List<String> _fileBrief(
         final name = d.dstDisplayName;
         final readers = graph.edges
             .where(
-              (e) =>
-                  e.dst == dstId &&
-                  const {'watches', 'reads', 'listens'}.contains(e.rel),
+              (e) => e.dst == dstId && providerConsumerRels.contains(e.rel),
             )
             .map((e) => e.src.replaceFirst('file:', ''))
             .toSet()
@@ -389,9 +383,7 @@ List<String> _areaBrief(Graph graph, String prefix) {
     final id = p.id;
     final n = graph.edges
         .where(
-          (e) =>
-              e.dst == id &&
-              const {'watches', 'reads', 'listens'}.contains(e.rel),
+          (e) => e.dst == id && providerConsumerRels.contains(e.rel),
         )
         .length;
     readerCount[p.name!] = n;
@@ -520,7 +512,7 @@ int _passport() {
   final nudge = _skewNudge();
   if (nudge != null) stdout.writeln(nudge);
 
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
   final files = graph.nodes.where((n) => n.isFile).toList();
   final providers = graph.nodes.where((n) => n.isProvider).toList();
@@ -581,9 +573,7 @@ int _passport() {
     final id = p.id;
     final n = graph.edges
         .where(
-          (e) =>
-              e.dst == id &&
-              const {'watches', 'reads', 'listens'}.contains(e.rel),
+          (e) => e.dst == id && providerConsumerRels.contains(e.rel),
         )
         .length;
     readerCount[p.name!] = (readerCount[p.name!] ?? 0) + n;

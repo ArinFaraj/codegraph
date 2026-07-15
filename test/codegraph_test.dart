@@ -5,6 +5,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:codegraph/src/cli_util.dart' as cli_util;
 import 'package:codegraph/src/doctor.dart' as doctor;
 import 'package:codegraph/src/engine.dart' as engine;
 import 'package:codegraph/src/init.dart' as scaffold;
@@ -252,6 +253,155 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
       expect(decoded['truncated'], isTrue);
     },
   );
+
+  test(
+    'callers --resolved attributes same-named methods to their real target '
+    '(element identity vs name-match lumping)',
+    () {
+      // Two unrelated classes each declaring `foo`, called once each. Syntax
+      // name-match lumps both under "foo (2 declarations)"; element identity
+      // attributes each site to A.foo vs B.foo.
+      writeFixturePackageConfig(tempDir);
+      File('${tempDir.path}/lib/samename.dart').writeAsStringSync('''
+class A { int foo() => 1; }
+class B { int foo() => 2; }
+int useA(A a) => a.foo();
+int useB(B b) => b.foo();
+''');
+      engine.build(const []);
+      final result = Process.runSync(
+        'dart',
+        [cliSnapshot, 'callers', 'foo', '--resolved', '--json', '--no-rebuild'],
+      );
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      final decoded =
+          jsonDecode(result.stdout as String) as Map<String, dynamic>;
+      expect(decoded['resolved'], isTrue);
+      final targets = (decoded['targets'] as Map).keys.toSet();
+      // The whole point: distinct targets, not one lumped `foo`.
+      expect(targets, containsAll(<String>['A.foo', 'B.foo']));
+    },
+  );
+
+  test(
+    'callers --resolved reports the override chain (refactor-safety context)',
+    () {
+      // Derived.compute overrides Base.compute - a signature change must touch
+      // both. The resolved path must surface that; syntax name-match cannot.
+      writeFixturePackageConfig(tempDir);
+      File('${tempDir.path}/lib/override_case.dart').writeAsStringSync('''
+class Base { int compute() => 0; }
+class Derived extends Base {
+  @override
+  int compute() => 1;
+}
+int useD(Derived d) => d.compute();
+''');
+      engine.build(const []);
+      final result = Process.runSync(
+        'dart',
+        [
+          cliSnapshot,
+          'callers',
+          'compute',
+          '--resolved',
+          '--json',
+          '--no-rebuild',
+        ],
+      );
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      final decoded =
+          jsonDecode(result.stdout as String) as Map<String, dynamic>;
+      final overrides = decoded['overrides'] as Map<String, dynamic>?;
+      expect(overrides, isNotNull,
+          reason: 'Derived.compute overrides Base.compute');
+      expect(overrides!.keys, contains('Derived.compute'));
+      expect((overrides['Derived.compute'] as List).join(),
+          contains('Base.compute'));
+    },
+  );
+
+  test(
+    'rename --apply rewrites only the target element sites, never same-named '
+    'siblings on unrelated classes',
+    () {
+      writeFixturePackageConfig(tempDir);
+      File('${tempDir.path}/lib/rn.dart').writeAsStringSync('''
+class A { void helper() {} void run() { helper(); } }
+class B { void helper() {} void go() { helper(); } }
+''');
+      engine.build(const []);
+      final res = Process.runSync(
+        'dart',
+        [cliSnapshot, 'rename', 'A.helper', 'prep', '--apply', '--no-rebuild'],
+      );
+      expect(res.exitCode, 0, reason: res.stderr as String);
+      final txt = File('${tempDir.path}/lib/rn.dart').readAsStringSync();
+      // A's decl + call site renamed; B's identical-named method untouched.
+      expect(txt, contains('void prep() {} void run() { prep(); }'));
+      expect(txt, contains('void helper() {} void go() { helper(); }'));
+    },
+  );
+
+  test(
+      'rename renames a whole in-project override set together (base + all '
+      'overrides + call sites), leaving unrelated same-named methods alone',
+      () {
+    writeFixturePackageConfig(tempDir);
+    File('${tempDir.path}/lib/rn2.dart').writeAsStringSync('''
+abstract class Base { int compute(); }
+class SubA extends Base { @override int compute() => 1; }
+class SubB implements Base { @override int compute() => 2; }
+class Free { int compute() => 9; }
+int useBase(Base b) => b.compute();
+''');
+    engine.build(const []);
+    final res = Process.runSync(
+      'dart',
+      [
+        cliSnapshot,
+        'rename',
+        'SubA.compute',
+        'calc',
+        '--apply',
+        '--no-rebuild'
+      ],
+    );
+    expect(res.exitCode, 0, reason: res.stderr as String);
+    final txt = File('${tempDir.path}/lib/rn2.dart').readAsStringSync();
+    expect(txt, contains('abstract class Base { int calc(); }'));
+    expect(txt, contains('class SubA extends Base { @override int calc()'));
+    expect(txt, contains('class SubB implements Base { @override int calc()'));
+    expect(txt, contains('b.calc()'));
+    expect(txt, contains('class Free { int compute() => 9; }')); // untouched
+  });
+
+  test('rename refuses an external-base override and an ambiguous name', () {
+    writeFixturePackageConfig(tempDir);
+    File('${tempDir.path}/lib/rn3.dart').writeAsStringSync('''
+import 'package:riverpod/riverpod.dart';
+
+class MyNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+}
+class Freestanding { int build() => 1; }
+''');
+    engine.build(const []);
+    // MyNotifier.build overrides riverpod's Notifier.build (out of project) ->
+    // refuse: a rename would break the framework override contract.
+    final ext = Process.runSync(
+      'dart',
+      [cliSnapshot, 'rename', 'MyNotifier.build', 'make', '--no-rebuild'],
+    );
+    expect(ext.exitCode, 3, reason: ext.stdout as String);
+    // Bare `build` spans the MyNotifier set + unrelated Freestanding -> ambiguous.
+    final amb = Process.runSync(
+      'dart',
+      [cliSnapshot, 'rename', 'build', 'make', '--no-rebuild'],
+    );
+    expect(amb.exitCode, 3);
+  });
 
   test(
     'brief on a provider with 12+ fan-in importers keeps every line under '
@@ -729,10 +879,14 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
   test('skeleton exits 1 when the resolved file is missing on disk', () {
     engine.build(const []);
     File('lib/home/home_page.dart').deleteSync();
+    // --no-rebuild keeps the graph stale on purpose: the scenario under test
+    // is "graph resolves the file, disk read fails". Without it the deletion
+    // triggers the freshness auto-rebuild and the file is simply not found.
     final result = Process.runSync('dart', [
       cliSnapshot,
       'skeleton',
       'home_page.dart',
+      '--no-rebuild',
     ]);
     expect(result.exitCode, 1);
   });
@@ -791,7 +945,7 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
       'zzzznonsensetoken',
     ]);
     expect(result.exitCode, 1);
-    expect(result.stdout as String, contains('no match — try: find'));
+    expect(result.stdout as String, contains('no match (graph fresh,'));
   });
 
   test(
@@ -946,7 +1100,7 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
       expect(stats.keys.last, 'testFiles');
       // format is the FIRST stats key (0.6.0 Stage 1 pinned position).
       expect(stats.keys.first, 'format');
-      expect(stats['format'], 5);
+      expect(stats['format'], 6);
 
       final homeProviderFile = nodes.firstWhere(
         (n) => n['id'] == 'file:lib/home/home_provider.dart',
@@ -1243,7 +1397,7 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
       [cliSnapshot, 'impact', 'zzzznonsensetoken'],
     );
     expect(result.exitCode, 1);
-    expect(result.stdout as String, contains('no match — try: find'));
+    expect(result.stdout as String, contains('no match (graph fresh,'));
   });
 
   test(
@@ -1279,7 +1433,73 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
       [cliSnapshot, 'find', 'fancy', 'zzz'],
     );
     expect(result.exitCode, 0);
-    expect(result.stdout as String, contains('(no matches)'));
+    // Typed empty (0.10): freshness stated, plus the verb's scope caveat.
+    expect(result.stdout as String, contains('no matches (graph fresh,'));
+    expect(result.stdout as String, contains('caveat:'));
+  });
+
+  test(
+      '0.10 typed empties: impls distinguishes "no subtypes" from '
+      '"no such type"; readers/callers not-found state freshness', () {
+    engine.build(const []);
+    String out(List<String> args) =>
+        Process.runSync('dart', [cliSnapshot, ...args]).stdout as String;
+
+    // HomePage exists but nothing extends it -> a real answer, not absence.
+    expect(out(['impls', 'HomePage']), contains('no subtypes - HomePage is '));
+    // A nonsense type -> absence, stated against a fresh graph.
+    expect(out(['impls', 'ZzzNoSuchType']),
+        contains('no such type - graph fresh,'));
+    expect(out(['readers', 'zzzNoSuchProvider']), contains('(graph fresh,'));
+    expect(out(['callers', 'zzzNoSuchFn']), contains('graph fresh,'));
+  });
+
+  test(
+      '0.10 JSON envelope: query verbs carry fresh + caveats additively '
+      '(existing keys untouched)', () {
+    engine.build(const []);
+    Map<String, dynamic> json(List<String> args) => jsonDecode(
+        Process.runSync('dart', [cliSnapshot, ...args, '--json']).stdout
+            as String) as Map<String, dynamic>;
+
+    final readers = json(['readers', 'homeProvider']);
+    expect(readers['fresh'], isTrue);
+    expect(readers['caveats'], isNotEmpty);
+    expect(readers['results'], isNotEmpty); // pre-envelope key still present
+
+    final find = json(['find', 'HomePage']);
+    expect(find['fresh'], isTrue);
+    expect(find['caveats'], isNotEmpty);
+    expect(find['results'], isNotEmpty);
+  });
+
+  test('disclosure caveats: readers discloses ProviderScope overrides', () {
+    // Guards the 2.0 disclosure against being dropped in a caveat rewrite.
+    expect(
+        cli_util.verbCaveats['readers']!.join(' '), contains('ProviderScope'));
+    expect(cli_util.verbCaveats['provider']!.join(' '), contains('family'));
+    expect(cli_util.verbCaveats['callers']!.join(' '), contains('same-named'));
+    expect(cli_util.verbCaveats['refs']!.join(' '), contains('same-named'));
+    expect(cli_util.verbCaveats['untested']!.join(' '), contains('credit'));
+  });
+
+  test(
+      'callers --json flags a name with multiple declarations via '
+      'ambiguousDeclarations', () {
+    engine.build(const []);
+    Map<String, dynamic> json(List<String> args) => jsonDecode(
+        Process.runSync('dart', [cliSnapshot, ...args, '--json']).stdout
+            as String) as Map<String, dynamic>;
+
+    // chainDupTarget is declared twice in the fixture (Batch B ambiguity).
+    final dup = json(['callers', 'chainDupTarget']);
+    expect((dup['declarations'] as List).length, 2);
+    expect(dup['ambiguousDeclarations'], 2);
+
+    // Single declaration: the key stays absent (additive, not noise).
+    final single = json(['callers', 'formatHomeTitle']);
+    expect((single['declarations'] as List).length, 1);
+    expect(single.containsKey('ambiguousDeclarations'), isFalse);
   });
 
   test(
@@ -2692,6 +2912,73 @@ class HomePage {
   );
 
   test(
+    'ambiguous file arg exits 2 with the candidate list on wiring, skeleton, '
+    'and impact (shared resolver, 2.0 Batch C)',
+    () {
+      engine.build(const []);
+      // Two fixture files share the basename dup_base.dart, so the
+      // exact-suffix tiebreak matches BOTH and the arg stays ambiguous.
+      for (final verb in ['wiring', 'skeleton', 'impact']) {
+        final result = Process.runSync(
+          'dart',
+          [cliSnapshot, verb, 'dup_base.dart'],
+        );
+        final out = result.stdout as String;
+        expect(result.exitCode, 2, reason: '$verb: $out${result.stderr}');
+        expect(out, contains('"dup_base.dart" is ambiguous'), reason: verb);
+        expect(out, contains('lib/ambig/a/dup_base.dart'), reason: verb);
+        expect(out, contains('lib/ambig/b/dup_base.dart'), reason: verb);
+      }
+    },
+  );
+
+  test(
+    'exact-suffix file arg resolves identically across wiring, skeleton, '
+    'and impact (shared resolver, 2.0 Batch C)',
+    () {
+      engine.build(const []);
+      // 'target.dart' is a substring of several files (fanin_target.dart,
+      // material_page_target.dart, ...) but exactly one path ends with
+      // '/target.dart' - the suffix tiebreak must pick lib/calls/target.dart
+      // in every verb (wiring previously hard-failed on ANY 2+ matches).
+      for (final verb in ['wiring', 'skeleton', 'impact']) {
+        final result = Process.runSync(
+          'dart',
+          [cliSnapshot, verb, 'target.dart'],
+        );
+        final out = result.stdout as String;
+        expect(result.exitCode, 0, reason: '$verb: $out${result.stderr}');
+        // impact prints the seed's dependents, not the seed path itself -
+        // caller_a.dart imports lib/calls/target.dart, so its presence proves
+        // the seed resolved to the right file.
+        expect(
+          out,
+          contains(
+            verb == 'impact'
+                ? 'lib/calls/caller_a.dart'
+                : 'lib/calls/target.dart',
+          ),
+          reason: verb,
+        );
+        expect(out, isNot(contains('is ambiguous')), reason: verb);
+      }
+    },
+  );
+
+  test(
+    'lint returns 64 on malformed codegraph.json without exiting the process '
+    '(LintConfig.load throws, run() catches - 2.0 Batch C)',
+    () {
+      engine.build(const []);
+      File('codegraph.json').writeAsStringSync('{not valid json');
+      // In-process call: before this change LintConfig.load exit(64)ed the
+      // whole process (this test could not even exist); now run() maps the
+      // typed exception to the same exit code.
+      expect(lint.run(const ['lint']), 64);
+    },
+  );
+
+  test(
     'init --ci writes a workflow with the PR-comment step and fetch-depth',
     () {
       scaffold.init(
@@ -3192,9 +3479,11 @@ class HomePage {
 
     test('passport prints the skew nudge even with NO graph present (exit 66)',
         () {
-      // Install stale scaffolding but do NOT build → Graph.load() returns null.
+      // Install stale scaffolding but do NOT build. --no-rebuild keeps the
+      // no-graph state reachable (default behavior now auto-builds it).
       scaffold.init(const [], version: '0.0.1', repoUrl: 'https://x');
-      final result = Process.runSync('dart', [cliSnapshot, 'passport']);
+      final result =
+          Process.runSync('dart', [cliSnapshot, 'passport', '--no-rebuild']);
       expect(result.exitCode, 66);
       expect(
           result.stdout as String,
@@ -4092,6 +4381,227 @@ final bProvider = StateProvider<int>((ref) => 2);
       final r = Process.runSync(
           'dart', [cliSnapshot, 'blueprint', 'lib/features/nope']);
       expect(r.exitCode, 64);
+    });
+  });
+
+  group('Batch B correctness fixes', () {
+    test(
+        'callchain refuses an ambiguous callee AT THE DEPTH CAP (d==0), not '
+        'just mid-tree', () {
+      engine.build(const []);
+      // chainAmbigEntry -> chainDupTarget, and chainDupTarget is declared by
+      // two unrelated classes in two different files. At --depth 1 the
+      // callee lands exactly at the depth cap (the common leaf position) -
+      // the bug let the ambiguity gate skip there and silently resolve to
+      // decls.first (the alphabetically-first declaring file).
+      final j = Process.runSync('dart', [
+        cliSnapshot,
+        'callchain',
+        'chainAmbigEntry',
+        '--depth',
+        '1',
+        '--json',
+      ]);
+      expect(j.exitCode, 0);
+      final root = (jsonDecode(j.stdout as String)
+          as Map<String, dynamic>)['roots'] as List;
+      final entry = (root.first as Map<String, dynamic>);
+      expect(entry['name'], 'chainAmbigEntry');
+      final leaf = (entry['calls'] as List).first as Map<String, dynamic>;
+      expect(leaf['name'], 'chainDupTarget');
+      expect(leaf['ambiguous'], 2,
+          reason: 'two same-named declarations at the leaf position must '
+              'refuse, not silently pick decls.first');
+      expect(leaf.containsKey('site'), isFalse,
+          reason: 'an ambiguous callee must not carry a resolved file:line');
+
+      final text = Process.runSync('dart',
+          [cliSnapshot, 'callchain', 'chainAmbigEntry', '--depth', '1']);
+      expect(text.exitCode, 0);
+      final out = text.stdout as String;
+      expect(out, contains('ambiguous'));
+      // Neither declaring file must be printed as if it were the resolved
+      // site - that was the silent-wrong-answer bug.
+      expect(out, isNot(contains('chain_ambig_a.dart')));
+      expect(out, isNot(contains('chain_ambig_b.dart')));
+    });
+
+    test(
+        'impls Shape includes a mixin\'s `on` clause and an extension '
+        'type\'s `implements` clause', () {
+      engine.build(const []);
+      final r =
+          Process.runSync('dart', [cliSnapshot, 'impls', 'Shape', '--json']);
+      expect(r.exitCode, 0);
+      final results = (jsonDecode(r.stdout as String)
+          as Map<String, dynamic>)['results'] as List;
+      final subtypes =
+          results.cast<Map<String, dynamic>>().map((e) => e['subtype']);
+      expect(subtypes, contains('FixMixinGuard'),
+          reason: 'a mixin\'s `on` clause is a stated supertype fact and '
+              'must produce an implements/extends edge like a class does');
+      expect(subtypes, contains('ShapeBox'),
+          reason: 'an extension type\'s `implements` clause must do the '
+              'same');
+    });
+
+    test('build surfaces a stderr note when a file has parse errors', () {
+      File('lib/broken/broken_file.dart')
+        ..parent.createSync(recursive: true)
+        // Unbalanced braces: a blatant, unrecoverable syntax error.
+        ..writeAsStringSync('class Broken {\n  void oops() {\n');
+      final r = Process.runSync('dart', [cliSnapshot, 'build']);
+      expect(r.exitCode, 0,
+          reason: 'a syntax error in one file must not abort the build');
+      expect(r.stderr as String, contains('parse errors'));
+      expect(r.stderr as String, contains('lib/broken/broken_file.dart'));
+    });
+  });
+
+  group('intent verbs (2.0 Batch D)', () {
+    test('uses <provider> renders the same reader lines as readers', () {
+      engine.build(const []);
+      final uses =
+          Process.runSync('dart', [cliSnapshot, 'uses', 'homeProvider']);
+      expect(uses.exitCode, 0, reason: uses.stderr as String);
+      final usesOut = uses.stdout as String;
+      final readersOut =
+          Process.runSync('dart', [cliSnapshot, 'readers', 'homeProvider'])
+              .stdout as String;
+      // Every line of the readers card (minus its own caveat trailer) must
+      // appear verbatim in the uses output - uses delegates, not reimplements.
+      for (final line in readersOut.split('\n')) {
+        if (line.isEmpty || line.startsWith('caveat:')) continue;
+        expect(usesOut, contains(line));
+      }
+      expect(usesOut, contains('caveat:'));
+    });
+
+    test('uses <Type> renders the transitive subtype tree (impls)', () {
+      engine.build(const []);
+      final r = Process.runSync('dart', [cliSnapshot, 'uses', 'Shape']);
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      final out = r.stdout as String;
+      expect(out, contains('Circle -> Shape'));
+      expect(out, contains('NamedCircle -> Circle'));
+    });
+
+    test('uses <function> renders the call sites callers finds', () {
+      engine.build(const []);
+      final r = Process.runSync('dart', [cliSnapshot, 'uses', 'pingTarget']);
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      final out = r.stdout as String;
+      expect(out, contains('callers of pingTarget'));
+      expect(out, contains('lib/calls/caller_a.dart'));
+      expect(out, contains('lib/calls/caller_b.dart'));
+      // The refs pointer, so tear-offs/type uses aren't silently absent.
+      expect(out, contains('refs pingTarget'));
+    });
+
+    test('uses <file> shows inbound wiring (importers)', () {
+      engine.build(const []);
+      final r =
+          Process.runSync('dart', [cliSnapshot, 'uses', 'home_page.dart']);
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      final out = r.stdout as String;
+      expect(out, contains('imported-by'));
+      expect(out, contains('lib/impact_area/home_page_importer.dart'));
+    });
+
+    test('uses on an ambiguous file substring exits 2 with candidates', () {
+      engine.build(const []);
+      final r = Process.runSync('dart', [cliSnapshot, 'uses', 'dup_base.dart']);
+      expect(r.exitCode, 2, reason: r.stdout as String);
+      expect(r.stdout as String, contains('"dup_base.dart" is ambiguous'));
+    });
+
+    test('change <provider> renders impact, subtype/state, and coverage', () {
+      engine.build(const []);
+      final r =
+          Process.runSync('dart', [cliSnapshot, 'change', 'homeProvider']);
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      final out = r.stdout as String;
+      expect(out, contains('change homeProvider - pre-change pack'));
+      expect(out, contains('impact of homeProvider  (depth 2)'));
+      // homeProvider is a plain Provider - no Notifier tree, said explicitly.
+      expect(out, contains('subtype tree'));
+      expect(out, contains('untested in blast radius'));
+
+      // A Notifier-backed provider expands the ACTUAL subtype tree of its
+      // Notifier class plus the state-type follow-up (the expanded shape
+      // hint - the canonical missed-subclass failure).
+      final c =
+          Process.runSync('dart', [cliSnapshot, 'change', 'counterProvider']);
+      expect(c.exitCode, 0, reason: c.stderr as String);
+      final cOut = c.stdout as String;
+      expect(cOut, contains('impact of counterProvider  (depth 2)'));
+      expect(cOut, contains('implementers / subtypes of CounterNotifier'));
+      expect(cOut, contains('refs CounterState'));
+    });
+
+    test('health renders attention sections + unused/untested counts', () {
+      engine.build(const []);
+      final r = Process.runSync(
+        'dart',
+        [cliSnapshot, 'health', '--budget', '999'],
+      );
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      final out = r.stdout as String;
+      // An attention section header (shared computation, not a copy).
+      expect(out, contains('## Ambiguous providers'));
+      // Unused + untested summaries with counts.
+      expect(out, matches(RegExp(r'providers with 0 lib consumers \(\d+\):')));
+      expect(out, matches(RegExp(r'files nothing imports \(\d+\):')));
+      expect(
+        out,
+        matches(RegExp(r'providers with zero test references \(\d+\):')),
+      );
+      expect(
+        out,
+        matches(RegExp(r'files with zero test references \(\d+\):')),
+      );
+      expect(out, contains('caveat:'));
+    });
+
+    test('plan is blueprint under its intent name (identical output)', () {
+      engine.build(const []);
+      final plan = Process.runSync(
+        'dart',
+        [cliSnapshot, 'plan', 'lib/features/sample'],
+      );
+      final blueprint = Process.runSync(
+        'dart',
+        [cliSnapshot, 'blueprint', 'lib/features/sample'],
+      );
+      expect(plan.exitCode, 0, reason: plan.stderr as String);
+      expect(plan.stdout, blueprint.stdout);
+    });
+
+    test('review is diff under its intent name', () {
+      engine.build(const []);
+      Process.runSync('git', ['init', '-q', '-b', 'main']);
+      Process.runSync('git', ['config', 'user.email', 'test@example.com']);
+      Process.runSync('git', ['config', 'user.name', 'test']);
+      Process.runSync('git', ['add', '-A']);
+      Process.runSync('git', [
+        'commit',
+        '-q',
+        '-m',
+        'base',
+        '--author=test <test@example.com>',
+      ]);
+      File('lib/home/home_zzz_orphan.dart')
+          .writeAsStringSync('class HomeZzzOrphan {}\n// touched\n');
+
+      final r = Process.runSync(
+        'dart',
+        [cliSnapshot, 'review', '--base', 'main'],
+      );
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      final out = r.stdout as String;
+      expect(out, startsWith('diff vs main (merge-base '));
+      expect(out, contains('blast radius'));
+      expect(out, contains('changed but untested:'));
     });
   });
 }

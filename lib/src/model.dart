@@ -30,7 +30,20 @@ const _defaultGraphPath = 'docs/maps/code_graph.json';
 /// Current wire-format generation (`stats.format`). Bumped on additive schema
 /// changes; `Graph.load()` warns (stderr, never fails) when a loaded graph's
 /// `format` is missing (pre-0.6) or newer than this binary knows.
-const graphFormatVersion = 5;
+const graphFormatVersion = 6;
+
+/// THE set of provider-consumer relations (`GraphEdge.rel` values a reader
+/// edge can carry). Adding a relation means updating only this constant —
+/// every consumer (unused-provider detection, in-degree counts, brief/query
+/// rendering) reads from here instead of copy-pasting the literal set.
+const providerConsumerRels = {'watches', 'reads', 'listens'};
+
+/// Roles a file needs to have to count as a coverage gap in `untested files`
+/// — the Standard-07-shaped set (view/controller/repository/provider); a
+/// `misc`/`widget`/etc. file isn't expected to carry its own test file.
+/// Shared by `query.dart`'s `untested` verb and `diff.dart`'s blast-radius
+/// card so the definition of "untested" cannot drift between them.
+const untestedRoles = {'view', 'controller', 'repository', 'provider'};
 
 /// A node in the graph: a `file` (one per parsed Dart file) or a `provider`
 /// (one per Riverpod provider declaration).
@@ -196,6 +209,9 @@ class GraphEdge {
     this.candidates,
     this.detail,
     this.unresolved = false,
+    this.childName,
+    this.parentName,
+    this.confidence = 'heuristic',
   });
 
   factory GraphEdge.fromJson(Map<String, dynamic> j) => GraphEdge(
@@ -208,6 +224,9 @@ class GraphEdge {
         candidates: (j['candidates'] as List?)?.cast<String>(),
         detail: j['detail'] as String?,
         unresolved: j['unresolved'] == true,
+        childName: j['child'] as String?,
+        parentName: j['parent'] as String?,
+        confidence: j['confidence'] as String? ?? 'heuristic',
       );
 
   final String src;
@@ -218,6 +237,25 @@ class GraphEdge {
   final bool ambiguous;
   final List<String>? candidates;
   final String? detail;
+
+  /// Typed subtype-edge fields (format 6+): the subclass/subtype name and the
+  /// supertype name it names in its extends/implements/with/on clause. Set on
+  /// `implements/extends` edges only. Null on graphs written before format 6
+  /// (and on every other edge kind) — callers fall back to parsing [detail]'s
+  /// `'child -> parent'` text for those.
+  final String? childName;
+  final String? parentName;
+
+  /// How this edge was derived (3.0 Stage 2, the NEVER-GUESS doctrine as data):
+  ///   `resolved`  - backed by element identity (the analyzer confirmed it),
+  ///                 e.g. a reader whose receiver's static type IS a Ref.
+  ///   `heuristic` - a name/token/URI match, not element-confirmed (the default
+  ///                 and the only value a syntax build can produce).
+  ///   `guessed`   - inferred via a refusal-gated substitution (e.g. nav
+  ///                 constant inlining).
+  /// Lets a query or the future actuator filter by trust (act only on
+  /// `resolved`). Absent in JSON means `heuristic` (kept lean like the flags).
+  final String confidence;
 
   /// True on a `navigates` edge when no sibling `navigates-to` edge (same
   /// `src`+`line`) was emitted — the resolver couldn't map the nav target to
@@ -257,6 +295,9 @@ class GraphEdge {
         if (line != null) 'line': line,
         if (detail != null) 'detail': detail,
         if (unresolved) 'unresolved': true,
+        if (childName != null) 'child': childName,
+        if (parentName != null) 'parent': parentName,
+        if (confidence != 'heuristic') 'confidence': confidence,
       };
 }
 
@@ -382,7 +423,7 @@ class Graph {
   List<GraphNode> get unusedProviders {
     final consumed = <String>{};
     for (final e in edges) {
-      if (const {'reads', 'watches', 'listens'}.contains(e.rel)) {
+      if (providerConsumerRels.contains(e.rel)) {
         consumed.add(e.dst);
       }
     }

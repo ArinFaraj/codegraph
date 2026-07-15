@@ -1,14 +1,14 @@
 {
-  "generated": "2026-07-08T08:22:59.987700Z",
+  "generated": "2026-07-09T22:56:55.245823Z",
   "fixture": "test/fixture.dart",
   "scenarios": 12,
   "summary": {
     "codegraphAvgF1": 0.958,
-    "grepAvgF1": 0.707,
+    "grepAvgF1": 0.79,
     "codegraphAvgRecall": 1.0,
-    "grepAvgRecall": 0.818,
+    "grepAvgRecall": 0.902,
     "codegraphAvgPrecision": 0.944,
-    "grepAvgPrecision": 0.661,
+    "grepAvgPrecision": 0.744,
     "codegraphWins": 9,
     "grepWins": 0,
     "ties": 3
@@ -32,8 +32,8 @@
         ],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 119
+        "outputChars": 335,
+        "wallMs": 98
       },
       "grep": {
         "arm": "grep",
@@ -49,7 +49,7 @@
         ],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 3
+        "outputChars": 105
       },
       "winner": "tie"
     },
@@ -68,8 +68,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 108
+        "outputChars": 149,
+        "wallMs": 93
       },
       "grep": {
         "arm": "grep",
@@ -82,7 +82,7 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1
+        "outputChars": 49
       },
       "winner": "tie"
     },
@@ -101,8 +101,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 113
+        "outputChars": 120,
+        "wallMs": 94
       },
       "grep": {
         "arm": "grep",
@@ -115,7 +115,7 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1
+        "outputChars": 25
       },
       "winner": "tie"
     },
@@ -134,8 +134,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 112
+        "outputChars": 195,
+        "wallMs": 94
       },
       "grep": {
         "arm": "grep",
@@ -150,14 +150,14 @@
         ],
         "misses": [],
         "toolCalls": 3,
-        "outputLines": 2
+        "outputChars": 43
       },
       "winner": "codegraph"
     },
     {
       "id": "provider-readers-precision",
       "category": "trust",
-      "agentQuestion": "Readers of counterProvider — must EXCLUDE the non-ref `_Bag().listen` and the bare-token mention (false-positive guard)",
+      "agentQuestion": "Readers of counterProvider - must EXCLUDE the non-ref `_Bag().listen` and the bare-token mention (false-positive guard)",
       "codegraph": {
         "arm": "codegraph",
         "recall": 1.0,
@@ -169,8 +169,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 124
+        "outputChars": 399,
+        "wallMs": 92
       },
       "grep": {
         "arm": "grep",
@@ -186,7 +186,7 @@
         ],
         "misses": [],
         "toolCalls": 3,
-        "outputLines": 5
+        "outputChars": 181
       },
       "winner": "codegraph"
     },
@@ -205,8 +205,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 171
+        "outputChars": 275,
+        "wallMs": 143
       },
       "grep": {
         "arm": "grep",
@@ -222,7 +222,7 @@
         ],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 4
+        "outputChars": 101
       },
       "winner": "codegraph"
     },
@@ -241,8 +241,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 121
+        "outputChars": 228,
+        "wallMs": 107
       },
       "grep": {
         "arm": "grep",
@@ -255,7 +255,7 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 2,
-        "outputLines": 1
+        "outputChars": 19
       },
       "winner": "codegraph (tie, fewer tools)"
     },
@@ -274,8 +274,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 111
+        "outputChars": 330,
+        "wallMs": 110
       },
       "grep": {
         "arm": "grep",
@@ -288,7 +288,7 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 2,
-        "outputLines": 1
+        "outputChars": 23
       },
       "winner": "codegraph (tie, fewer tools)"
     },
@@ -307,30 +307,28 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 96
+        "outputChars": 172,
+        "wallMs": 115
       },
       "grep": {
         "arm": "grep",
-        "recall": 0.0,
-        "precision": 0.0,
-        "f1": 0.0,
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
         "truthCount": 1,
-        "foundCount": 0,
-        "intersectionCount": 0,
+        "foundCount": 1,
+        "intersectionCount": 1,
         "falsePositives": [],
-        "misses": [
-          "lib/impact_area/home_page_importer.dart"
-        ],
+        "misses": [],
         "toolCalls": 4,
-        "outputLines": 0
+        "outputChars": 39
       },
-      "winner": "codegraph"
+      "winner": "codegraph (tie, fewer tools)"
     },
     {
       "id": "duplicate-provider-readers",
       "category": "wiring",
-      "agentQuestion": "Readers of dupProvider (two declarations — both readers)?",
+      "agentQuestion": "Readers of dupProvider (two declarations - both readers)?",
       "codegraph": {
         "arm": "codegraph",
         "recall": 1.0,
@@ -342,8 +340,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 93
+        "outputChars": 322,
+        "wallMs": 105
       },
       "grep": {
         "arm": "grep",
@@ -356,7 +354,7 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 3,
-        "outputLines": 2
+        "outputChars": 43
       },
       "winner": "codegraph (tie, fewer tools)"
     },
@@ -375,8 +373,8 @@
         "falsePositives": [],
         "misses": [],
         "toolCalls": 1,
-        "outputLines": 1,
-        "wallMs": 109
+        "outputChars": 3204,
+        "wallMs": 115
       },
       "grep": {
         "arm": "grep",
@@ -392,14 +390,14 @@
           "unreachableProvider"
         ],
         "toolCalls": 15,
-        "outputLines": 9
+        "outputChars": 172
       },
       "winner": "codegraph"
     },
     {
       "id": "ambiguous-class-refusal",
       "category": "trust",
-      "agentQuestion": "DupUser extends DupBase — graph must refuse, not first-wins a file",
+      "agentQuestion": "DupUser extends DupBase - graph must refuse, not first-wins a file. Checked on the SHIPPED CLI surface (impls --json ambiguous flag), not just the in-memory edge - a real agent only sees the CLI.",
       "codegraph": {
         "arm": "codegraph",
         "recall": 1.0,
@@ -410,9 +408,9 @@
         "intersectionCount": 1,
         "falsePositives": [],
         "misses": [],
-        "toolCalls": 0,
-        "outputLines": 1,
-        "wallMs": 0
+        "toolCalls": 1,
+        "outputChars": 260,
+        "wallMs": 122
       },
       "grep": {
         "arm": "grep",
@@ -429,7 +427,7 @@
           "refused"
         ],
         "toolCalls": 1,
-        "outputLines": 1
+        "outputChars": 25
       },
       "winner": "codegraph",
       "structuralOk": true

@@ -15,6 +15,8 @@
 //                                          (if .cursor/ exists or --cursor passed)
 import 'dart:io';
 
+import 'cli_util.dart' show runGit;
+
 void init(List<String> args,
     {required String version, required String repoUrl}) {
   if (!File('pubspec.yaml').existsSync()) {
@@ -47,7 +49,7 @@ Done. Next steps:
   2. codegraph doctor         # verify the install
   3. commit CLAUDE.md, .claude/, docs/maps/*.md (NOT code_graph.json — gitignored)
 Engine wrong or missing a relation? Fix it at $repoUrl, changelog it there,
-then update everywhere: dart pub global activate -sgit $repoUrl''');
+then update everywhere: dart pub global activate -sgit $repoUrl --git-ref v$version''');
 }
 
 /// Whole-line begin marker of a REAL generated block: `<!-- codegraph:begin -->`
@@ -222,15 +224,8 @@ void _gitignoreGraphJson() {
 /// was gitignored), print a one-time migration hint. Never fails init if git
 /// is unavailable or the file simply isn't tracked.
 void _migrationHint() {
-  final ProcessResult result;
-  try {
-    result = Process.runSync(
-      'git',
-      ['ls-files', '--error-unmatch', _graphJsonEntry],
-    );
-  } on ProcessException {
-    return;
-  }
+  final result = runGit(['ls-files', '--error-unmatch', _graphJsonEntry]);
+  if (result == null) return;
   if (result.exitCode == 0) {
     stdout.writeln(
       'NOTE  $_graphJsonEntry is tracked by git — untrack it: '
@@ -244,12 +239,8 @@ void _migrationHint() {
 /// monorepo, and the generated hook self-locates the package from there.
 /// Never fails init if git is unavailable or this isn't a git repo.
 void _monorepoGuidance() {
-  final ProcessResult result;
-  try {
-    result = Process.runSync('git', ['rev-parse', '--show-toplevel']);
-  } on ProcessException {
-    return;
-  }
+  final result = runGit(['rev-parse', '--show-toplevel']);
+  if (result == null) return;
   if (result.exitCode != 0) return;
   final gitRoot = (result.stdout as String).trim();
   final pkgRoot = Directory.current.resolveSymbolicLinksSync();
@@ -420,7 +411,7 @@ fi
 GRAPH=docs/maps/code_graph.json
 CG="\$(command -v codegraph || echo "\$HOME/.pub-cache/bin/codegraph")"
 if [ ! -x "\$CG" ]; then
-  echo "codegraph not installed — dart pub global activate -sgit $repoUrl"
+  echo "codegraph not installed — dart pub global activate -sgit $repoUrl --git-ref v$version"
   exit 0
 fi
 
@@ -538,7 +529,7 @@ returns something wrong or incomplete:
    generic wording — no product or vendor SDK names).
 2. Fix the engine in a clone of $repoUrl (`lib/src/engine.dart` extraction,
    `lib/src/query.dart` queries), add a CHANGELOG.md line, commit/tag.
-3. Update the installed CLI: `dart pub global activate -sgit $repoUrl`
+3. Update the installed CLI: `dart pub global activate -sgit $repoUrl --git-ref v$version`
 4. `codegraph build` here to regenerate with the fix.
 
 If instead you learn a reusable *codebase* pattern (not an engine bug), capture
@@ -568,6 +559,12 @@ Dart analyzer but uses pragmatic resolution:
   helpers or read the declaring class.
 - **`impact` resolves providers and files, not methods** — for a method
   signature change, use `callers <method>` + `impls <Interface>` instead.
+- **ProviderScope overrides are not modeled** - readers/wiring tell you who
+  SUBSCRIBES to a provider, not which implementation RUNS in a given scope
+  (bootstrap/test/route overrides can swap it).
+- **`callers`/`refs` match by name across ALL same-named declarations**, so
+  counts can be inflated; family providers collapse to one node (every
+  instance is the same edge).
 - **OpenAPI / generated model changes** (field removals on DTOs) are outside
   the graph — `find` locates the class but not what changed; use `git diff` on
   the API package or the regen report.
@@ -613,7 +610,7 @@ jobs:
           fetch-depth: 0
       - uses: dart-lang/setup-dart@v1
       # codegraph parses syntax only — the host project needs NO pub get.
-      - run: dart pub global activate -sgit $repoUrl
+      - run: dart pub global activate -sgit $repoUrl --git-ref v$version
       - name: Check AI navigation maps are fresh
         run: dart pub global run codegraph:codegraph check
       # Fails on NEW architecture violations. First run: author codegraph.json, then

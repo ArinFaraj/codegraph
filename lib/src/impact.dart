@@ -6,7 +6,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
+import 'freshness.dart';
 import 'model.dart';
+import 'resolve.dart';
 
 /// One BFS step: file ids that directly depend on any id in [nodeIds].
 /// A file F depends on X if:
@@ -47,38 +49,62 @@ Set<String> dependentsOf(Graph g, Set<String> nodeIds) {
   return out;
 }
 
-/// Resolves `arg` to a seed node-id set exactly like `wiring`/`skeleton`:
-/// 1. exact provider name (ALL declarations when ambiguous — union readers);
-/// 2. unique file substring (exact-suffix tiebreak, else ambiguous list);
-/// else null (caller prints the `find` hint).
-Set<String>? _resolveSeed(Graph graph, String arg, int budget) {
-  final providerDecls =
-      graph.nodes.where((n) => n.isProvider && n.name == arg).toList();
-  if (providerDecls.isNotEmpty) {
-    return providerDecls.map((n) => n.id).toSet();
-  }
-
-  final hits = graph.nodes
-      .where((n) => n.isFile && n.id.contains(arg))
-      .map((n) => n.id)
-      .toList();
-  if (hits.length == 1) return {hits.first};
-  final exact = hits.where((h) => h.endsWith('/$arg') || h.endsWith(':$arg'));
-  if (exact.length == 1) return {exact.first};
-  if (hits.length > 1) {
-    stdout.writeln('"$arg" is ambiguous (${hits.length} files):');
-    for (final h in hits.take(budget)) {
-      stdout.writeln('  ${h.replaceFirst('file:', '')}');
-    }
-    return null;
-  }
-  return null;
-}
-
 String _renderFile(Graph g, GraphNode n) {
   final bare = n.id.replaceFirst('file:', '');
   final role = n.role == 'view' ? ' [view]' : '';
   return '  $bare$role${inDegSuffix(g.inDeg[n.id] ?? 0)}';
+}
+
+/// Level-by-level dependents BFS from [seed] (providers participate only at
+/// the seed step; deeper levels are files), each level sorted in-degree desc
+/// then name. Shared by `impact` and `change` (intent.dart).
+List<List<GraphNode>> impactLevels(Graph graph, Set<String> seed, int depth) {
+  final seen = <String>{...seed};
+  final levels = <List<String>>[];
+  var frontier = seed;
+  for (var k = 1; k <= depth; k++) {
+    final next = dependentsOf(graph, frontier)
+        .where((id) => id.startsWith('file:') && !seen.contains(id))
+        .toSet();
+    if (next.isEmpty) break;
+    seen.addAll(next);
+    levels.add(next.toList());
+    frontier = next;
+  }
+  int byDegThenName(GraphNode a, GraphNode b) {
+    final byDeg = (graph.inDeg[b.id] ?? 0).compareTo(graph.inDeg[a.id] ?? 0);
+    return byDeg != 0 ? byDeg : a.id.compareTo(b.id);
+  }
+
+  return levels
+      .map((ids) =>
+          ids.map((id) => graph.byId[id]).whereType<GraphNode>().toList()
+            ..sort(byDegThenName))
+      .toList();
+}
+
+/// The impact card's text lines (header + affected counts + per-level top
+/// 15) - shared by `impact`'s text mode and `change`'s dependents section.
+List<String> renderImpactLines(
+  Graph graph,
+  String arg,
+  int depth,
+  List<List<GraphNode>> sortedLevels, {
+  String? depthWarning,
+}) {
+  final allFiles = sortedLevels.expand((ns) => ns).toList();
+  final pages = allFiles.where((n) => n.role == 'view').length;
+  final out = <String>['impact of $arg  (depth $depth)'];
+  if (depthWarning != null) out.add(depthWarning);
+  out.add('affected: ${allFiles.length} files ($pages pages) at depth<=$depth');
+  for (var i = 0; i < sortedLevels.length; i++) {
+    final ns = sortedLevels[i];
+    out.add('');
+    out.add('depth ${i + 1} (${ns.length}):');
+    out.addAll(ns.take(15).map((n) => _renderFile(graph, n)));
+    if (ns.length > 15) out.add('  … ${ns.length - 15} more');
+  }
+  return out;
 }
 
 /// `int run(List<String> args)` — `impact <thing> [--depth N] [--json]
@@ -95,7 +121,7 @@ int run(List<String> args) {
   }
   final arg = positional[1];
 
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
 
   String? depthWarning;
@@ -105,40 +131,36 @@ int run(List<String> args) {
     depth = 5;
   }
 
-  final seed = _resolveSeed(graph, arg, budget);
-  if (seed == null) {
-    if (!asJson) stdout.writeln('no match — try: find $arg');
-    return 1;
+  // Seed resolution: exact provider name first (ALL declarations when
+  // ambiguous - union readers), else the shared file resolver (same
+  // semantics as wiring/skeleton/path/brief).
+  final providerDecls =
+      graph.nodes.where((n) => n.isProvider && n.name == arg).toList();
+  final Set<String> seed;
+  if (providerDecls.isNotEmpty) {
+    seed = providerDecls.map((n) => n.id).toSet();
+  } else {
+    switch (resolveFileArg(graph, arg)) {
+      case NotFoundFile():
+        if (!asJson) {
+          stdout.writeln('no match '
+              '(${freshnessClause(graph.stats['files'] ?? 0)}) — '
+              'try: find $arg');
+        }
+        return 1;
+      case AmbiguousFile(:final candidates):
+        printAmbiguous(arg, candidates, cap: budget);
+        return 2;
+      case ResolvedFile(:final path):
+        seed = {'file:$path'};
+    }
   }
 
   // Level 1..N: level k = dependentsOf(level k-1 FILES) minus everything
   // already seen. Providers only participate at the seed (level-0) step.
-  final seen = <String>{...seed};
-  final levels = <List<String>>[];
-  var frontier = seed;
-  for (var k = 1; k <= depth; k++) {
-    final next = dependentsOf(graph, frontier)
-        .where((id) => id.startsWith('file:') && !seen.contains(id))
-        .toSet();
-    if (next.isEmpty) break;
-    seen.addAll(next);
-    levels.add(next.toList());
-    frontier = next;
-  }
-
-  final levelNodes = levels
-      .map((ids) => ids.map((id) => graph.byId[id]).whereType<GraphNode>())
-      .toList();
-  final allFiles = levelNodes.expand((ns) => ns).toList();
+  final sortedLevels = impactLevels(graph, seed, depth);
+  final allFiles = sortedLevels.expand((ns) => ns).toList();
   final pages = allFiles.where((n) => n.role == 'view').length;
-
-  int Function(GraphNode, GraphNode) byDegThenName() => (a, b) {
-        final byDeg =
-            (graph.inDeg[b.id] ?? 0).compareTo(graph.inDeg[a.id] ?? 0);
-        return byDeg != 0 ? byDeg : a.id.compareTo(b.id);
-      };
-  final sortedLevels =
-      levelNodes.map((ns) => ns.toList()..sort(byDegThenName())).toList();
 
   if (asJson) {
     // Each level capped INDEPENDENTLY at `budget` — not via one shared Budget
@@ -161,8 +183,7 @@ int run(List<String> args) {
     ).toList();
     stdout.writeln(
       jsonEncode({
-        'verb': 'impact',
-        'query': arg,
+        ...envelope('impact', arg),
         'depth': depth,
         if (depthWarning != null) 'requestedDepth': requestedDepth,
         'summary': {'files': allFiles.length, 'pages': pages},
@@ -173,16 +194,9 @@ int run(List<String> args) {
     return 0;
   }
 
-  final out = <String>['impact of $arg  (depth $depth)'];
-  if (depthWarning != null) out.add(depthWarning);
-  out.add('affected: ${allFiles.length} files ($pages pages) at depth<=$depth');
-  for (var i = 0; i < sortedLevels.length; i++) {
-    final ns = sortedLevels[i];
-    out.add('');
-    out.add('depth ${i + 1} (${ns.length}):');
-    out.addAll(ns.take(15).map((n) => _renderFile(graph, n)));
-    if (ns.length > 15) out.add('  … ${ns.length - 15} more');
-  }
+  final out = renderImpactLines(graph, arg, depth, sortedLevels,
+      depthWarning: depthWarning);
   emit(out, budget, hint: 'raise --budget N');
+  emitCaveats('impact');
   return 0;
 }

@@ -1,122 +1,65 @@
 # codegraph benchmarks
 
-Three harnesses:
+Four harnesses; the first two are CI gates in this repo, the last two live in
+the private reference host repo (they necessarily name private symbols, which
+the docs-hygiene doctrine keeps out of this public tree).
 
-| Harness | Command | Measures | Reproducible? |
-|---------|---------|----------|---------------|
-| **Usefulness** | `dart run benchmarks/usefulness/run.dart` | Regression gate: codegraph correctness vs **frozen** truth + the grep tool-call delta (test fixture) | Yes, deterministic, CI |
-| **Performance** | `dart run benchmarks/perf.dart` | Build + query wall-clock ms | Yes, deterministic, CI |
-| **Agent quality** | Workflow: `codegraph-benchmark.js` / `codegraph-benchmark-grep.js` | Sonnet agent + Opus judge on a private reference host — end-to-end answer quality | No: private host, LLM noise ±2 |
+| Harness | Where | Command | Measures | Gate? |
+|---------|-------|---------|----------|-------|
+| **Usefulness** | here | `dart run benchmarks/usefulness/run.dart --check` | recall/precision vs frozen truth on the synthetic fixture, + grep A/B | CI, fails on any per-scenario drop below `usefulness/baseline.json` |
+| **Performance** | here | `dart run benchmarks/perf.dart --compare benchmarks/perf_baseline.json` | build + query wall-clock | CI, fails on >15% regression |
+| **Real-repo suite** | reference host, `tools/codegraph_bench/run.dart` | run from the host repo | 12 invariant checks on the real monorepo, each guarding a specific historical bug (hand-verified rg truth, never graph-derived) | local gate - run before every release |
+| **Agent quality** | reference host, `tools/codegraph_bench/*.js` | Workflow tool from the host repo | Sonnet agent + judge A/B (codegraph arm vs grep arm) on end-to-end answer quality | exploratory only |
 
-**Which to trust for which decision.** Usefulness/Performance are the CI gates —
-they fail loudly on a real regression. Agent quality is the exploratory arm: run
-it to find WHERE the tool helps or misleads a real agent, trust its specific
-findings (exact missed/false files), not its aggregate score.
+## Which to trust for which decision
+
+Usefulness + Performance fail loudly in CI on a real regression. The
+real-repo suite catches what a 143-file fixture structurally cannot: package
+discovery at monorepo scale, barrel/export closures, real Riverpod usage
+diversity, name-collision refusal at scale. The agent-quality harness answers
+exactly one question the deterministic suites cannot: does the tool make a
+real agent's final answer better, and does it stay CALIBRATED on behavioral
+questions where structure and runtime truth diverge? Trust its specific
+findings (exact missed files, verified false claims), never its aggregate
+score - expect several points of run-to-run noise at n=1 per scenario.
+
+## Honesty rules (apply to every harness)
+
+1. Ground truth is NEVER derived from codegraph's own output. Fixture truth
+   is frozen literals in `usefulness/scenarios.dart`; real-repo truth is
+   hand-verified rg recipes frozen at a pinned host commit; agent-quality
+   judges must establish truth without running codegraph, for BOTH arms.
+2. Prefer scenarios that can FAIL: false-positive guards and wrong-edge
+   refusals, not just recall. Wrong edges are blockers (the tool's own
+   doctrine), so the benchmark's first job is catching wrong edges.
+3. Both arms of any A/B run the same scenario set under the same judge
+   standard, or their scores are not comparable.
+4. Aggregates are computed in code, never by an LLM judge.
+5. A known engine gap is an `xfail` check, not an undocumented hole - when it
+   starts passing, it is promoted in the engine-fix commit.
+
+## History note (2026-07-10 overhaul)
+
+Benchmark results produced before 2026-07-10 are not comparable to current
+ones. The old setup had: a usefulness harness that was never wired into CI
+and could not fail; a grep arm whose impact recipe could never match a
+`package:` import (its biggest "codegraph win" was a harness bug); an
+output-size metric that always read 1 for codegraph (single-line JSON); an
+ambiguity-refusal scenario that tested an in-memory flag the shipped CLI
+never exposed; and an agent-quality harness whose ground-truth guidance told
+the judge to run codegraph (circular), with arms on different scenario sets,
+judge-computed arithmetic, and pseudonymized symbol names that made the
+committed scenarios unrunnable against the actual host.
 
 ## Usefulness (`benchmarks/usefulness/`)
 
-Deterministic comparison — no LLM judge. See [usefulness/README.md](usefulness/README.md).
+Deterministic, no LLM. See [usefulness/README.md](usefulness/README.md).
+Update floors only after a deliberate change:
+`dart run benchmarks/usefulness/run.dart --write-baseline` (say why in the
+commit).
 
 ## Performance (`benchmarks/perf.dart`)
 
-See [perf_baseline.json](perf_baseline.json).
-
-## Quality benchmark (`codegraph-benchmark.js`)
-
-A repeatable, evidence-first benchmark that scores codegraph on the tasks an AI
-agent actually uses it for — so tool-quality changes are **measured, not
-asserted**. It is the harness that has driven the 0.8.x eval releases.
-
-## What it does
-
-`codegraph-benchmark.js` is a [Workflow](../plans/ROADMAP.md) script (uses
-`agent()`/`pipeline()` — run it via the host's Workflow tool, not `node`). It:
-
-1. Runs one **Sonnet agent per scenario** against a real host repo (a private
-   reference monorepo), told to use codegraph as its primary tool.
-2. Scores each answer with an **Opus judge** that establishes its OWN ground
-   truth **without codegraph** (ripgrep + reads source + `dart analyze`) — the
-   tool under test never defines the truth it is graded against, so a codegraph
-   false edge the agent trusted is caught, not blessed. Grades 0-100 on four
-   dimensions, returning a structured record:
-   - **correctness** — 100 minus a heavy penalty per *verified* false claim.
-   - **completeness** — fraction of ground-truth items/insights captured.
-   - **calibration** — did stated confidence match reality? high+wrong = 0.
-   - **efficiency** — tool-calls vs answer quality.
-   - plus `overTrustedStructure` (did it assert a structural fact as a runtime
-     answer, wrongly?) and the list of verified `falseClaims`.
-3. Aggregates to an overall score (`0.35·correctness + 0.35·completeness +
-   0.20·calibration + 0.10·efficiency`).
-
-## The 8 scenarios (value-prop coverage)
-
-`rel-auth` (relationship), `impact-i18n` (blast radius), `plan-feature`
-(planning/blueprint), `hierarchy-cache` (transitive impls), `multipkg-button`
-(lib↔packages boundary), `behav-staleprofile` + `behav-coldauth` (behavioral —
-weighted 2× to test whether codegraph induces over-confidence on runtime
-questions), `refactor-rename` (completeness incl. notifier subclasses).
-
-## How to run
-
-Invoke the Workflow tool with
-`{ scriptPath: "benchmarks/codegraph-benchmark.js" }` from the reference host's
-working directory, with the codegraph binary you want to test installed
-(`dart pub global activate -sgit … && codegraph build` first). It returns
-`{ summary, results }`.
-
-## Baseline (v0.8.4, private reference host)
-
-overall **91** · correctness 91 · completeness 94 · calibration 85 ·
-efficiency 88 · overTrustedStructure 1/8.
-
-Two findings drove v0.8.5:
-- It **debunked** a hypothesized fix: the "over-confidence on behavioral
-  questions" worry was not systematic — both behavioral scenarios scored 94-95.
-- It **pinpointed** the real gap: `rel-auth` completeness **71**, because
-  `readers` missed bare `read/watch/listen(provider)` calls inside
-  `extension on Ref` bodies (fixed in 0.8.5).
-
-### Delta after v0.8.5 + v0.8.6 (reader-detection fixes)
-
-The benchmark's own weakest scenario (`rel-auth` completeness 71) drove two
-fixes: detect bare `read/watch/listen(provider)` inside `extension on Ref`
-(0.8.5) and `ProviderContainer.read` (0.8.6). Measured DETERMINISTICALLY (the
-aggregate judge score wobbles ±2 within agent/judge noise, so the reliable
-signal is the verb output, not the score): `readers authTokenProvider` went
-**18-19 → 28** (grep ground truth ≈27) — the completeness gap is essentially
-closed. All three originally-missed high-value readers (a Ref extension, a
-dialog helper, and a key-prompt extension) are now caught, zero garbage
-(≥511/513 reads resolve to a declared provider). Residual: cascade
-`ref..listen(provider)` forms (documented in CHANGELOG 0.8.6).
-
-**Lesson:** trust the judge's specific, reproducible findings (exact missed
-files) over its aggregate 0-100 score. Re-run after any tool change and record
-the delta here.
-
-## Performance benchmark (`perf.dart`)
-
-Measures median wall time (ms) over 5 iterations on the **same fixture** as
-`test/fixture.dart`:
-
-- `codegraph build`
-- `find home`, `sym HomePage`, `readers homeProvider`, `impls Shape`
-- `callers pingTarget`, `callchain chainEntry --depth 3`
-
-```bash
-# Capture / refresh baseline after a deliberate perf change:
-dart run benchmarks/perf.dart --write-baseline
-
-# Compare current code against committed baseline (fails on >15% regression
-# unless within 25ms noise floor):
-dart run benchmarks/perf.dart --compare benchmarks/perf_baseline.json
-```
-
-CI runs the compare step after `dart test` on every push/PR.
-
-### Grep control arm
-
-`codegraph-benchmark-grep.js` — same scenario set (+ 5 micro-scenarios), but the
-agent is forbidden from using codegraph. Run both workflows from the reference
-host and compare `summary.overall` / per-scenario completeness.
-
-Shared scenarios: `codegraph-benchmark-scenarios.js`.
+Median wall time over 5 iterations on the same fixture as `test/fixture.dart`.
+Baseline: [perf_baseline.json](perf_baseline.json);
+`--write-baseline` to refresh after a deliberate perf change.

@@ -11,38 +11,15 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 
+import 'cli_util.dart' show emit, envelope, freshnessClause, intFlag;
+import 'freshness.dart';
 import 'model.dart';
-
-int? _intFlag(List<String> args, String name) {
-  final i = args.indexOf(name);
-  if (i >= 0 && i + 1 < args.length) return int.tryParse(args[i + 1]);
-  return null;
-}
-
-/// Resolves `arg` against file nodes in the graph exactly like `query.dart`'s
-/// `_path`'s resolve: unique substring, exact-suffix tiebreak, else ambiguous
-/// list. Returns the bare (non-`file:`-prefixed) path, or `null`.
-String? _resolve(List<GraphNode> nodes, String arg, int budget) {
-  final hits = nodes
-      .where((n) => n.isFile && n.id.contains(arg))
-      .map((n) => n.id)
-      .toList();
-  if (hits.length == 1) return hits.first.replaceFirst('file:', '');
-  final exact = hits.where((h) => h.endsWith('/$arg') || h.endsWith(':$arg'));
-  if (exact.length == 1) return exact.first.replaceFirst('file:', '');
-  if (hits.length > 1) {
-    stdout.writeln('"$arg" is ambiguous (${hits.length} files):');
-    for (final h in hits.take(budget)) {
-      stdout.writeln('  ${h.replaceFirst('file:', '')}');
-    }
-  }
-  return null;
-}
+import 'resolve.dart';
 
 /// `int run(List<String> args)` — resolve + parse + print a file's outline.
 int run(List<String> args) {
   final positional = args.where((a) => !a.startsWith('--')).toList();
-  final budget = _intFlag(args, '--budget') ?? 80;
+  final budget = intFlag(args, '--budget') ?? 80;
   final asJson = args.contains('--json');
   if (positional.length < 2) {
     stderr.writeln('usage: skeleton <file-substring>');
@@ -50,16 +27,20 @@ int run(List<String> args) {
   }
   final arg = positional[1];
 
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
-  final nodes = graph.nodes;
 
-  final path = _resolve(nodes, arg, budget);
-  if (path == null) {
-    if (nodes.every((n) => !n.isFile || !n.id.contains(arg))) {
-      stdout.writeln('no file matches "$arg" — try `find $arg`');
-    }
-    return 0;
+  final String path;
+  switch (resolveFileArg(graph, arg)) {
+    case NotFoundFile():
+      stdout.writeln('no file matches "$arg" '
+          '(${freshnessClause(graph.stats['files'] ?? 0)}) — try `find $arg`');
+      return 0;
+    case AmbiguousFile(:final candidates):
+      printAmbiguous(arg, candidates, cap: budget);
+      return 2;
+    case ResolvedFile(path: final p):
+      path = p;
   }
 
   final file = File(path);
@@ -151,8 +132,7 @@ int run(List<String> args) {
     final capped = lines.take(budget).toList();
     stdout.writeln(
       jsonEncode({
-        'verb': 'skeleton',
-        'query': arg,
+        ...envelope('skeleton', arg),
         'file': path,
         'lines': lineCount,
         'declarations': capped,
@@ -163,22 +143,10 @@ int run(List<String> args) {
   }
 
   stdout.writeln('$path  ($lineCount lines)');
-  _emit(
+  emit(
     lines,
     budget,
     hint: 'raise --budget ${lines.length}',
   );
   return 0;
-}
-
-void _emit(List<String> lines, int budget, {String? hint}) {
-  for (final l in lines.take(budget)) {
-    stdout.writeln(l);
-  }
-  if (lines.length > budget) {
-    stdout.writeln(
-      '… ${lines.length - budget} more (raise --budget to see all)',
-    );
-    if (hint != null) stdout.writeln('  ($hint)');
-  }
 }

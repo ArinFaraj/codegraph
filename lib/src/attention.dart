@@ -10,6 +10,8 @@
 // enforced by the caller (build() doesn't call the verb-only section).
 import 'dart:io';
 
+import 'cli_util.dart' show intFlag, runGit;
+import 'freshness.dart';
 import 'model.dart';
 
 const _header = '''
@@ -59,7 +61,7 @@ AttentionSection _ambiguousProviders(Graph graph) {
       (e) =>
           e.dst == 'provider:$name' &&
           e.isUnresolvedAmbiguous &&
-          const {'reads', 'watches', 'listens'}.contains(e.rel),
+          providerConsumerRels.contains(e.rel),
     );
     lines.add(
       '- `$name` — declared in ${files.map((f) => '`$f`').join(', ')} '
@@ -202,26 +204,13 @@ void writeAttentionMd(Graph graph) {
   File('docs/maps/ATTENTION.md').writeAsStringSync(renderAttention(graph));
 }
 
-int? _intFlag(List<String> args, String name) {
-  final i = args.indexOf(name);
-  if (i >= 0 && i + 1 < args.length) return int.tryParse(args[i + 1]);
-  return null;
-}
-
 /// Last-commit epoch seconds for a git-tracked path, or null if git fails,
 /// isn't installed, or the path is untracked (empty stdout) — all three
 /// cases mean "skip silently": staleness detection is a nice-to-have, never
 /// a hard requirement.
 int? _lastCommitEpoch(String path) {
-  final ProcessResult result;
-  try {
-    result = Process.runSync(
-      'git',
-      ['log', '-1', '--format=%ct', '--', path],
-    );
-  } on ProcessException {
-    return null;
-  }
+  final result = runGit(['log', '-1', '--format=%ct', '--', path]);
+  if (result == null) return null;
   if (result.exitCode != 0) return null;
   final out = (result.stdout as String).trim();
   if (out.isEmpty) return null;
@@ -286,9 +275,9 @@ List<String> _staleNotesLines() {
 /// as a total line cap across the whole rendered output, same convention as
 /// every other query verb.
 int run(List<String> args) {
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
-  final budget = _intFlag(args, '--budget') ?? 80;
+  final budget = intFlag(args, '--budget') ?? 80;
 
   final buf = StringBuffer(renderAttention(graph));
   final stale = _staleNotesLines();

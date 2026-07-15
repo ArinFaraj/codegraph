@@ -3,6 +3,233 @@
 Design history — including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## 3.0.0 - 2026-07-14 - "v3" (resolved analysis + the actuator turn)
+
+The direction change: from a better-grep to a resolved knowledge-and-action
+system. The 2.0 audit's verdict was that every documented ceiling traced to one
+decision - syntax-only parsing. 3.0 reopens it. This is v3: NO backwards
+compatibility - wire format, graph shape, CLI defaults, and doctrine all change
+freely; a stale graph rebuilds itself. Design docs: plans/BRD-actuator.md
+(vision), plans/knowledge-model.md (the layered-memory model), plans/
+3.0-resolved-core.md and plans/3.1-actuator-rename.md (execution). Validated at
+every step on a real 1546-file Flutter app.
+
+### Resolved analysis is the default
+
+- **`build` resolves by default** via the analyzer's element model
+  (`AnalysisContextCollection`). Syntax-only is the automatic zero-setup
+  fallback (no `.dart_tool/package_config.json`), the explicit `--syntax`
+  opt-out, and the per-file fallback when one file will not resolve. Explicit
+  `--resolved` with no package_config refuses with a `pub get` instruction.
+  Cost on the reference host: ~33s / ~2.3GB cold vs ~2.5s / 230MB syntax - the
+  "once in a while" build budget. Doctrine item 1 ("syntax-only; Ever") is
+  replaced.
+- **GoRoute constructor form**: syntax parsing misparses `GoRoute(...)` as a
+  method call; under resolution it is an InstanceCreationExpression. The
+  extractor now handles both, so resolved builds stay at least as complete as
+  syntax (found via the reference host - resolved had been dropping 39 nav
+  edges).
+
+### Element identity where name-match was wrong (the ceilings fall)
+
+- **readers by receiver type**: a `.watch/.read/.listen` receiver is a reader
+  when its STATIC TYPE is (a subtype of) Ref/WidgetRef/ProviderContainer,
+  whatever it is named - catches renamed parameters, aliases, and container
+  getters the name allow-list misses (+23 real reader edges on the reference
+  host, 0 lost).
+- **subtype edges** carry element-confirmed identity; on the reference host all
+  1708 implements/extends edges are element-resolved under resolution.
+- **`GraphEdge.confidence`** = `resolved | heuristic | guessed` - the
+  NEVER-GUESS doctrine as a queryable column (emitted only when not
+  `heuristic`). `readers` marks `[unconfirmed]` (name-matched, not
+  element-confirmed) edges in a resolved build. Build prints an honesty metric
+  (element-resolved reader / subtype fraction).
+
+### callers/refs and the actuator
+
+- **`callers|refs <Symbol> --resolved`**: element-precise, attributes each call
+  site to its real target (`HomePage.build` vs `SettingsPage.build`) instead of
+  lumping every same-named method, and reports the target's inheritance override
+  chain (external/framework base = unsafe to touch). The refactor-safety brain,
+  read-only. Query-time whole-context resolution (slow; opt-in).
+- **`rename <Symbol|Class.method> <newName>`** - the first WRITE actuator.
+  Element-precise: renames the declaration and every element-resolved reference,
+  including a whole in-project override set (base + all overrides + siblings +
+  call sites) together. Refuses anything it cannot do completely and safely -
+  ambiguous target, external/framework-base override, incomplete resolution,
+  missing package_config - every failure a refusal with a reason, never a
+  partial (build-breaking) edit. Dry-run by default; `--apply` writes; refusal
+  exit code 3.
+
+### Deferred (not in 3.0)
+
+- The warm daemon (fast resolved queries) - the resolved query cost is the
+  "once in a while" case, so this waits on evidence the latency is real
+  friction. Signature-change actuator and whole-hierarchy public-API scope
+  checks are the next actuator frontier.
+
+## 2.0.0 - 2026-07-11 - "v2" (the everything-the-audit-found release)
+
+A four-lens adversarial audit (architecture, positioning, correctness
+ceilings, measured performance) found the engine precise but the surface,
+structure, and disclosures at ~40% of potential. 2.0 fixes every finding
+fixable inside the syntax-only execution model (plans/2.0-v2.md; the
+resolved-analysis daemon is 2.1). Wire format 5 -> 6.
+
+### Intent surface (plans/0.10-intent-surface.md)
+
+- **Five intent verbs**, composed from the existing internals, are now the
+  front door: `uses <thing>` (every inbound relation, sections auto-picked by
+  what the argument resolves to - provider readers, impls tree, call sites,
+  or a file's inbound wiring), `change <thing>` (the pre-change pack:
+  depth-2 dependents + the Notifier subtype tree + state-type follow-ups +
+  untested-in-blast-radius - kills the canonical "renamed the provider,
+  missed the subclasses" failure), `review` (= diff: blast radius +
+  changed-but-untested + lint new-violations), `health` (attention + unused +
+  untested in one card), `plan` (= blueprint). Old verbs remain as the
+  low-level surface; help text restructured to 30 lines, intent verbs first.
+- **Exit-code contract**: 0 answered (typed empties included), 2 ambiguous
+  file argument (candidates listed), 64 usage, 66 no graph.
+
+### Structure (the architecture audit's findings, all fixed)
+
+- **ONE shared file-arg resolver** (lib/src/resolve.dart, typed
+  Resolved/Ambiguous/NotFound) replaces six divergent per-verb copies that
+  could resolve the same input four different ways (wiring had no tiebreak,
+  brief missed the `:$arg` suffix case). Ambiguity now refuses consistently
+  and exits 2 everywhere.
+- **registry.dart extraction**: FileInfo + decl record types moved out of
+  engine.dart; the engine<->nav_resolution import cycle is genuinely broken.
+- **Engine module globals gone**: `_self`/`_packages` are parameters threaded
+  through parsing; nav counters returned from `_writeGraph` instead of reset
+  globals.
+- **Typed subtype edges**: implements/extends edges carry `child`/`parent`
+  fields; the `' -> '` detail-string re-parsing is dead (format 6; `detail`
+  kept for display).
+- **LintConfig.load throws** (LintConfigException) instead of exit()ing
+  library-deep; lint's CLI behavior unchanged; diff's lint section now
+  degrades instead of dying on malformed codegraph.json.
+- Hygiene: `providerConsumerRels`/`untestedRoles` constants replace 9
+  copy-pasted literal sets; skeleton/brief/attention shadow copies of
+  cli_util functions deleted; one `runGit` guard replaces 6 hand-rolled
+  ProcessException guards.
+
+### Correctness
+
+- **callchain ambiguity bug fixed**: an ambiguous callee landing exactly at
+  the depth cap silently resolved to `decls.first` (file/line/hazards of the
+  wrong body) - the refusal is now unconditional. Regression fixture added.
+- **Mixin `on` constraints and extension-type `implements`** are captured as
+  subtype edges (stated facts previously dropped silently by _collect).
+- **Parse diagnostics surfaced**: build prints one stderr line when N files
+  had parse errors (a half-edited file no longer folds silently into truth).
+- **Under-disclosed gaps now disclosed at use time** (caveat registry + the
+  LIMITATIONS seed): ProviderScope overrides are not modeled (who SUBSCRIBES
+  vs which implementation RUNS), callers/refs same-name count inflation
+  (plus an additive `ambiguousDeclarations` JSON key), family-provider
+  collapse to one node, testRefs cross-declaration credit bleed.
+
+### Performance / ops
+
+- **Freshness stat fast path**: queries check a stat digest (path+size+mtime)
+  first and only fall back to the full content hash on mismatch - the
+  ~150ms/query content walk drops to a stat walk when nothing changed. A
+  query never writes; mtime churn without content change costs the fallback
+  until the next build.
+- `--no-rebuild` now skips the digest walk entirely (freshness reported as
+  "unchecked", never claimed).
+- **Version lock test**: binaryVersion must equal pubspec version (they had
+  already drifted once). Host scaffolding templates now pin activation to
+  `--git-ref v<version>` instead of silently tracking main.
+
+## 0.10.0 - folded into 2.0.0 - "Trust the envelope" (shipped as part of 2.0.0)
+
+- **A stale graph can no longer answer silently.** `build` stores a
+  deterministic content digest of everything it read (`stats.sourceDigest`,
+  FNV-1a 64 over host pubspec + each scanned .dart file's path and content -
+  no wall clock, so identical source still produces byte-identical output and
+  the `check()` gate is unaffected; inserted before `testFiles` so both
+  pinned stats positions hold). Every query verb re-derives the digest and,
+  on mismatch or missing graph, AUTO-REBUILDS in place (~2s on a 1.5k-file
+  host, one stderr line, stdout untouched so `--json` stays parseable), then
+  answers from the fresh graph. Global `--no-rebuild` opts out (stale answers
+  carry a stderr warning). This deletes the documented trap where `find`
+  returned "(no matches)" for a symbol that plainly existed because the graph
+  predated the file. Steady-state cost when fresh: the digest walk, well
+  under 100ms on the reference host.
+- **Typed empty results.** A bare "(no matches)" never appears again - every
+  not-found states the graph's freshness and file count ("no matches (graph
+  fresh, 1519 files indexed)"), or flags GRAPH STALE when --no-rebuild kept an
+  old graph. `impls` now distinguishes "no subtypes - X is declared at
+  file:line" (a real answer) from "no such type" (absence); `callers` with a
+  known declaration but zero sites says so instead of a generic none.
+- **Caveats travel with answers.** Every query verb's text output ends with a
+  one-line scope caveat from a single registry in cli_util.dart (e.g.
+  readers: "file-level and lib-only; reads through wrapper objects
+  (x.ref.read) are not detected"; unused: "CANDIDATES, not verdicts...").
+  LIMITATIONS.md remains the long-form registry; the answer now carries the
+  line that prevents over-trust at the moment of use.
+- **Shared --json envelope (additive).** Query verbs now emit `fresh` (bool)
+  and `caveats` (list) alongside the existing keys via one `envelope()`
+  helper; no existing key moved or changed, so downstream parsers are
+  unaffected. Exit-code contract note: 0 = answered (typed empties included);
+  a distinct cannot-answer code lands with the shared resolver (the only
+  stage-1 item deferred - no verb hard-refuses today, so there is no trigger
+  path yet).
+
+## 0.9.8 - 2026-07-10 - benchmark overhaul (the "measure honestly" release)
+
+An external review of the whole benchmark story (four parallel audit agents +
+hand ground-truthing on the reference host) found the harnesses were partly
+measuring themselves. Everything below is fixes to measurement, plus one CLI
+surface change.
+
+- **`impls` now surfaces `ambiguous` on subtype edges** (JSON field + an
+  `[AMBIGUOUS: ...]` text marker). The refuse-not-guess doctrine existed only
+  on the in-memory edge before; a real agent running the CLI got a confident,
+  unqualified answer. The usefulness scenario now checks the SHIPPED surface.
+- **Usefulness benchmark is now an actual CI gate.** It was documented as
+  "the CI gate" but was not in ci.yml and had no pass/fail logic at all
+  (always exit 0). New: committed per-scenario recall/precision floors
+  (`usefulness/baseline.json`), `--check` fails on any drop, `--write-baseline`
+  refreshes after deliberate changes, CI runs `--check` on every push.
+- **Grep-arm harness bugs fixed** (they inflated codegraph's win):
+  - the impact recipe located seed files by grepping their own CONTENT for
+    their filename (a file rarely mentions its own name) and matched importers
+    on the on-disk `lib/` path, which can never appear in a `package:` import.
+    Its 0.00 F1 was a harness bug, not a grep weakness - it now scores 1.00
+    on the same scenario (codegraph still wins on tool calls, 1 vs 4).
+  - the output-size metric compared codegraph's newline count (always 1:
+    single-line JSON) against grep's item count. Now `outputChars` on both
+    arms.
+  - grep tool-call constants documented as charitable lower bounds, not
+    measured counts.
+- **Agent-quality (LLM) harness moved to the reference host repo** and
+  rebuilt. The committed copy violated the honesty doctrine in 8 of 13
+  scenarios: `gt` fields literally told the judge to run codegraph to
+  establish ground truth (circular - the exact failure mode the usefulness
+  README warns about), the two arms ran different scenario sets under
+  different judge rubrics (scores not comparable), the judge did the weighted
+  arithmetic itself, and the 0.9.7 name-scrubbing had left symbol names that
+  do not exist on the host (scenarios unrunnable as committed). Host-specific
+  scenarios cannot be both runnable and name-free, so they now live in the
+  private host repo (`tools/codegraph_bench/`); both arms share one scenario
+  set + one judge rubric, judges are forbidden codegraph for truth in BOTH
+  arms, aggregates are computed in code, and results pin the host commit.
+  Old scores (the "overall 91" baseline) are not comparable to new runs.
+  Removed stale README claims: behavioral 2x weighting (never implemented),
+  "+/-2 noise" (never measured).
+- **New real-repo regression suite** in the reference host
+  (`tools/codegraph_bench/run.dart`): 12 deterministic invariant checks
+  against rg-verified frozen truth at a pinned host commit, each guarding a
+  specific historical bug (cascade readers, test-fake impls, duplicate-symbol
+  scale, barrel export closure, field-held refs, comment false positives,
+  phrase find, member sym, backup-dir shadowing, non-provider redirect).
+  Includes one `xfail`: reads through wrapper-object receivers
+  (`x.ref.read(...)` where the wrapper is not a known ref name) are invisible
+  to the engine's literal receiver allow-list - found while ground-truthing,
+  encoded as a known gap that flips visible when fixed.
+
 ## 0.9.7 — 2026-07-08 — docs-hygiene doctrine in all agent templates
 
 - **Skill, CLAUDE.md block, Cursor rule, and LIMITATIONS seed** now carry an

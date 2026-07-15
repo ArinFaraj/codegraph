@@ -9,125 +9,20 @@
 // plus the orchestration entry point `resolveNavigation` that builds the
 // route/name tables `engine.dart`'s `build()` used to construct inline.
 //
-// Imports `engine.dart` for the shared registry types (`FileInfo`,
-// `ClassDecl`, `Reachability`) rather than the reverse — those types are
-// core-registry concerns engine.dart's non-nav code (provider resolution,
-// markdown rendering) also depends on, so keeping them there and importing
-// them here is the one-directional edge (no cycle).
+// Imports `registry.dart` for the shared registry types (`FileInfo` and the
+// small decl/record types this module's own resolution logic reads off it —
+// `ConstantDecl`, `HelperRouteDecl`, `HelperCallSite`; `GoRouteDecl` is read
+// only through `FileInfo.goRoutes`, never named directly) and `resolution.dart`
+// for `ClassResolver`/`Reachability`. Both are leaves (neither imports this
+// file or engine.dart back), so this really is the one-directional edge the
+// old comment claimed but engine.dart's FileInfo definition made false —
+// engine.dart imported this file too, a cycle.
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
-import 'engine.dart' show FileInfo;
+import 'registry.dart'
+    show ConstantDecl, FileInfo, HelperCallSite, HelperRouteDecl;
 import 'resolution.dart' show ClassResolver, Reachability;
-
-/// A `GoRoute(...)` (or `StatefulShellRoute`/etc — only `GoRoute` observed in
-/// practice, see Stage 4 discovery notes) constructor call collected during
-/// `_collect`/`_Visitor`: the `path:` argument's SOURCE TEXT (unresolved —
-/// resolution against `navigates` expressions happens once, project-wide, in
-/// `build()`) and the first class-registry-resolvable type instantiated
-/// inside `builder:`/`pageBuilder:`, if any. [name] is the `name:` argument's
-/// quoted-string SOURCE TEXT (including quotes, e.g. `'lit'`) when present —
-/// mechanism (c)'s `goNamed` half (0.5.0) matches this by exact
-/// string equality against a `goNamed('lit')` nav expression's own quoted
-/// first-arg source text, the same "match the source text verbatim, never
-/// guess" doctrine `_normalizeAppPathsExpr` already uses.
-class GoRouteDecl {
-  GoRouteDecl(
-    this.pathExpr,
-    this.pageTypeName,
-    this.line, {
-    this.name,
-    this.helperKey,
-  });
-  final String pathExpr;
-  final String? pageTypeName;
-  final int line;
-  final String? name;
-  // Mechanism (b) (0.5.0): set (to `functionName::pathExpr`, the
-  // SAME compound key `_resolveHelperRoutes` writes to its result map) when
-  // this GoRoute's `path:` leading identifier is the enclosing top-level
-  // function's OWN parameter — a direct 1:1 link to the resolved helper
-  // table, so two different GoRoutes that happen to share identical path
-  // SOURCE TEXT (possible across different helper functions) are looked up
-  // independently rather than through one shared path-keyed map. This key
-  // alone does NOT make helper resolution unambiguous — `_resolveHelperRoutes`
-  // additionally requires exactly one function DECLARATION and no
-  // project-wide tear-off reference before trusting `functionName` at all
-  // (the tear-off/unique-declaration gates, 0.5.0); see its doc comment for
-  // the actual identity gates.
-  final String? helperKey;
-}
-
-/// Mechanism (a) — route-constant substitution (0.5.0, gated by the
-/// shadowing/reachability and cross-file-identity checks below): a
-/// project-wide `constantName -> declarations` table built from top-level
-/// variables and static class fields whose initializer is a bare dotted
-/// chain (see `_dottedChainOnly`) — either directly `AppPaths.`-rooted or
-/// referencing another such constant.
-/// [file] is the DECLARING file — needed both to resolve which declaration a
-/// same-named-but-different-file pair is (the cross-file-identity gate) and
-/// to let a file using its OWN constant substitute even though the name is
-/// also in its own `declaredNames` (the shadowing guard's self-reference
-/// exception).
-class ConstantDecl {
-  ConstantDecl(this.name, this.rawInit, this.file);
-  final String name;
-  final String rawInit;
-  final String file;
-}
-
-/// Mechanism (b) — monomorphic helper inlining (0.5.0): a top-level
-/// function whose body contains `GoRoute(path: <param>...)` where the path
-/// expression's leading identifier is one of the function's OWN parameters
-/// (common shape: `GoRoute buildMenuSessionsRoute(Sessions sessionsRoute) {
-/// return GoRoute(path: sessionsRoute.goRoute, ...); }`,
-/// `lib/sessions/sessions_routes.dart`). [paramIndex] is the parameter's
-/// zero-based POSITIONAL index — call-site matching is positional-only (see
-/// `_resolveHelperRoutes` REFUSAL gate), so a named or reordered parameter at
-/// the call site can never line up with this by accident. [pathExpr] is the
-/// GoRoute's raw path source text, substituted at resolution time by
-/// replacing its leading `<param>` identifier with the call-site argument.
-class HelperRouteDecl {
-  HelperRouteDecl(
-    this.functionName,
-    this.paramName,
-    this.paramIndex,
-    this.pathExpr,
-    this.file,
-  );
-  final String functionName;
-  final String paramName;
-  final int paramIndex;
-  final String pathExpr;
-  // The file this helper FUNCTION is declared in (0.5.0) — needed
-  // to require exactly one DECLARATION project-wide, not just one call
-  // site: two unrelated top-level functions that happen to share a name
-  // must never be conflated.
-  final String file;
-}
-
-/// A project-wide call site of a bare top-level function call (`target ==
-/// null`, syntax-only — same "can't tell function from constructor without
-/// resolution" caveat as `GoRoute(...)` itself, see `_Visitor`). Only
-/// POSITIONAL arguments are recorded; [hasNamedArgs] flags a call that mixes
-/// in a named argument so the REFUSAL gate in `_resolveHelperRoutes` can
-/// reject it outright (named/reordered params must never be matched
-/// positionally — that would be guessing).
-class HelperCallSite {
-  HelperCallSite(
-    this.functionName,
-    this.positionalArgs,
-    this.hasNamedArgs,
-    this.file,
-  );
-  final String functionName;
-  final List<String> positionalArgs;
-  final bool hasNamedArgs;
-  // The file this call site lives in (0.5.0) — the tear-off guard
-  // needs to know the call site's OWN file to exempt it (along with the
-  // declaring file) from the "referenced nowhere else" check.
-  final String file;
-}
 
 /// Normalizes an `AppPaths.<chain>` expression to its route-identity prefix
 /// by stripping a single trailing `.goRoute`, `.path`, or `.name` accessor —

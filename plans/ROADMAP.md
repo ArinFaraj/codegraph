@@ -8,9 +8,12 @@ fresh-eyes adversarial review → fix round → release → host rollout.
 
 | Release | Theme | File | Size |
 |---|---|---|---|
-| 0.6.0 | **Trust** — close the gaps that make agents hedge | [0.6.0-trust.md](0.6.0-trust.md) | ~4 stages |
-| 0.7.0 | **Lint** — the graph becomes prescriptive | [0.7.0-lint.md](0.7.0-lint.md) | ~4 stages |
-| 0.8.0 | **Leverage** — CI test selection, risk score, Riverpod rules | [0.8.0-leverage.md](0.8.0-leverage.md) | ~4 stages |
+| 0.6.0 | **Trust** — close the gaps that make agents hedge (shipped) | [0.6.0-trust.md](0.6.0-trust.md) | ~4 stages |
+| 0.7.0 | **Lint** — the graph becomes prescriptive (shipped) | [0.7.0-lint.md](0.7.0-lint.md) | ~4 stages |
+| 0.8.0 | **Leverage** — CI test selection, risk score, Riverpod rules (shipped) | [0.8.0-leverage.md](0.8.0-leverage.md) | ~4 stages |
+| 0.10-0.12 | **Intent** - collapse 22 verbs into 5 agent intents; freshness, typed empties, caveats-on-answers | [0.10-intent-surface.md](0.10-intent-surface.md) | folded into 2.0 |
+| 2.0 | **v2** - every 2026-07-11 audit finding fixed; intent surface; wire format 6 (shipped) | [2.0-v2.md](2.0-v2.md) | 4 batches |
+| 2.1 | **Resolved** - element identity, warm daemon, doctrine amendment | [2.1-resolved.md](2.1-resolved.md) | 4 stages |
 
 ## Why this order
 

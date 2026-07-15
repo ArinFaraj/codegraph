@@ -4,7 +4,7 @@ class UsefulnessScore {
     required this.truth,
     required this.found,
     required this.toolCalls,
-    required this.outputLines,
+    required this.outputChars,
     this.wallMs,
     this.notes = const [],
   })  : intersection = truth.intersection(found),
@@ -14,7 +14,12 @@ class UsefulnessScore {
   final Set<String> truth;
   final Set<String> found;
   final int toolCalls;
-  final int outputLines;
+
+  /// Bytes of tool output an agent would ingest - proxy for context spent.
+  /// Codegraph: raw CLI stdout length. Grep: matched lines joined, the shape
+  /// `rg -l` actually prints. (Was line-count, which was always 1 for the
+  /// single-line JSON codegraph emits - a broken comparison.)
+  final int outputChars;
   final int? wallMs;
   final List<String> notes;
 
@@ -48,7 +53,7 @@ class UsefulnessScore {
         'falsePositives': falsePositives.toList()..sort(),
         'misses': misses.toList()..sort(),
         'toolCalls': toolCalls,
-        'outputLines': outputLines,
+        'outputChars': outputChars,
         if (wallMs != null) 'wallMs': wallMs,
         if (notes.isNotEmpty) 'notes': notes,
       };

@@ -41,28 +41,43 @@ marker-guarded, and an existing `.claude/settings.json` is never rewritten
 
 ## Query (what agents run)
 
+Five intent verbs cover the questions agents actually ask - start here:
+
 ```bash
-codegraph brief <thing>        # one-shot context card — a provider, file, area, or symbol
-codegraph find <substr> [more terms]    # where is X — files, providers, classes/enums/functions (ranked by in-degree)
-codegraph sym <Symbol>         # symbol card: signature, doc, members, imported-by (methods too)
-codegraph skeleton <file>      # per-file outline with line numbers (instead of reading the file)
-codegraph readers <provider>   # who watches/reads/listens it (impact of changing it)
-codegraph callers <Symbol>     # every call site (file:line) of a method/function — incl. tests
-codegraph callchain <Symbol>   # static call tree + control-flow hazard flags
-codegraph refs <Symbol>        # every reference (calls + tear-offs + type/case uses)
-codegraph wiring <file>        # a file's full wiring, both directions
-codegraph impls <Type>         # implementers/subtypes of a type (incl. test fakes)
-codegraph path <A> <B>         # how two files connect
-codegraph unused [providers|files|all]  # dead-code candidates (confirm before deleting!)
-codegraph untested             # coverage gaps: providers/files with zero test references
-codegraph impact <thing>       # transitive dependents (what breaks if this changes)
-codegraph diff [--base <ref>]  # branch blast-radius card — what changed, what it touches
-codegraph passport             # session digest: counts, top areas/files/providers
-codegraph attention            # triage surface — ambiguous providers, orphans, duplicate names, etc.
-codegraph doctor                # verify the install (hook, gitignore, CLAUDE.md, CI gate)
+codegraph find <anything>      # what/where is X - files, providers, symbols, members (ranked)
+codegraph uses <thing>         # who uses X - readers, call sites, subtypes, or importers,
+                               #   sections picked by what X resolves to
+codegraph change <thing>       # what must change if I touch X - dependents + subtype tree
+                               #   + state-type follow-ups + untested-in-blast-radius
+codegraph review [--base ref]  # is my branch safe - blast radius, untested, lint violations
+codegraph health               # where to start - triage, dead-code and coverage candidates
+codegraph plan <feature-dir>   # build-order plan from an exemplar feature
 ```
 
-Start with `brief <thing>` for instant context.
+Low-level verbs (the intent verbs compose these; all still work directly):
+
+```bash
+codegraph brief|sym|skeleton|readers|callers|refs|callchain|wiring|impls|path
+codegraph unused|untested|impact|diff|passport|attention|doctor
+```
+
+Resolved analysis (v3): `build` uses the analyzer's element model by default
+(falls back to syntax-only with no `.dart_tool/package_config.json`; `--syntax`
+forces it). Element identity powers three opt-in, resolution-backed answers
+(slow - whole-context resolution, the "once in a while" refactor case):
+
+```bash
+codegraph callers|refs <Symbol> --resolved   # attribute each call site to its REAL target
+                                             #   (HomePage.build vs SettingsPage.build) +
+                                             #   the inheritance override chain (safe to change?)
+codegraph rename <Symbol|Class.method> <new> # element-precise rename incl. a whole override set;
+                                             #   refuses if unsafe/incomplete; --apply to write
+```
+
+Every answer ends with its scope caveat (what the graph cannot see), every
+not-found states the graph's freshness, and a stale or missing graph rebuilds
+itself automatically (~2s; `--no-rebuild` opts out). Exit codes: 0 answered,
+2 ambiguous argument (candidates listed), 64 usage, 66 no graph.
 
 For an **interface/method signature change**, the typical workflow is:
 

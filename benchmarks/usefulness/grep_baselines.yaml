@@ -2,6 +2,14 @@
 #
 # Each scenario's grep arm is implemented in grep_baseline.dart. These are the
 # documented equivalents an agent would run manually.
+#
+# Honesty notes on the scoring fields in scenarios.dart:
+# - grepToolCalls are FLAT, CHARITABLE lower bounds (the fewest calls a
+#   competent agent could plausibly get away with), not measured counts. Only
+#   untested-providers scales with candidate count. The in-Dart recipes are in
+#   places SMARTER than the listed rg steps (e.g. provider-readers runs one
+#   combined regex pass over all matched files, not a per-file read) - so the
+#   grep arm is favored, never strawmanned.
 
 scenarios:
   locate-symbol:
@@ -70,5 +78,5 @@ scenarios:
   ambiguous-class-refusal:
     agent_habit: "Resolve extends DupBase when two exist"
     grep_steps:
-      - rg -l 'class DupBase' → picks first / lists both with no refusal signal
-    known_weakness: Confident wrong edge — codegraph refuses with ambiguous:true
+      - rg -l 'class DupBase' -> picks first / lists both with no refusal signal
+    known_weakness: Confident wrong edge - codegraph refuses with ambiguous:true

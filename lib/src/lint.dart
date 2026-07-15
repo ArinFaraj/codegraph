@@ -6,10 +6,23 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
+import 'freshness.dart';
 import 'model.dart';
 
 const _configPath = 'codegraph.json';
 const _baselinePath = 'docs/maps/lint-baseline.json';
+
+/// Malformed `codegraph.json`. Thrown by [LintConfig.load] instead of
+/// exit()ing so in-process callers (`diff`'s lint reuse, tests) can catch;
+/// `run()` turns it back into the same stderr message + exit 64 the CLI
+/// always had.
+class LintConfigException implements Exception {
+  LintConfigException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
 
 /// A single architecture-rule violation. [from] is the src file id sans
 /// `file:`; [to] is the dst file id sans prefix OR a rule-specific detail
@@ -114,7 +127,7 @@ class LintConfig {
 
   /// Loads [_configPath] from the host root. Absent → defaults. Unknown keys →
   /// one stderr warning, then ignored (forward-compat). Malformed JSON →
-  /// message + exit 64.
+  /// throws [LintConfigException] (run() maps it to message + exit 64).
   static LintConfig load([String path = _configPath]) {
     final f = File(path);
     if (!f.existsSync()) return LintConfig.defaults();
@@ -122,12 +135,10 @@ class LintConfig {
     try {
       decoded = jsonDecode(f.readAsStringSync());
     } on FormatException catch (e) {
-      stderr.writeln('error: $path is not valid JSON: ${e.message}');
-      exit(64);
+      throw LintConfigException('error: $path is not valid JSON: ${e.message}');
     }
     if (decoded is! Map<String, dynamic>) {
-      stderr.writeln('error: $path must be a JSON object');
-      exit(64);
+      throw LintConfigException('error: $path must be a JSON object');
     }
     final unknown = decoded.keys.where((k) => !_knownKeys.contains(k)).toList();
     if (unknown.isNotEmpty) {
@@ -308,16 +319,23 @@ List<Violation> newViolations(Graph graph) {
 }
 
 /// `int run(List<String> args)` — `lint [--json] [--budget N] [--write-baseline]`.
-/// Exit: 0 clean-or-all-baselined, 1 new violations, 66 no graph.
+/// Exit: 0 clean-or-all-baselined, 1 new violations, 64 malformed
+/// codegraph.json, 66 no graph.
 int run(List<String> args) {
   final budget = intFlag(args, '--budget') ?? 80;
   final asJson = args.contains('--json');
   final writeBaseline = args.contains('--write-baseline');
 
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
 
-  final all = _allViolations(graph);
+  final List<Violation> all;
+  try {
+    all = _allViolations(graph);
+  } on LintConfigException catch (e) {
+    stderr.writeln(e.message);
+    return 64;
+  }
 
   if (writeBaseline) {
     final n = _writeBaseline(all);

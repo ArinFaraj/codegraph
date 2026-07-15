@@ -1,15 +1,15 @@
 // `codegraph diff [--base <ref>]` — branch blast-radius card: what changed
 // vs a base ref, what it touches, what's untested. Verb-only (never
-// committed) — every git call here is allowed but MUST be guarded against
-// `ProcessException` (missing git) exactly like `attention.dart`'s
-// `_lastCommitEpoch`, so a broken toolchain prints a one-line error instead
-// of crashing.
+// committed) — every git call here goes through `cli_util.dart`'s `runGit`,
+// which is guarded against `ProcessException` (missing git), so a broken
+// toolchain prints a one-line error instead of crashing.
 import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
 import 'impact.dart';
 import 'lint.dart' as lint;
+import 'freshness.dart';
 import 'model.dart';
 
 const _testRoots = ['test/', 'integration_test/', 'patrol_test/'];
@@ -28,17 +28,6 @@ class _Change {
   _Change(this.status, this.path);
   final String status; // 'A' | 'M' | 'D'
   final String path;
-}
-
-/// Runs `cmd` via `Process.runSync`, returning `null` (never throwing) if the
-/// executable can't be resolved — the MANDATORY guard for every git call in
-/// this file, same pattern as `attention.dart`'s `_lastCommitEpoch`.
-ProcessResult? _run(List<String> cmd) {
-  try {
-    return Process.runSync(cmd.first, cmd.skip(1).toList());
-  } on ProcessException {
-    return null;
-  }
 }
 
 /// Result of an auto-base lookup: either a resolved [ref], or [gitMissing]
@@ -61,7 +50,7 @@ class _AutoBaseResult {
 /// First of `origin/main`, `main`, `master` that git actually knows about.
 _AutoBaseResult _autoBase() {
   for (final ref in ['origin/main', 'main', 'master']) {
-    final r = _run(['git', 'rev-parse', '--verify', '-q', ref]);
+    final r = runGit(['rev-parse', '--verify', '-q', ref]);
     if (r == null) return _AutoBaseResult.gitNotFound();
     if (r.exitCode == 0) return _AutoBaseResult.found(ref);
   }
@@ -71,7 +60,7 @@ _AutoBaseResult _autoBase() {
 /// `git merge-base <base> HEAD`, trimmed — falls back to `base` itself (e.g.
 /// shallow clones where merge-base can't be computed) rather than failing.
 String _mergeBase(String base) {
-  final r = _run(['git', 'merge-base', base, 'HEAD']);
+  final r = runGit(['merge-base', base, 'HEAD']);
   if (r == null || r.exitCode != 0) return base;
   final sha = (r.stdout as String).trim();
   return sha.isEmpty ? base : sha;
@@ -116,8 +105,6 @@ List<String> _cappedList(List<String> lines, int cap) {
   return shown;
 }
 
-const _untestedRoles = {'view', 'controller', 'repository', 'provider'};
-
 /// `int run(List<String> args)` — `diff [--base <ref>] [--json] [--budget N]`.
 int run(List<String> args) {
   final asJson = args.contains('--json');
@@ -131,7 +118,7 @@ int run(List<String> args) {
 
   final String base;
   if (baseFlag != null) {
-    final verify = _run(['git', 'rev-parse', '--verify', '-q', baseFlag]);
+    final verify = runGit(['rev-parse', '--verify', '-q', baseFlag]);
     if (verify == null) {
       stderr.writeln('git not found on PATH');
       return 1;
@@ -155,7 +142,7 @@ int run(List<String> args) {
   }
 
   final mergeBase = _mergeBase(base);
-  final diffResult = _run(['git', 'diff', '--name-status', mergeBase]);
+  final diffResult = runGit(['diff', '--name-status', mergeBase]);
   if (diffResult == null) {
     stderr.writeln('git not found on PATH');
     return 1;
@@ -175,7 +162,7 @@ int run(List<String> args) {
   // build artifacts out by construction; same ProcessException guard as
   // every other git call here.
   final untrackedResult =
-      _run(['git', 'ls-files', '--others', '--exclude-standard']);
+      runGit(['ls-files', '--others', '--exclude-standard']);
   if (untrackedResult != null && untrackedResult.exitCode == 0) {
     final changedPaths = changes.map((c) => c.path).toSet();
     for (final line in (untrackedResult.stdout as String).split('\n')) {
@@ -192,7 +179,7 @@ int run(List<String> args) {
     return 0;
   }
 
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
 
   final libChanges = changes.where((c) => !_isTestPath(c.path)).toList();
@@ -287,7 +274,7 @@ int run(List<String> args) {
   // 7. changed but untested — changed lib files, testRefs==0, role in the
   // Standard-07-shaped set.
   final untestedLines = changedLibNodes
-      .where((n) => n.testRefs == 0 && _untestedRoles.contains(n.role))
+      .where((n) => n.testRefs == 0 && untestedRoles.contains(n.role))
       .toList()
     ..sort((a, b) {
       final byDeg = inDeg(b).compareTo(inDeg(a));

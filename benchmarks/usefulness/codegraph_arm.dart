@@ -14,7 +14,7 @@ class CodegraphArm {
         workingDirectory: root.path,
       );
 
-  ({Set<String> items, int outputLines, int wallMs}) _parseJsonRun(
+  ({Set<String> items, int outputChars, int wallMs}) _parseJsonRun(
     List<String> args,
     Set<String> Function(Map<String, dynamic> json) extract,
   ) {
@@ -25,7 +25,7 @@ class CodegraphArm {
     if (result.exitCode != 0 || stdout.isEmpty) {
       return (
         items: <String>{},
-        outputLines: 0,
+        outputChars: 0,
         wallMs: sw.elapsedMilliseconds
       );
     }
@@ -35,7 +35,7 @@ class CodegraphArm {
     if (jsonStart < 0 || jsonEnd <= jsonStart) {
       return (
         items: <String>{},
-        outputLines: stdout.split('\n').length,
+        outputChars: stdout.length,
         wallMs: sw.elapsedMilliseconds,
       );
     }
@@ -43,12 +43,12 @@ class CodegraphArm {
         as Map<String, dynamic>;
     return (
       items: extract(json),
-      outputLines: stdout.split('\n').length,
+      outputChars: stdout.length,
       wallMs: sw.elapsedMilliseconds,
     );
   }
 
-  ({Set<String> items, int outputLines, int wallMs}) readers(String provider) =>
+  ({Set<String> items, int outputChars, int wallMs}) readers(String provider) =>
       _parseJsonRun(
         ['readers', provider, '--json'],
         (j) {
@@ -63,7 +63,7 @@ class CodegraphArm {
         },
       );
 
-  ({Set<String> items, int outputLines, int wallMs}) find(String query) =>
+  ({Set<String> items, int outputChars, int wallMs}) find(String query) =>
       _parseJsonRun(
         ['find', query, '--json'],
         (j) {
@@ -82,7 +82,7 @@ class CodegraphArm {
         },
       );
 
-  ({Set<String> items, int outputLines, int wallMs}) callers(String symbol) =>
+  ({Set<String> items, int outputChars, int wallMs}) callers(String symbol) =>
       _parseJsonRun(
         ['callers', symbol, '--json'],
         (j) {
@@ -97,7 +97,7 @@ class CodegraphArm {
         },
       );
 
-  ({Set<String> items, int outputLines, int wallMs}) impls(String type) =>
+  ({Set<String> items, int outputChars, int wallMs}) impls(String type) =>
       _parseJsonRun(
         ['impls', type, '--json'],
         (j) {
@@ -110,7 +110,7 @@ class CodegraphArm {
         },
       );
 
-  ({Set<String> items, int outputLines, int wallMs}) symImporters(
+  ({Set<String> items, int outputChars, int wallMs}) symImporters(
           String symbol) =>
       _parseJsonRun(
         ['sym', symbol, '--json'],
@@ -124,7 +124,7 @@ class CodegraphArm {
         },
       );
 
-  ({Set<String> items, int outputLines, int wallMs}) impact(
+  ({Set<String> items, int outputChars, int wallMs}) impact(
     String target, {
     int depth = 1,
   }) =>
@@ -142,7 +142,19 @@ class CodegraphArm {
         },
       );
 
-  ({Set<String> items, int outputLines, int wallMs}) untestedProviders() =>
+  /// Returns {'refused'} when the CLI marks any subtype edge of [type]
+  /// ambiguous - the shipped surface of the refuse-not-guess doctrine.
+  ({Set<String> items, int outputChars, int wallMs}) implsRefusal(
+          String type) =>
+      _parseJsonRun(
+        ['impls', type, '--json'],
+        (j) => (j['results'] as List? ?? const [])
+                .any((r) => (r as Map)['ambiguous'] == true)
+            ? {'refused'}
+            : {},
+      );
+
+  ({Set<String> items, int outputChars, int wallMs}) untestedProviders() =>
       _parseJsonRun(
         ['untested', '--json'],
         (j) => (j['providers'] as List? ?? const [])

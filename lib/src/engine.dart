@@ -47,17 +47,24 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
+import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
+import 'package:analyzer/dart/element/type.dart';
+import 'package:analyzer/error/error.dart' show DiagnosticType;
 import 'package:analyzer/source/line_info.dart';
 
 import 'attention.dart' as attention;
 import 'markdown.dart' as markdown;
 import 'model.dart';
 import 'nav_resolution.dart';
+import 'registry.dart';
 import 'resolution.dart';
 
+export 'registry.dart'
+    show ConstantDecl, FileInfo, GoRouteDecl, HelperCallSite, HelperRouteDecl;
 export 'resolution.dart'
     show ClassDecl, ClassResolver, ProviderDecl, ProviderResolver, Reachability;
 
@@ -82,62 +89,6 @@ const _providerKinds = <String>[
   'StreamProvider',
   'Provider',
 ];
-
-class FileInfo {
-  FileInfo(this.libPath);
-  final String libPath;
-  String role = 'misc';
-  final List<String> internalImports = [];
-  // target lib path -> 1-based line of the first import/export/part directive
-  // that resolves to it (first occurrence wins for duplicate imports).
-  final Map<String, int> importLines = {};
-  // `export` directive targets only (a subset of internalImports, which also
-  // gets these — see `_parseFile`) — the closure `_scanTestRefs` walks so a
-  // test importing a barrel credits what the barrel re-exports too.
-  final List<String> exports = [];
-  final List<ProviderDecl> providerDecls = [];
-  final List<ConstantDecl> constantDecls = [];
-  final List<ClassDecl> classDecls = [];
-  final List<SymbolRec> symbolRecs = [];
-  // name/expr -> first line it appears at (insertion order == first-seen
-  // order isn't relied on; callers sort by name where determinism matters).
-  final Map<String, int> watches = {};
-  final Map<String, int> reads = {};
-  final Map<String, int> listens = {};
-  final Map<String, int> navigates = {};
-  // GoRoute(...) declarations found anywhere in this file — Stage 4.
-  final List<GoRouteDecl> goRoutes = [];
-  // Mechanism (b): top-level functions declared in this file whose body
-  // contains a GoRoute(path: <param>...) — see `HelperRouteDecl`.
-  final List<HelperRouteDecl> helperRoutes = [];
-  // Mechanism (b): every project-wide call site of a top-level function,
-  // recorded regardless of whether that function is a route helper — the
-  // call-site COUNT across the whole project is the refusal signal, so every
-  // call must be seen before any helper is judged single-call-site.
-  final List<HelperCallSite> helperCalls = [];
-  // Number of test files whose resolved lib imports include this file —
-  // populated by the Stage 1 test-reference pass, 0 for anything not scanned
-  // (or when no test roots exist).
-  int testRefs = 0;
-
-  // Transient (NOT serialized to code_graph.json — build-time-only inputs to
-  // the substitution/inlining REFUSAL gates below). Populated by `_Visitor`
-  // during `_parseFile`.
-  //
-  // Every identifier this file DECLARES anywhere: top-level vars/functions/
-  // classes/enums/mixins, class/enum members, local variables, and
-  // function/method/constructor parameters (including field-formal and
-  // super-formal). Used to detect shadowing — a distant constant's name
-  // colliding with a local/parameter name in the substituting file.
-  final Set<String> declaredNames = {};
-  // Every SimpleIdentifier lexeme referenced anywhere in this file (a token
-  // set, deduped — same "candidate data" doctrine as the test-reference
-  // pass's tokenization: a name mentioned in an unrelated context still
-  // counts, so this is a conservative SUPERSET of real references, which is
-  // exactly what a refusal gate wants — never under-count a possible
-  // tear-off).
-  final Set<String> identifierRefs = {};
-}
 
 String _role(String p) {
   bool has(String s) => p.contains(s);
@@ -180,6 +131,24 @@ const _refReceivers = {
   '_container',
   'this._container',
 };
+
+/// True iff [t] is a Riverpod Ref-like type - a `Ref`/`WidgetRef` (or any
+/// subtype, e.g. `FooProviderRef`, `AutoDisposeRef`, all of which end in `Ref`)
+/// or a `ProviderContainer`. Checked against the type itself and its full
+/// supertype closure, so a concrete generated ref subtype still counts. Null
+/// (syntax units have no static type) returns false - the name allow-list
+/// handles those. Mirrors the `endsWith('Ref')` convention already used for
+/// `*Ref` extension detection.
+bool _isRefType(DartType? t) {
+  if (t is! InterfaceType) return false;
+  bool named(String? n) =>
+      n != null && (n.endsWith('Ref') || n == 'ProviderContainer');
+  if (named(t.element.name)) return true;
+  for (final s in t.allSupertypes) {
+    if (named(s.element.name)) return true;
+  }
+  return false;
+}
 
 String _baseProvider(String expr) {
   var e = expr.trim();
@@ -329,13 +298,32 @@ class _Visitor extends RecursiveAstVisitor<void> {
     // implicit receiver is the Ref because we're inside a `*Ref` extension body.
     // Both still gate on the arg resolving to a real provider downstream, so no
     // unrelated bare `read()` becomes an edge.
-    final refScoped = _refReceivers.contains(target) ||
+    // 3.0 Stage 2: on a RESOLVED unit the receiver's static type settles this by
+    // identity - any receiver whose type is (a subtype of) a Ref/WidgetRef/
+    // ProviderContainer is a reader, whatever it is NAMED. This catches renamed
+    // parameters (`void f(Ref r) => r.watch(p)`), aliases (`final x = ref`),
+    // and getters returning a Ref - all invisible to the name allow-list. On a
+    // syntax unit staticType is null, so it falls back to the allow-list
+    // unchanged (resolved is a strict superset, never fewer edges).
+    final typedRef = _isRefType(node.realTarget?.staticType);
+    final refScoped = typedRef ||
+        _refReceivers.contains(target) ||
         (target == null && _refExtensionDepth > 0);
     if (refScoped && args.isNotEmpty) {
       final p = _baseProvider(args.first.toSource());
-      if (method == 'watch') info.watches.putIfAbsent(p, () => line);
-      if (method == 'read') info.reads.putIfAbsent(p, () => line);
-      if (method == 'listen') info.listens.putIfAbsent(p, () => line);
+      const relOf = {'watch': 'watches', 'read': 'reads', 'listen': 'listens'};
+      final rel = relOf[method];
+      if (rel != null) {
+        (rel == 'watches'
+                ? info.watches
+                : rel == 'reads'
+                    ? info.reads
+                    : info.listens)
+            .putIfAbsent(p, () => line);
+        // Element-confirmed (receiver's static type is a Ref) -> the edge is
+        // `resolved`; a name-only match stays `heuristic`.
+        if (typedRef) info.typedReaderKeys.add('$rel|$p');
+      }
     }
 
     const navMethods = {
@@ -352,68 +340,16 @@ class _Visitor extends RecursiveAstVisitor<void> {
       info.navigates.putIfAbsent(args.first.toSource(), () => line);
     }
 
-    // GoRoute(...) — the only route-declaring constructor observed in the
-    // Stage 4 discovery pass (common `routing/*_routes.dart` shape). Syntax-only
-    // parsing (no type resolution) can't tell a constructor call from a
-    // function call when there's no `new`/`const` keyword, so `GoRoute(...)`
-    // parses as a plain no-target MethodInvocation, not an
-    // InstanceCreationExpression — matched here, not in a constructor-call
-    // visitor.
+    // GoRoute(...) route declaration. In SYNTAX mode (no type resolution) a
+    // constructor call with no `new`/`const` parses as a no-target
+    // MethodInvocation, so it is caught here. In RESOLVED mode the analyzer
+    // knows GoRoute is a class, so the SAME call parses as an
+    // InstanceCreationExpression and is caught in visitInstanceCreationExpression
+    // below — either way it routes through the one `_recordGoRoute`, so resolved
+    // builds stay at least as complete as syntax (they lost every GoRoute-based
+    // nav edge before this — found on the krdpass reference host, 2026-07-14).
     if (node.target == null && method == 'GoRoute') {
-      String? pathExpr;
-      Expression? builderExpr;
-      String? nameExpr;
-      for (final arg in args) {
-        if (arg is! NamedExpression) continue;
-        final argName = arg.name.label.name;
-        if (argName == 'path') {
-          pathExpr = arg.expression.toSource();
-        } else if (argName == 'builder' || argName == 'pageBuilder') {
-          builderExpr = arg.expression;
-        } else if (argName == 'name') {
-          nameExpr = arg.expression.toSource();
-        }
-      }
-      if (pathExpr != null) {
-        // Mechanism (b) capture: the path's leading identifier is one of the
-        // enclosing top-level function's OWN parameters. `helperKey` is a
-        // direct 1:1 link from THIS GoRouteDecl to its resolved-table entry
-        // (see `GoRouteDecl.helperKey` doc comment) — set here, not derived
-        // later from path text, so a same-path-text lookup collision across
-        // two helper functions is structurally avoided. The actual
-        // single-declaration / single-call-site / no-tear-off safety comes
-        // from nav_resolution.dart's `_resolveHelperRoutes` gates, not from
-        // this key shape alone.
-        String? helperKey;
-        final fnName = _fnName;
-        if (fnName != null) {
-          final leadDot = pathExpr.indexOf('.');
-          final leading =
-              leadDot < 0 ? pathExpr : pathExpr.substring(0, leadDot);
-          final paramIndex = _fnParams.indexOf(leading);
-          if (paramIndex >= 0) {
-            info.helperRoutes.add(
-              HelperRouteDecl(
-                fnName,
-                leading,
-                paramIndex,
-                pathExpr,
-                info.libPath,
-              ),
-            );
-            helperKey = '$fnName::$pathExpr';
-          }
-        }
-        info.goRoutes.add(
-          GoRouteDecl(
-            pathExpr,
-            builderExpr == null ? null : firstCreatedType(builderExpr),
-            line,
-            name: nameExpr,
-            helperKey: helperKey,
-          ),
-        );
-      }
+      _recordGoRoute(args, line);
     } else if (node.target == null && !looksLikeTypeName(method)) {
       // Mechanism (b) call-site capture: a bare (no-target) call to a
       // lowercase-first-letter name — i.e. a real function call, not a
@@ -437,6 +373,70 @@ class _Visitor extends RecursiveAstVisitor<void> {
     }
 
     super.visitMethodInvocation(node);
+  }
+
+  // A real constructor call. Only reachable in RESOLVED mode - the syntax
+  // parser can't tell `GoRoute(...)` from a function call and emits a
+  // MethodInvocation instead (handled in visitMethodInvocation). This is the
+  // constructor-call twin so GoRoute declarations are captured under both.
+  @override
+  void visitInstanceCreationExpression(InstanceCreationExpression node) {
+    if (node.constructorName.type.name.lexeme == 'GoRoute') {
+      _recordGoRoute(
+          node.argumentList.arguments, lineOf(lineInfo, node.offset));
+    }
+    super.visitInstanceCreationExpression(node);
+  }
+
+  // Shared GoRoute(...) extraction for both the method-call form (syntax) and
+  // the constructor form (resolved). Reads the enclosing helper-function
+  // context (`_fnName`/`_fnParams`) for mechanism (b) capture.
+  void _recordGoRoute(List<Expression> args, int line) {
+    String? pathExpr;
+    Expression? builderExpr;
+    String? nameExpr;
+    for (final arg in args) {
+      if (arg is! NamedExpression) continue;
+      final argName = arg.name.label.name;
+      if (argName == 'path') {
+        pathExpr = arg.expression.toSource();
+      } else if (argName == 'builder' || argName == 'pageBuilder') {
+        builderExpr = arg.expression;
+      } else if (argName == 'name') {
+        nameExpr = arg.expression.toSource();
+      }
+    }
+    if (pathExpr == null) return;
+    // Mechanism (b) capture: the path's leading identifier is one of the
+    // enclosing top-level function's OWN parameters. `helperKey` is a direct
+    // 1:1 link from THIS GoRouteDecl to its resolved-table entry (see
+    // `GoRouteDecl.helperKey` doc comment) - set here, not derived later from
+    // path text, so a same-path-text lookup collision across two helper
+    // functions is structurally avoided. The actual single-declaration /
+    // single-call-site / no-tear-off safety comes from nav_resolution.dart's
+    // `_resolveHelperRoutes` gates, not from this key shape alone.
+    String? helperKey;
+    final fnName = _fnName;
+    if (fnName != null) {
+      final leadDot = pathExpr.indexOf('.');
+      final leading = leadDot < 0 ? pathExpr : pathExpr.substring(0, leadDot);
+      final paramIndex = _fnParams.indexOf(leading);
+      if (paramIndex >= 0) {
+        info.helperRoutes.add(
+          HelperRouteDecl(fnName, leading, paramIndex, pathExpr, info.libPath),
+        );
+        helperKey = '$fnName::$pathExpr';
+      }
+    }
+    info.goRoutes.add(
+      GoRouteDecl(
+        pathExpr,
+        builderExpr == null ? null : firstCreatedType(builderExpr),
+        line,
+        name: nameExpr,
+        helperKey: helperKey,
+      ),
+    );
   }
 }
 
@@ -470,10 +470,18 @@ void _collect(CompilationUnit unit, FileInfo info, LineInfo lineInfo) {
     if (d is ClassDeclaration) {
       final name = d.namePart.toSource().split('<').first.trim();
       final supers = <String>[];
-      final ext = d.extendsClause?.superclass.toSource();
-      if (ext != null) supers.add(ext.split('<').first.trim());
+      void addSuper(NamedType t) {
+        final s = t.toSource().split('<').first.trim();
+        supers.add(s);
+        // Resolved unit: the supertype NamedType carries its element, so this
+        // edge is element-confirmed. Syntax unit: element is null -> heuristic.
+        if (t.element != null) info.elementResolvedSupers.add('$name|$s');
+      }
+
+      final ext = d.extendsClause?.superclass;
+      if (ext != null) addSuper(ext);
       for (final i in d.implementsClause?.interfaces ?? const []) {
-        supers.add(i.toSource().split('<').first.trim());
+        addSuper(i);
       }
       info.classDecls.add(ClassDecl(name, info.libPath, supers));
       info.symbolRecs.add(
@@ -499,6 +507,20 @@ void _collect(CompilationUnit unit, FileInfo info, LineInfo lineInfo) {
       }
     } else if (d is MixinDeclaration) {
       final name = d.name.lexeme;
+      // A mixin's `on` clause (superclass constraints) and `implements`
+      // clause are both stated, syntax-visible supertype facts - same
+      // implements/extends edge path a ClassDeclaration uses below, so
+      // `impls <Shape>` etc. also finds mixins that constrain/implement it.
+      final supers = <String>[];
+      for (final t in [
+        ...?d.onClause?.superclassConstraints,
+        ...?d.implementsClause?.interfaces,
+      ]) {
+        final s = t.toSource().split('<').first.trim();
+        supers.add(s);
+        if (t.element != null) info.elementResolvedSupers.add('$name|$s');
+      }
+      info.classDecls.add(ClassDecl(name, info.libPath, supers));
       info.symbolRecs.add(
         symbolWithMembers(
           name,
@@ -540,6 +562,16 @@ void _collect(CompilationUnit unit, FileInfo info, LineInfo lineInfo) {
       }
     } else if (d is ExtensionTypeDeclaration) {
       final name = d.primaryConstructor.typeName.lexeme;
+      // `implements` on an extension type is the same stated supertype fact
+      // as a class's - wire it into the same edge path (see MixinDeclaration
+      // above for the mixin half of this fix).
+      final supers = <String>[];
+      for (final i in d.implementsClause?.interfaces ?? const []) {
+        final s = i.toSource().split('<').first.trim();
+        supers.add(s);
+        if (i.element != null) info.elementResolvedSupers.add('$name|$s');
+      }
+      info.classDecls.add(ClassDecl(name, info.libPath, supers));
       info.symbolRecs.add(
         symbolWithMembers(
           name,
@@ -722,18 +754,27 @@ Map<String, String> _localPackages() {
   return map;
 }
 
-String _self = '';
-Map<String, String> _packages = const {};
+/// Package-resolution context computed once per `build()` call: the host's
+/// own package name plus the local package name -> lib dir map. Threaded as
+/// a parameter through the parse passes so import resolution has no module
+/// state.
+typedef _PkgContext = ({String self, Map<String, String> packages});
 
-String _resolveImport(String uri, String fileLibPath) {
+// Repo-relative paths of files whose parse produced analyzer diagnostics
+// during the most recent `build()` call - reset at the top of `build()`
+// since tests call `build()` repeatedly in-process. Read once at the end of
+// `build()` to print the "N files had parse errors" note.
+final List<String> _parseErrorFiles = [];
+
+String _resolveImport(String uri, String fileLibPath, _PkgContext pkgs) {
   if (uri.startsWith('package:')) {
     final rest = uri.substring('package:'.length);
     final slash = rest.indexOf('/');
     if (slash < 0) return '';
     final pkg = rest.substring(0, slash);
     final path = rest.substring(slash + 1);
-    if (pkg == _self) return 'lib/$path';
-    final libDir = _packages[pkg];
+    if (pkg == pkgs.self) return 'lib/$path';
+    final libDir = pkgs.packages[pkg];
     return libDir == null ? '' : '$libDir/$path';
   }
   if (!uri.contains(':')) {
@@ -751,17 +792,34 @@ String _resolveImport(String uri, String fileLibPath) {
   return '';
 }
 
-FileInfo _parseFile(File f) {
-  final libPath = _libPathOf(f.path);
-  final info = FileInfo(libPath)..role = _role(libPath);
+FileInfo _parseFile(File f, _PkgContext pkgs) {
   final parsed = parseString(
     content: f.readAsStringSync(),
     throwIfDiagnostics: false,
   );
-  final unit = parsed.unit;
+  return _extractUnit(
+      _libPathOf(f.path), parsed.unit, parsed.errors.isNotEmpty, pkgs);
+}
+
+/// Extract a [FileInfo] from a compilation unit. The unit may come from
+/// syntax-only `parseString` (default) OR from a RESOLVED analyzer unit
+/// (`build --resolved`, 3.0). The AST shape is identical either way; resolved
+/// units additionally carry `staticType`/`element` data that Stage 2's
+/// element-checked extractors consume. At Stage 1 the extraction is byte-for-
+/// byte the same for both, so a resolved build and a syntax build produce an
+/// identical graph — that equivalence is the Stage 1 correctness guarantee.
+FileInfo _extractUnit(
+    String libPath, CompilationUnit unit, bool hasErrors, _PkgContext pkgs) {
+  final info = FileInfo(libPath)..role = _role(libPath);
+  // A mid-edit file with a syntax error still parses a best-effort AST (that's
+  // the point of throwIfDiagnostics: false - extraction shouldn't abort on one
+  // bad file) but its extraction may be incomplete/wrong, so that must not
+  // fold silently into the graph. Recorded here, surfaced once at the end of
+  // `build()`.
+  if (hasErrors) _parseErrorFiles.add(libPath);
   void addDep(String? uri, int line) {
     if (uri == null) return;
-    final lib = _resolveImport(uri, libPath);
+    final lib = _resolveImport(uri, libPath, pkgs);
     if (lib.isNotEmpty) {
       info.internalImports.add(lib);
       info.importLines.putIfAbsent(lib, () => line);
@@ -783,7 +841,7 @@ FileInfo _parseFile(File f) {
       for (final c in dir.configurations) {
         addDep(c.uri.stringValue, line);
       }
-      final lib = _resolveImport(dir.uri.stringValue ?? '', libPath);
+      final lib = _resolveImport(dir.uri.stringValue ?? '', libPath, pkgs);
       if (lib.isNotEmpty) info.exports.add(lib);
     } else if (dir is PartDirective) {
       addDep(dir.uri.stringValue, line);
@@ -801,6 +859,73 @@ List<File> _dartFiles(String dir) => Directory(dir)
     .where((f) => !_generatedSuffixes.any((s) => f.path.endsWith(s)))
     .toList()
   ..sort((a, b) => a.path.compareTo(b.path));
+
+/// Deterministic digest (FNV-1a 64) of every source input `build` reads: the
+/// host pubspec plus the path and CONTENT of each scanned .dart file, using
+/// the exact enumeration build uses. Content-based on purpose - identical
+/// source always yields an identical value regardless of mtimes or checkout,
+/// so storing it in code_graph.json keeps the byte-determinism doctrine (and
+/// check()'s content-diff gate) intact. Queries compare this against the
+/// stored `stats.sourceDigest` to detect a stale graph (see freshness.dart) -
+/// the fix for the documented "stale graph returns a silent false negative"
+/// trap.
+int sourceDigest() {
+  var h = 0xcbf29ce484222325;
+  void mix(List<int> bytes) {
+    for (final b in bytes) {
+      h ^= b;
+      h *= 0x100000001b3;
+    }
+  }
+
+  void mixFile(File f) {
+    mix(utf8.encode(f.path));
+    mix(f.readAsBytesSync());
+  }
+
+  final pubspec = File('pubspec.yaml');
+  if (pubspec.existsSync()) mixFile(pubspec);
+  for (final root in ['lib', ..._localPackages().values]) {
+    if (!Directory(root).existsSync()) continue;
+    _dartFiles(root).forEach(mixFile);
+  }
+  return h;
+}
+
+/// Stat-only fast-path companion to [sourceDigest]: same FNV-1a 64 shape and
+/// the exact same file enumeration, but mixes each file's path + length +
+/// mtime (millisecondsSinceEpoch) instead of its content - no file reads, so
+/// it is ~an order of magnitude cheaper on a large host. freshness.dart
+/// compares it against `stats.statDigest` first and only falls back to the
+/// content digest on mismatch, so the never-stale guarantee is unchanged.
+///
+/// NOT part of the determinism contract: mtimes vary across checkouts, so
+/// byte-determinism of code_graph.json for identical source is intentionally
+/// relaxed for this ONE stats key. check()'s git-diff gate is unaffected
+/// because hosts gitignore code_graph.json (see the sourceDigest comment).
+int statDigest() {
+  var h = 0xcbf29ce484222325;
+  void mix(List<int> bytes) {
+    for (final b in bytes) {
+      h ^= b;
+      h *= 0x100000001b3;
+    }
+  }
+
+  void mixFile(File f) {
+    final s = f.statSync();
+    mix(utf8
+        .encode('${f.path}|${s.size}|${s.modified.millisecondsSinceEpoch}'));
+  }
+
+  final pubspec = File('pubspec.yaml');
+  if (pubspec.existsSync()) mixFile(pubspec);
+  for (final root in ['lib', ..._localPackages().values]) {
+    if (!Directory(root).existsSync()) continue;
+    _dartFiles(root).forEach(mixFile);
+  }
+  return h;
+}
 
 /// Test roots scanned by the Stage 1 test-reference pass, in fixed order (the
 /// order doesn't affect output — every root's files are merged into one
@@ -859,6 +984,7 @@ class TestRefs {
 TestRefs _scanTestRefs(
   Map<String, Set<String>> providerDeclFiles,
   Map<String, List<String>> exportsByFile,
+  _PkgContext pkgs,
 ) {
   final fileTestRefs = <String, int>{};
   final providerTestRefs = <String, int>{};
@@ -894,16 +1020,18 @@ TestRefs _scanTestRefs(
       final unit = parsed.unit;
 
       final testLibPath = _libPathOf(f.path);
+      if (parsed.errors.isNotEmpty) _parseErrorFiles.add(testLibPath);
       final ownImports = <String>{};
       String? parentLib;
       for (final dir in unit.directives) {
         if (dir is ImportDirective) {
-          final lib = _resolveImport(dir.uri.stringValue ?? '', testLibPath);
+          final lib =
+              _resolveImport(dir.uri.stringValue ?? '', testLibPath, pkgs);
           if (lib.isNotEmpty) ownImports.add(lib);
         } else if (dir is PartOfDirective) {
           final uri = dir.uri?.stringValue;
           if (uri != null) {
-            final lib = _resolveImport(uri, testLibPath);
+            final lib = _resolveImport(uri, testLibPath, pkgs);
             if (lib.isNotEmpty) parentLib = lib;
           }
           // by-name `part of` (dir.uri == null): not resolvable — no parent.
@@ -958,23 +1086,101 @@ class _TestFileRecord {
 /// (+ a scoped map when a directory is given).
 void build(List<String> args) {
   final positional = args.where((a) => !a.startsWith('--')).toList();
+  final pkgs = _buildSetup();
 
+  // Pass 1 (syntax): parse lib/ + every local package's lib/.
+  final all = <FileInfo>[];
+  for (final root in ['lib', ...pkgs.packages.values]) {
+    for (final f in _dartFiles(root)) {
+      all.add(_parseFile(f, pkgs));
+    }
+  }
+  _emitBuild(all, positional, pkgs);
+}
+
+/// `codegraph build --resolved` (3.0 Stage 1) — same output as `build`, but
+/// Pass 1 runs the analyzer's RESOLVED element model per file (element data
+/// available to Stage 2 extractors) with a per-file fallback to syntax when a
+/// file will not resolve. Requires the host's own `pub get` (a
+/// `.dart_tool/package_config.json`); refuses with an instruction if absent
+/// rather than silently degrading the whole build to syntax.
+Future<void> buildResolved(List<String> args) async {
+  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final pkgs = _buildSetup();
+  if (!File('.dart_tool/package_config.json').existsSync()) {
+    stderr.writeln(
+      '--resolved needs resolved dependencies but no '
+      '.dart_tool/package_config.json was found. Run: dart pub get '
+      '(or flutter pub get), then: codegraph build --resolved',
+    );
+    exit(66);
+  }
+  final all = await _resolveFiles(['lib', ...pkgs.packages.values], pkgs);
+  _emitBuild(all, positional, pkgs);
+}
+
+/// Shared build preamble: guard the package root and reset the per-run
+/// parse-error accumulator, then compute the package-resolution context once.
+_PkgContext _buildSetup() {
   if (!Directory('lib').existsSync()) {
     stderr.writeln('run from the package root (no lib/ here)');
     exit(66);
   }
+  _parseErrorFiles.clear();
+  return (self: _selfPackage(), packages: _localPackages());
+}
 
-  _self = _selfPackage();
-  _packages = _localPackages();
-
-  // Pass 1: parse lib/ + every local package's lib/ and build registries.
+/// Pass 1 (resolved): drive [AnalysisContextCollection] over the host roots and
+/// extract each file from its resolved unit; a file that fails resolution
+/// (thrown error or a non-[ResolvedUnitResult]) falls back to syntax parsing
+/// and is counted. Same deterministic `_dartFiles` enumeration as the syntax
+/// pass, so node/edge order is unchanged.
+Future<List<FileInfo>> _resolveFiles(
+    List<String> roots, _PkgContext pkgs) async {
+  final collection = AnalysisContextCollection(
+    includedPaths: [for (final r in roots) File(r).absolute.path],
+  );
   final all = <FileInfo>[];
-  for (final root in ['lib', ..._packages.values]) {
+  var fellBack = 0;
+  for (final root in roots) {
     for (final f in _dartFiles(root)) {
-      all.add(_parseFile(f));
+      final abs = f.absolute.path;
+      final libPath = _libPathOf(f.path);
+      ResolvedUnitResult? r;
+      try {
+        final unit = await collection
+            .contextFor(abs)
+            .currentSession
+            .getResolvedUnit(abs);
+        if (unit is ResolvedUnitResult) r = unit;
+      } catch (_) {
+        // Any resolution failure -> syntax fallback for THIS file only.
+      }
+      if (r != null) {
+        // Match the syntax path's meaning of "extraction may be incomplete":
+        // SYNTACTIC errors only (a best-effort AST). Semantic errors from
+        // absent external deps (e.g. an unresolved `package:` import) leave the
+        // AST complete, so they must NOT trip the parse-error note.
+        final hasError = r.diagnostics.any(
+            (d) => d.diagnosticCode.type == DiagnosticType.SYNTACTIC_ERROR);
+        all.add(_extractUnit(libPath, r.unit, hasError, pkgs)..resolved = true);
+      } else {
+        fellBack++;
+        all.add(_parseFile(f, pkgs)); // resolved stays false
+      }
     }
   }
+  stderr.writeln(
+    'resolved ${all.length - fellBack}/${all.length} files'
+    '${fellBack > 0 ? ' ($fellBack fell back to syntax)' : ''}',
+  );
+  return all;
+}
 
+/// Everything after Pass 1: registries, resolvers, test-reference scan, nav
+/// resolution, graph + markdown emission. Shared verbatim by the syntax and
+/// resolved build paths (they differ only in how `all` was produced).
+void _emitBuild(List<FileInfo> all, List<String> positional, _PkgContext pkgs) {
   // Group by name (not last-write-wins) so shared names survive to the
   // resolver below; see CHANGELOG: duplicate provider name misattribution.
   final providerDeclsByName = <String, List<ProviderDecl>>{};
@@ -1014,7 +1220,7 @@ void build(List<String> args) {
     for (final e in providerDeclsByName.entries)
       e.key: {for (final p in e.value) p.file},
   };
-  final testRefs = _scanTestRefs(providerDeclFiles, exportsByFile);
+  final testRefs = _scanTestRefs(providerDeclFiles, exportsByFile, pkgs);
   for (final i in all) {
     i.testRefs = testRefs.fileTestRefs[i.libPath] ?? 0;
   }
@@ -1027,7 +1233,7 @@ void build(List<String> args) {
   // half) — see `resolveNavigation` doc comment in nav_resolution.dart.
   final navTables = resolveNavigation(all, constantTable, classResolver, reach);
 
-  final graph = _writeGraph(
+  final written = _writeGraph(
     all,
     resolver,
     classResolver,
@@ -1038,8 +1244,10 @@ void build(List<String> args) {
     navTables.nameTable,
     reach,
   );
+  final graph = written.graph;
   stderr.writeln(
-    'nav resolution: $_navResolvedCount/$_navResolvedTotal navigate edges resolved',
+    'nav resolution: ${written.navResolved}/${written.navTotal} '
+    'navigate edges resolved',
   );
   attention.writeAttentionMd(graph);
   stderr.writeln('wrote docs/maps/ATTENTION.md');
@@ -1077,6 +1285,18 @@ void build(List<String> args) {
   }
 
   markdown.writeAllAreaMaps(all, providerRegistry, readerCounts);
+
+  // A file with a syntax error still parses best-effort, so its extraction
+  // may be incomplete or wrong without any other signal - this is the one
+  // place that gets surfaced. Deterministic (sorted), stderr only, no effect
+  // on the graph itself.
+  if (_parseErrorFiles.isNotEmpty) {
+    final sorted = _parseErrorFiles.toSet().toList()..sort();
+    stderr.writeln(
+      'note: ${sorted.length} files had parse errors - their extraction may '
+      'be incomplete (worst: ${sorted.first})',
+    );
+  }
 }
 
 // Scope for both check() git diff calls: docs/maps/ excluding docs/maps/notes/
@@ -1111,14 +1331,10 @@ int check() {
   return 0;
 }
 
-// Stage 4 prototype metric (`nav resolution: X/Y navigate edges resolved`,
-// printed once per `build()` call in `build()` below) — reset per call since
-// `_writeGraph` runs once per `build()` and tests call `build()` repeatedly
-// in-process.
-int _navResolvedCount = 0;
-int _navResolvedTotal = 0;
-
-Graph _writeGraph(
+// Returns the graph plus the Stage 4 prototype metric (`nav resolution: X/Y
+// navigate edges resolved`, printed once per `build()` call in `build()`
+// above) - locals threaded back through the return value, not module state.
+({Graph graph, int navResolved, int navTotal}) _writeGraph(
   List<FileInfo> all,
   ProviderResolver resolver,
   ClassResolver classResolver,
@@ -1129,8 +1345,8 @@ Graph _writeGraph(
   Map<String, String> nameTable,
   Reachability reach,
 ) {
-  _navResolvedCount = 0;
-  _navResolvedTotal = 0;
+  var navResolvedCount = 0;
+  var navResolvedTotal = 0;
   final nodes = <GraphNode>[];
   final edges = <GraphEdge>[];
 
@@ -1188,6 +1404,9 @@ Graph _writeGraph(
             ambiguous: fields['ambiguous'] == true,
             candidates: (fields['candidates'] as List?)?.cast<String>(),
             line: entry.value,
+            confidence: i.typedReaderKeys.contains('$rel|${entry.key}')
+                ? 'resolved'
+                : 'heuristic',
           ),
         );
       }
@@ -1207,7 +1426,7 @@ Graph _writeGraph(
       );
     }
     for (final entry in i.navigates.entries) {
-      _navResolvedTotal++;
+      navResolvedTotal++;
       final norm = resolveWithConstants(
         entry.key,
         i.libPath,
@@ -1234,7 +1453,7 @@ Graph _writeGraph(
         ),
       );
       if (pageFile != null) {
-        _navResolvedCount++;
+        navResolvedCount++;
         edges.add(
           GraphEdge(
             src: src,
@@ -1255,6 +1474,11 @@ Graph _writeGraph(
           detail: '${c.name} -> $s',
           ambiguous: fields['ambiguous'] == true,
           candidates: (fields['candidates'] as List?)?.cast<String>(),
+          childName: c.name,
+          parentName: s,
+          confidence: i.elementResolvedSupers.contains('${c.name}|$s')
+              ? 'resolved'
+              : 'heuristic',
         ));
       }
     }
@@ -1272,6 +1496,17 @@ Graph _writeGraph(
       'files': all.length,
       'providers': resolver.declsByName.length,
       'edges': edges.length,
+      // Content digest of the source this graph was built from - queries use
+      // it to detect staleness and auto-rebuild (freshness.dart). Additive,
+      // deterministic (no wall clock; see the comment above). Inserted BEFORE
+      // testFiles so both pinned positions hold (format first, testFiles last).
+      'sourceDigest': sourceDigest(),
+      // Stat-only digest (path + length + mtime) for the freshness fast path.
+      // Mtimes vary across checkouts, so this ONE key intentionally relaxes
+      // byte-determinism of code_graph.json for identical source; check()'s
+      // git-diff gate is unaffected because hosts gitignore code_graph.json.
+      // Still inserted BEFORE testFiles (format first, testFiles last hold).
+      'statDigest': statDigest(),
       'testFiles': testFileCount,
     },
     nodes: nodes,
@@ -1286,5 +1521,22 @@ Graph _writeGraph(
     'wrote docs/maps/code_graph.json '
     '(${all.length} files, ${resolver.declsByName.length} providers, ${edges.length} edges)',
   );
-  return graph;
+  // Honesty metric (3.0 Stage 2): how many reader edges are element-resolved vs
+  // name-matched. A syntax build is 0 resolved; a resolved build trends toward
+  // all - the fraction is a quality signal that improves as extractors go
+  // element-checked.
+  void reportConfidence(String label, bool Function(GraphEdge) pick) {
+    final es = edges.where(pick).toList();
+    if (es.isEmpty) return;
+    final resolved = es.where((e) => e.confidence == 'resolved').length;
+    stderr.writeln('$label: $resolved/${es.length} element-resolved');
+  }
+
+  reportConfidence('reader edges', (e) => providerConsumerRels.contains(e.rel));
+  reportConfidence('subtype edges', (e) => e.rel == 'implements/extends');
+  return (
+    graph: graph,
+    navResolved: navResolvedCount,
+    navTotal: navResolvedTotal,
+  );
 }

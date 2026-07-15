@@ -20,7 +20,7 @@ import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
 import 'cli_util.dart';
-import 'model.dart';
+import 'freshness.dart';
 import 'nested_function_boundary.dart';
 
 class _Method {
@@ -152,7 +152,7 @@ int run(List<String> args) {
   }
   final symbol = positional[1];
 
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
   final files = _dartFiles({
     for (final n in graph.nodes)
@@ -186,8 +186,11 @@ int run(List<String> args) {
       return {'name': name, 'external': true};
     }
     // Ambiguous — more than one repo declaration; never guess which, don't
-    // explode into all. Show it and stop this branch.
-    if (decls.length > 1 && d > 0) {
+    // explode into all. Show it and stop this branch. Unconditional on depth:
+    // a wrong edge is a blocker, so a name that's ambiguous at the depth cap
+    // (d == 0, the common leaf position) must refuse just like it does at any
+    // other depth - not silently fall through to decls.first.
+    if (decls.length > 1) {
       nodeCount++;
       lines.add('$pad$name  (${decls.length} declarations — ambiguous)');
       return {'name': name, 'ambiguous': decls.length};
@@ -259,8 +262,7 @@ int run(List<String> args) {
 
   if (asJson) {
     stdout.writeln(jsonEncode({
-      'verb': 'callchain',
-      'query': symbol,
+      ...envelope('callchain', symbol),
       'depth': depth,
       'resolution': 'name-based (approximate; not type-resolved)',
       'legend': {

@@ -5,6 +5,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'cli_util.dart' show runGit;
 import 'init.dart' show scaffoldVersion, hasClaudeBeginLine;
 import 'model.dart';
 import 'version_skew.dart';
@@ -195,10 +196,8 @@ _Check _gitignoreCheck() {
     return _Check('gitignore',
         ok: false, detail: '.gitignore missing $entry', fix: 'codegraph init');
   }
-  ProcessResult tracked;
-  try {
-    tracked = Process.runSync('git', ['ls-files', '--error-unmatch', entry]);
-  } on ProcessException {
+  final tracked = runGit(['ls-files', '--error-unmatch', entry]);
+  if (tracked == null) {
     return _Check('gitignore',
         ok: true,
         level: 'note',
@@ -290,10 +289,8 @@ _Check _lintConfigCheck() {
 
 /// Check 7: package root == git root (monorepo guidance).
 _Check _monorepoCheck() {
-  ProcessResult result;
-  try {
-    result = Process.runSync('git', ['rev-parse', '--show-toplevel']);
-  } on ProcessException {
+  final result = runGit(['rev-parse', '--show-toplevel']);
+  if (result == null) {
     return _Check('package root == git root',
         ok: true, level: 'note', detail: 'git not on PATH — skipped');
   }

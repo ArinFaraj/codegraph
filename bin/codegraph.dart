@@ -10,10 +10,13 @@ import 'package:codegraph/src/callers.dart' as callers;
 import 'package:codegraph/src/diff.dart' as diff;
 import 'package:codegraph/src/doctor.dart' as doctor;
 import 'package:codegraph/src/engine.dart' as engine;
+import 'package:codegraph/src/freshness.dart' as freshness;
 import 'package:codegraph/src/impact.dart' as impact;
 import 'package:codegraph/src/init.dart' as scaffold;
+import 'package:codegraph/src/intent.dart' as intent;
 import 'package:codegraph/src/lint.dart' as lint;
 import 'package:codegraph/src/query.dart' as query;
+import 'package:codegraph/src/rename.dart' as rename;
 import 'package:codegraph/src/skeleton.dart' as skeleton;
 import 'package:codegraph/src/version_skew.dart' show binaryVersion;
 
@@ -24,42 +27,42 @@ void _usage() {
   stderr.writeln('''
 codegraph $version — code graph for AI navigation ($repoUrl)
 
+start here (intent verbs):
+  codegraph find <anything>           what/where is X? files, providers, symbols — ranked by in-degree
+  codegraph uses <thing>              who uses X? every inbound relation, sections picked by what X is
+  codegraph change <thing>            what breaks? pre-change pack: dependents + subtype tree + test coverage
+  codegraph review [--base main]      is my branch safe? changed files, blast radius, untested, lint
+  codegraph health                    where is the risk? attention + unused + untested, one card
+  codegraph plan <feature-dir>        build-order plan from an exemplar feature (layers, wiring, naming)
+
+operator verbs:
   codegraph build [lib/<area>]        regenerate docs/maps/ (graph + area maps)
   codegraph check                     regen + fail if committed docs/maps/ is stale (CI gate)
   codegraph init [--ci]               install agent scaffolding into this project
-                                      (CLAUDE.md block, SessionStart hook, code-map skill)
   codegraph upgrade                   refresh codegraph-owned scaffolding to this version
-                                      (hook, skill, CLAUDE.md block; never host content)
   codegraph doctor                    verify the install (hook, gitignore, CLAUDE.md, CI gate)
-
-  codegraph brief <thing>             one-shot context card: provider, area, file, or symbol
-  codegraph blueprint <feature-dir>   build-order plan from an exemplar feature (layers, wiring, naming)
-  codegraph passport                  session digest: counts, top areas/files/providers
-  codegraph diff [--base main]        branch blast-radius card — what changed, what it touches, what's untested
-  codegraph impact <thing> [--depth N]  transitive dependents (what breaks if this changes)
-
-  codegraph find <substr> [more terms]  locate files, providers, symbols — ranked by in-degree
-  codegraph sym <Name>                symbol card: sig + doc + members + imported-by
-  codegraph skeleton <file>           per-file outline (declarations + line numbers)
-  codegraph readers <provider>        who watches/reads/listens a provider
-  codegraph callers <Symbol>          every call site (file:line) of a method/function — incl. tests
-  codegraph refs <Symbol>             every reference (calls + tear-offs + type/case uses)
-  codegraph callchain <Symbol> [--depth N]  static call tree + control-flow hazard flags (what runs / where it skips)
-  codegraph provider <name>           declaration + all consumers
-  codegraph wiring <file>             a file's full wiring, both directions
-  codegraph impls <Type>              who implements/extends a type
-  codegraph path <A> <B>              shortest connection between two files
-  codegraph unused [providers|files|all]  dead-code candidates
-  codegraph untested                  coverage gaps: providers/files with zero test references
-  codegraph attention                 triage surface (same sections as docs/maps/ATTENTION.md)
   codegraph lint                      architecture rules (cross-feature imports, layer order) — CI gate
+  codegraph rename <Sym> <new>        element-precise rename (resolved; refuses if unsafe; --apply to write)
 
-Query flags: --budget N (cap output lines, default 80; brief defaults to 150).
+low-level verbs (intent verbs compose these):
+  sym <Name> | skeleton <file> | brief <thing> | passport
+  readers <provider> | provider <name> | callers <Symbol> | refs <Symbol>
+  callchain <Symbol> [--depth N] | wiring <file> | impls <Type> | path <A> <B>
+  impact <thing> [--depth N] | diff [--base main] | blueprint <feature-dir>
+  unused [providers|files|all] | untested | attention
+
+Query flags: --budget N (cap output lines, default 80; brief/diff/health default to 150).
              --json    (find/readers/wiring/impls/sym/skeleton/untested/impact/diff/blueprint: machine-readable output)
+             --no-rebuild  (query verbs rebuild a stale/missing graph automatically; this answers from the graph as-is)
+Exit codes: 0 answered (incl. typed empties), 2 ambiguous file arg (candidates listed), 64 usage, 66 no graph.
 Run from the package root of the host project.''');
 }
 
-void main(List<String> args) {
+Future<void> main(List<String> rawArgs) async {
+  // Global flag: query verbs auto-rebuild a stale/missing graph by default
+  // (freshness.dart); --no-rebuild answers from the graph as-is.
+  final args = rawArgs.where((a) => a != '--no-rebuild').toList();
+  freshness.autoRebuild = args.length == rawArgs.length;
   if (args.isEmpty || args.first == '-h' || args.first == '--help') {
     _usage();
     exit(64);
@@ -70,7 +73,22 @@ void main(List<String> args) {
   }
   switch (args.first) {
     case 'build':
-      engine.build(args.skip(1).toList());
+      // v3 default: resolved analysis. Syntax is the automatic zero-setup
+      // fallback (no package_config) or the explicit `--syntax` opt-out.
+      // Explicit `--resolved` with no package_config refuses (in buildResolved)
+      // instead of silently degrading — the user asked for resolved by name.
+      final wantSyntax = args.contains('--syntax');
+      final hasPkgConfig = File('.dart_tool/package_config.json').existsSync();
+      if (!wantSyntax && (args.contains('--resolved') || hasPkgConfig)) {
+        await engine.buildResolved(args.skip(1).toList());
+      } else {
+        if (!wantSyntax) {
+          stderr.writeln('note: building syntax-only (no '
+              '.dart_tool/package_config.json). Run `dart pub get` for '
+              'resolved element analysis.');
+        }
+        engine.build(args.skip(1).toList());
+      }
     case 'check':
       exit(engine.check());
     case 'init':
@@ -83,10 +101,15 @@ void main(List<String> args) {
     case 'brief' || 'passport':
       exit(brief.run(args));
     case 'callers' || 'refs':
+      if (args.contains('--resolved')) {
+        exit(await callers.runResolved(args));
+      }
       exit(callers.run(args));
+    case 'rename':
+      exit(await rename.run(args));
     case 'callchain':
       exit(callchain.run(args));
-    case 'blueprint':
+    case 'blueprint' || 'plan':
       exit(blueprint.run(args));
     case 'find' ||
           'sym' ||
@@ -98,9 +121,17 @@ void main(List<String> args) {
           'unused' ||
           'untested':
       exit(query.run(args));
+    case 'uses':
+      exit(intent.runUses(args));
+    case 'change':
+      exit(intent.runChange(args));
+    case 'health':
+      exit(intent.runHealth(args));
     case 'impact':
       exit(impact.run(args));
-    case 'diff':
+    // `review` is `diff` under its intent name: the diff card already carries
+    // blast radius, changed-but-untested, and lint new-violations.
+    case 'diff' || 'review':
       exit(diff.run(args));
     case 'attention':
       exit(attention.run(args));

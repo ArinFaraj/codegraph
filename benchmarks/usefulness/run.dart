@@ -1,7 +1,11 @@
 // Usefulness benchmark: codegraph vs grep on everyday agent tasks.
 //
-// Run: `dart run benchmarks/usefulness/run.dart`
-// Write frozen ground truth: `dart run benchmarks/usefulness/generate_ground_truth.dart`
+// Run:            `dart run benchmarks/usefulness/run.dart`
+// CI gate:        `dart run benchmarks/usefulness/run.dart --check`
+//                 (fails on any codegraph recall/precision drop below the
+//                 committed floors in baseline.json, or structuralOk=false)
+// Update floors:  `dart run benchmarks/usefulness/run.dart --write-baseline`
+//                 (only after a DELIBERATE change; say why in the commit)
 //
 // Compares recall/precision/F1, tool-call budget, and output size for each
 // scenario on the shared test fixture (test/fixture.dart).
@@ -41,7 +45,7 @@ String _compileCliSnapshot() {
 
 Map<String, dynamic> runUsefulnessBenchmark() {
   if (!GrepBaseline.available) {
-    stderr.writeln('warning: ripgrep (rg) not found — grep arm will be empty');
+    stderr.writeln('warning: ripgrep (rg) not found - grep arm will be empty');
   }
 
   final tempDir = Directory.systemTemp.createTempSync('codegraph_usefulness_');
@@ -131,9 +135,70 @@ void _printTable(Map<String, dynamic> report) {
   );
 }
 
+String get _baselinePath =>
+    '${_repoRoot()}/benchmarks/usefulness/baseline.json';
+
+Map<String, dynamic> _floors(Map<String, dynamic> report) => {
+      for (final r in (report['results'] as List).cast<Map<String, dynamic>>())
+        r['id'] as String: {
+          'recall': (r['codegraph'] as Map)['recall'],
+          'precision': (r['codegraph'] as Map)['precision'],
+          if (r.containsKey('structuralOk')) 'structuralOk': r['structuralOk'],
+        },
+    };
+
+/// Compares this run's codegraph recall/precision against the committed
+/// per-scenario floors. Any drop is a regression: exit 1, loudly.
+int _check(Map<String, dynamic> report) {
+  final f = File(_baselinePath);
+  if (!f.existsSync()) {
+    stderr.writeln('no baseline at $_baselinePath - run --write-baseline');
+    return 1;
+  }
+  final floors = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+  final current = _floors(report);
+  final failures = <String>[];
+  floors.forEach((id, v) {
+    final floor = v as Map<String, dynamic>;
+    final now = current[id] as Map<String, dynamic>?;
+    if (now == null) {
+      failures.add('$id: scenario missing from run (removed without '
+          'updating baseline?)');
+      return;
+    }
+    for (final m in ['recall', 'precision']) {
+      final was = (floor[m] as num).toDouble();
+      final is_ = (now[m] as num).toDouble();
+      if (is_ < was - 1e-9) failures.add('$id: $m $was -> $is_');
+    }
+    if (floor['structuralOk'] == true && now['structuralOk'] != true) {
+      failures.add('$id: structuralOk went false');
+    }
+  });
+  if (failures.isEmpty) {
+    stdout.writeln('usefulness check OK (${floors.length} scenario floors)');
+    return 0;
+  }
+  stderr.writeln('USEFULNESS REGRESSION:');
+  for (final f in failures) {
+    stderr.writeln('  $f');
+  }
+  return 1;
+}
+
 void main(List<String> args) {
   final report = runUsefulnessBenchmark();
   final json = const JsonEncoder.withIndent('  ').convert(report);
+
+  if (args.contains('--write-baseline')) {
+    File(_baselinePath).writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert(_floors(report)));
+    stdout.writeln('wrote $_baselinePath');
+    return;
+  }
+  if (args.contains('--check')) {
+    exit(_check(report));
+  }
 
   if (args.contains('--json')) {
     stdout.writeln(json);

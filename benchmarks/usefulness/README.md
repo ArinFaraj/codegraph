@@ -25,22 +25,31 @@ update the matching `truth` set in the same commit and say why.
 ```bash
 dart run benchmarks/usefulness/run.dart            # table
 dart run benchmarks/usefulness/run.dart --json     # full report + results/latest.json
+dart run benchmarks/usefulness/run.dart --check    # CI gate: fail on any drop
+                                                   # below baseline.json floors
+dart run benchmarks/usefulness/run.dart --write-baseline  # refresh floors
+                                                   # (deliberate changes only)
 ```
 
-Requires **ripgrep** (`rg`) on PATH for the grep arm.
+Requires **ripgrep** (`rg`) on PATH for the grep arm. CI runs `--check` on
+every push - per-scenario codegraph recall/precision may never drop below the
+committed floors in [baseline.json](baseline.json).
 
 ## What it measures
 
 | Metric | Meaning |
 |--------|---------|
-| **recall** | Fraction of frozen truth found — drops on a real miss |
-| **precision** | Fraction of returned items that are correct — drops on a false edge |
+| **recall** | Fraction of frozen truth found - drops on a real miss |
+| **precision** | Fraction of returned items that are correct - drops on a false edge |
 | **F1** | Harmonic mean |
 | **toolCalls** | 1 codegraph verb vs the N rg passes a scripted grep needs |
-| **outputLines** | Proxy for context tokens spent |
+| **outputChars** | Proxy for context tokens spent (bytes of tool output) |
 
-Grep tool-call counts assume the agent reads a matched file to disambiguate
-(what a real agent does), not a naive single `rg`. Recipes: [grep_baselines.yaml](grep_baselines.yaml).
+Grep tool-call counts are flat, CHARITABLE lower bounds - the fewest calls a
+competent agent could plausibly need, not measured counts; the in-Dart
+recipes are in places smarter than real rg one-liners, so the grep arm is
+favored, never strawmanned. Recipes + per-recipe known weaknesses:
+[grep_baselines.yaml](grep_baselines.yaml).
 
 ## Scenarios
 
@@ -50,14 +59,14 @@ Grep tool-call counts assume the agent reads a matched file to disambiguate
 | `locate-member` | Where is `render()`? | member locate |
 | `locate-member-cap` | Where is `m13()` past the member cap? | the 12-member render cap must not hide member 13 |
 | `provider-readers` | Who reads `homeProvider`? | reader recall |
-| `provider-readers-precision` | Readers of `counterProvider`, **excluding** a non-ref `_Bag.listen` and a bare-token mention | **false-positive guard** — a wrong reader edge is the blocker case |
+| `provider-readers-precision` | Readers of `counterProvider`, **excluding** a non-ref `_Bag.listen` and a bare-token mention | **false-positive guard** - a wrong reader edge is the blocker case |
 | `call-sites` | Who **calls** `pingTarget`? | AST call sites, not tear-offs |
 | `subtype-tree` | Transitive subtypes of `Shape` | hierarchy closure |
 | `cross-package-importers` | Who imports `FancyButton`? | lib↔packages boundary |
 | `impact-one-hop` | 1-hop dependents of `home_page.dart` | reverse-import impact |
 | `duplicate-provider-readers` | Readers of ambiguous `dupProvider` | per-declaration narrowing |
 | `untested-providers` | Providers with zero test refs | coverage, testRef closure doctrine |
-| `ambiguous-class-refusal` | `DupBase` declared twice — must refuse | the trust doctrine: refuse, never first-wins |
+| `ambiguous-class-refusal` | `DupBase` declared twice - must refuse | the trust doctrine: refuse, never first-wins - checked on the SHIPPED CLI surface (`impls --json` `ambiguous` flag), not the in-memory graph |
 
 ## What this benchmark does NOT tell you
 
@@ -66,9 +75,11 @@ Grep tool-call counts assume the agent reads a matched file to disambiguate
   [../README.md](../README.md).
 - **Correctness on a real repo.** The fixture is synthetic and built to exercise
   known shapes. It is a regression gate, not proof the tool is right on your app.
+  For real-repo correctness, run the reference host's
+  `tools/codegraph_bench/run.dart` suite (see [../README.md](../README.md)).
 - **That codegraph "beats grep" in general.** It shows codegraph needs fewer
   tool calls for equal-or-better retrieval on these specific shapes. Grep ties on
   simple unique-name locates; neither wins on behavioral/runtime questions.
 
-Read per-scenario recall/precision, not the average — the average hides which
+Read per-scenario recall/precision, not the average - the average hides which
 capability regressed.

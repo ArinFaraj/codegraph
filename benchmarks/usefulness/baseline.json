@@ -1,0 +1,51 @@
+{
+  "locate-symbol": {
+    "recall": 1.0,
+    "precision": 0.333
+  },
+  "locate-member": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "locate-member-cap": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "provider-readers": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "provider-readers-precision": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "call-sites": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "subtype-tree": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "cross-package-importers": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "impact-one-hop": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "duplicate-provider-readers": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "untested-providers": {
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "ambiguous-class-refusal": {
+    "recall": 1.0,
+    "precision": 1.0,
+    "structuralOk": true
+  }
+}

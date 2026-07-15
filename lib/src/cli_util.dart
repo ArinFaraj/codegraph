@@ -5,6 +5,8 @@
 // these identically; this is the single copy.
 import 'dart:io';
 
+import 'freshness.dart' show freshnessChecked, lastLoadFresh;
+
 int? intFlag(List<String> args, String name) {
   final i = args.indexOf(name);
   if (i >= 0 && i + 1 < args.length) return int.tryParse(args[i + 1]);
@@ -39,6 +41,125 @@ String inDegSuffix(int n) => n > 0 ? ' ·$n⇐' : '';
 /// Strips a node id's `kind:` prefix (`file:lib/x.dart` -> `lib/x.dart`,
 /// `provider:name` -> `name`) — every verb that prints a bare id needed this.
 String bare(String id) => id.substring(id.indexOf(':') + 1);
+
+/// Runs `git <args>` via `Process.runSync`, returning `null` (never
+/// throwing) when git isn't on PATH (`ProcessException`) — the guard every
+/// direct git call in this codebase must use, so a missing git binary
+/// degrades a feature instead of crashing the whole command.
+ProcessResult? runGit(List<String> args, {String? workingDirectory}) {
+  try {
+    return Process.runSync('git', args, workingDirectory: workingDirectory);
+  } on ProcessException {
+    return null;
+  }
+}
+
+/// The freshness clause every typed empty result carries, so an agent can
+/// never mistake "not in the graph" for "graph predates the code" - the
+/// documented silent-false-negative trap. loadFresh guarantees fresh unless
+/// --no-rebuild kept a stale graph, which this then flags loudly.
+String freshnessClause(int files) => !freshnessChecked
+    ? 'freshness unchecked (--no-rebuild), $files files indexed'
+    : lastLoadFresh
+        ? 'graph fresh, $files files indexed'
+        : 'GRAPH STALE - run: codegraph build';
+
+/// One-line scope caveat per verb, printed at the end of every text answer
+/// and carried as `caveats` in --json. One registry so the wording cannot
+/// drift per verb: LIMITATIONS.md is the long-form registry, this is the line
+/// that prevents over-trust at the moment of use.
+const verbCaveats = <String, List<String>>{
+  'readers': [
+    'reader edges are file-level and lib-only; reads through wrapper objects '
+        '(x.ref.read) are not detected',
+    'ProviderScope overrides are not modeled - which implementation actually '
+        'executes may differ per scope (bootstrap/test/route overrides)',
+    'family providers collapse to one node - userProvider(a) and '
+        'userProvider(b) are the same reader edge',
+  ],
+  'provider': [
+    'reader edges are file-level and lib-only; reads through wrapper objects '
+        '(x.ref.read) are not detected',
+    'ProviderScope overrides are not modeled - which implementation actually '
+        'executes may differ per scope (bootstrap/test/route overrides)',
+    'family providers collapse to one node - userProvider(a) and '
+        'userProvider(b) are the same reader edge',
+  ],
+  'wiring': [
+    'lib-only; navigation targets are captured expressions, not a route graph'
+  ],
+  'impls': [
+    'stated extends/implements only; "test fakes" entries are scanned from '
+        'test roots, outside the lib graph'
+  ],
+  'find': ['indexes lib + local packages only (no test/, no generated files)'],
+  'sym': ['imported-by lists lib importers only (tests excluded)'],
+  'callers': [
+    'AST call sites; dynamic dispatch/reflection is invisible',
+    'same-named declarations are merged - sites match by name across ALL '
+        'declarations, so count can be inflated',
+  ],
+  'refs': [
+    'name-matched references; dynamic dispatch/reflection is invisible',
+    'same-named declarations are merged - sites match by name across ALL '
+        'declarations, so count can be inflated',
+  ],
+  'impact': [
+    'follows import/reader edges only; runtime coupling (DI, string routes) '
+        'is not included'
+  ],
+  'unused': [
+    'CANDIDATES, not verdicts - confirm with exact-path grep across lib test '
+        'integration_test patrol_test, then flutter analyze'
+  ],
+  'untested': [
+    'token/import matching - candidate data; barrel credit follows the '
+        'export closure',
+    'a name declared in several files shares one credit - an untested '
+        'same-named declaration can inherit a tested one\'s credit',
+  ],
+};
+
+/// Which low-level verbs each intent verb composes - its caveat list is the
+/// deduped union of theirs ([caveatsFor]), computed at runtime so the wording
+/// can never drift from the constituent entries above. 'review' shares
+/// diff's (none today) and 'plan' shares blueprint's (none), so neither
+/// needs an entry.
+const _intentConstituents = <String, List<String>>{
+  'uses': ['readers', 'impls', 'callers', 'refs', 'wiring'],
+  'change': ['impact', 'impls', 'untested'],
+  'health': ['unused', 'untested'],
+};
+
+/// Caveat list for [verb]: the registry entry, or for an intent verb the
+/// deduped union of its constituents' entries (order-preserving).
+List<String> caveatsFor(String verb) {
+  final parts = _intentConstituents[verb];
+  if (parts == null) return verbCaveats[verb] ?? const [];
+  final out = <String>[];
+  for (final p in parts) {
+    for (final c in verbCaveats[p] ?? const <String>[]) {
+      if (!out.contains(c)) out.add(c);
+    }
+  }
+  return out;
+}
+
+/// Text-mode caveat trailer. No-op for verbs with nothing to disclaim.
+void emitCaveats(String verb) {
+  final c = caveatsFor(verb);
+  if (c.isNotEmpty) stdout.writeln('caveat: ${c.join('; ')}');
+}
+
+/// The shared --json header keys: verb, query, graph freshness, and the same
+/// caveats the text form prints. Spread FIRST so existing keys stay in place.
+Map<String, dynamic> envelope(String verb, String query) => {
+      'verb': verb,
+      'query': query,
+      // null = freshness unchecked (--no-rebuild skipped the digest walk).
+      'fresh': freshnessChecked ? lastLoadFresh : null,
+      'caveats': caveatsFor(verb),
+    };
 
 /// Shared remaining-count budget threaded through the ordered sections of a
 /// `--json` record so the TOTAL items emitted across every section is capped

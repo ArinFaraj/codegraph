@@ -21,45 +21,71 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
+import 'freshness.dart';
 import 'model.dart';
+import 'resolve.dart';
 import 'test_impls.dart';
 
-/// Runs a query verb (`args.first`) and returns the exit code.
+/// Runs a query verb and returns the exit code.
 int run(List<String> args) {
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
 
   final positional = args.where((a) => !a.startsWith('--')).toList();
   final budget = intFlag(args, '--budget') ?? 80;
   final asJson = args.contains('--json');
+  const validVerbs = [
+    'readers',
+    'provider',
+    'wiring',
+    'impls',
+    'find',
+    'sym',
+    'path',
+    'unused',
+    'untested',
+  ];
+  if (positional.isEmpty) {
+    stderr.writeln('usage: <verb> [args]');
+    stderr.writeln('valid verbs: ${validVerbs.join(', ')}');
+    return 64;
+  }
   final cmd = positional.first;
   final rest = positional.skip(1).toList();
 
+  var code = 0;
   switch (cmd) {
     case 'readers':
-      _readers(graph, rest, budget, asJson);
+      readers(graph, rest, budget, asJson);
     case 'provider':
       // Alias of `readers`; reads better when you start from the provider.
-      _readers(graph, rest, budget, asJson);
+      readers(graph, rest, budget, asJson);
     case 'wiring':
-      _wiring(graph, rest, budget, asJson);
+      code = _wiring(graph, rest, budget, asJson);
     case 'impls':
-      _impls(graph, rest, budget, asJson);
+      impls(graph, rest, budget, asJson);
     case 'find':
       _find(graph, rest, budget, asJson);
     case 'sym':
       _sym(graph, rest, budget, asJson);
     case 'path':
-      _path(graph, rest);
+      code = _path(graph, rest);
     case 'unused':
       _unused(graph, rest, budget);
     case 'untested':
       _untested(graph, budget, asJson);
+    default:
+      stderr.writeln('unknown verb: $cmd');
+      stderr.writeln('valid verbs: ${validVerbs.join(', ')}');
+      return 64;
   }
-  return 0;
+  // Text answers end with the verb's scope caveat (JSON carries the same list
+  // in the envelope) - the one line that prevents over-trust at use time.
+  if (!asJson) emitCaveats(cmd);
+  return code;
 }
 
-void _readersInto(Graph graph, List<String> out, GraphNode decl) {
+void readersInto(Graph graph, List<String> out, GraphNode decl) {
   final id = decl.id;
   final name = decl.name!;
   out.add(
@@ -68,11 +94,17 @@ void _readersInto(Graph graph, List<String> out, GraphNode decl) {
     ' — declared in ${decl.declaredIn}',
   );
   final consumers = graph.edges.where(
-    (e) => e.dst == id && const {'reads', 'watches', 'listens'}.contains(e.rel),
+    (e) => e.dst == id && providerConsumerRels.contains(e.rel),
   );
+  // Only annotate confidence in a RESOLVED build (some edge is element-resolved).
+  // In a syntax build everything is heuristic, so the marker would be noise.
+  final resolvedBuild = graph.edges.any((e) => e.confidence == 'resolved');
   final byRel = <String, List<String>>{};
   for (final e in consumers) {
-    byRel.putIfAbsent(e.rel, () => []).add(e.src.replaceFirst('file:', ''));
+    final f = e.src.replaceFirst('file:', '');
+    final mark =
+        (resolvedBuild && e.confidence != 'resolved') ? '  [unconfirmed]' : '';
+    byRel.putIfAbsent(e.rel, () => []).add('$f$mark');
   }
   for (final rel in ['watches', 'reads', 'listens']) {
     final list = (byRel[rel] ?? [])..sort();
@@ -81,6 +113,9 @@ void _readersInto(Graph graph, List<String> out, GraphNode decl) {
     out.addAll(list.map((f) => '  $f'));
   }
   if (byRel.isEmpty) out.add('(no consumers found)');
+  if (resolvedBuild) {
+    out.add('([unconfirmed] = name-matched receiver, not element-confirmed)');
+  }
 }
 
 /// Record form of one declaration's reader lists, for `--json`. [remaining]
@@ -112,7 +147,7 @@ Map<String, dynamic> _readersRecord(
   };
 }
 
-void _readers(Graph graph, List<String> rest, int budget, bool asJson) {
+void readers(Graph graph, List<String> rest, int budget, bool asJson) {
   if (rest.isEmpty) {
     stderr.writeln('usage: readers <provider>');
     exit(64);
@@ -126,7 +161,7 @@ void _readers(Graph graph, List<String> rest, int budget, bool asJson) {
   if (decls.isEmpty) {
     if (asJson) {
       stdout.writeln(
-        jsonEncode({'verb': 'readers', 'query': name, 'results': []}),
+        jsonEncode({...envelope('readers', name), 'results': []}),
       );
       return;
     }
@@ -152,7 +187,9 @@ void _readers(Graph graph, List<String> rest, int budget, bool asJson) {
       symKind != null
           ? '$symName is a $symKind, not a provider — `readers` is provider-only. '
               'For its usage use `find $symName` or `wiring <file>`.'
-          : 'provider $name — (not declared in lib; external or misspelled)',
+          : 'provider $name — not declared in lib '
+              '(${freshnessClause(graph.stats['files'] ?? 0)}); '
+              'external, or misspelled',
     ], budget);
     return;
   }
@@ -163,8 +200,7 @@ void _readers(Graph graph, List<String> rest, int budget, bool asJson) {
         decls.map((d) => _readersRecord(graph, d, remaining)).toList();
     stdout.writeln(
       jsonEncode({
-        'verb': 'readers',
-        'query': name,
+        ...envelope('readers', name),
         'results': results,
         if (remaining.truncated) 'truncated': true,
       }),
@@ -174,7 +210,7 @@ void _readers(Graph graph, List<String> rest, int budget, bool asJson) {
 
   final out = <String>[];
   if (decls.length == 1) {
-    _readersInto(graph, out, decls.single);
+    readersInto(graph, out, decls.single);
   } else {
     // Same name declared more than once — never merge, list each
     // declaration's own (import-reachability-resolved) readers separately.
@@ -184,14 +220,14 @@ void _readers(Graph graph, List<String> rest, int budget, bool asJson) {
     );
     for (final decl in decls) {
       out.add('');
-      _readersInto(graph, out, decl);
+      readersInto(graph, out, decl);
     }
     final unresolved = graph.edges
         .where(
           (e) =>
               e.dst == 'provider:$name' &&
               e.isUnresolvedAmbiguous &&
-              const {'reads', 'watches', 'listens'}.contains(e.rel),
+              providerConsumerRels.contains(e.rel),
         )
         .toList();
     if (unresolved.isNotEmpty) {
@@ -222,6 +258,25 @@ void _readers(Graph graph, List<String> rest, int budget, bool asJson) {
 /// `impls <Notifier>` (subtypes) and `sym <State>` (state-type users), naming
 /// the actual classes when they can be read from the declaring file.
 String? _shapeChangeHint(Graph graph, List<GraphNode> decls) {
+  final info = notifierInfo(graph, decls);
+  if (info == null) return null;
+  final impls = info.notifierClass != null
+      ? 'impls ${info.notifierClass}'
+      : 'impls <Notifier>';
+  final sym =
+      info.stateType != null ? 'sym ${info.stateType}' : 'sym <StateType>';
+  return 'shape change? `readers` lists CONSUMERS only — a change to '
+      '${info.decl.name}\'s state shape also affects its Notifier subclasses '
+      'and state-type users (not shown here). Also run: `$impls` · `$sym`.';
+}
+
+/// Notifier-backed provider details behind the shape-change surfaces: the
+/// first Notifier-typed declaration in [decls], plus the Notifier class name
+/// and state type parsed from its declaring file's symbols (either may be
+/// null when unparsable). Returns null when no declaration is
+/// Notifier-backed. Shared by `readers`' hint and `change` (intent.dart).
+({GraphNode decl, String? notifierClass, String? stateType})? notifierInfo(
+    Graph graph, List<GraphNode> decls) {
   GraphNode? nd;
   for (final d in decls) {
     if ((d.providerType ?? '').contains('Notifier')) {
@@ -246,18 +301,13 @@ String? _shapeChangeHint(Graph graph, List<GraphNode> decls) {
       }
     }
   }
-  final impls =
-      notifierClass != null ? 'impls $notifierClass' : 'impls <Notifier>';
-  final sym = stateType != null ? 'sym $stateType' : 'sym <StateType>';
-  return 'shape change? `readers` lists CONSUMERS only — a change to '
-      '${nd.name}\'s state shape also affects its Notifier subclasses and '
-      'state-type users (not shown here). Also run: `$impls` · `$sym`.';
+  return (decl: nd, notifierClass: notifierClass, stateType: stateType);
 }
 
 /// Section-name -> sorted (full, untruncated) list of `GraphEdge.dstDisplayName`
 /// strings — the record `_wiring` renders as text (global `_emit` line cap)
 /// or `--json` (per-array `--budget` cap applied at serialization).
-Map<String, List<String>> _wiringRecord(Graph graph, String id) {
+Map<String, List<String>> wiringRecord(Graph graph, String id) {
   List<String> section(Iterable<String> items) => items.toList()..sort();
   return {
     'declares': section(
@@ -308,41 +358,39 @@ Map<String, List<String>> _wiringRecord(Graph graph, String id) {
   };
 }
 
-void _wiring(Graph graph, List<String> rest, int budget, bool asJson) {
+int _wiring(Graph graph, List<String> rest, int budget, bool asJson) {
   if (rest.isEmpty) {
     stderr.writeln('usage: wiring <file-substring>');
     exit(64);
   }
   final sub = rest.first;
-  final matches =
-      graph.nodes.where((n) => n.isFile && n.id.contains(sub)).toList();
-  if (matches.isEmpty) {
-    if (asJson) {
-      stdout.writeln(
-        jsonEncode({'verb': 'wiring', 'query': sub, 'results': []}),
-      );
-      return;
-    }
-    stdout.writeln('no file matches "$sub" — try `find $sub`');
-    return;
+  final String id;
+  switch (resolveFileArg(graph, sub)) {
+    case NotFoundFile():
+      if (asJson) {
+        stdout.writeln(
+          jsonEncode({...envelope('wiring', sub), 'results': []}),
+        );
+        return 0;
+      }
+      stdout.writeln('no file matches "$sub" — try `find $sub`');
+      return 0;
+    case AmbiguousFile(:final candidates):
+      if (asJson) {
+        stdout.writeln(
+          jsonEncode({
+            ...envelope('wiring', sub),
+            'ambiguous': [for (final c in candidates) 'file:$c'],
+          }),
+        );
+      } else {
+        printAmbiguous(sub, candidates, cap: budget);
+      }
+      return 2;
+    case ResolvedFile(:final path):
+      id = 'file:$path';
   }
-  if (matches.length > 1) {
-    if (asJson) {
-      stdout.writeln(
-        jsonEncode({
-          'verb': 'wiring',
-          'query': sub,
-          'ambiguous': matches.map((m) => m.id).toList(),
-        }),
-      );
-      return;
-    }
-    stdout.writeln('multiple files match "$sub":');
-    emit(matches.map((m) => '  ${m.id}').toList(), budget);
-    return;
-  }
-  final id = matches.first.id;
-  final record = _wiringRecord(graph, id);
+  final record = wiringRecord(graph, id);
 
   if (asJson) {
     // Shared remaining-count budget across sections, in their declared
@@ -366,19 +414,18 @@ void _wiring(Graph graph, List<String> rest, int budget, bool asJson) {
     };
     stdout.writeln(
       jsonEncode({
-        'verb': 'wiring',
-        'query': sub,
+        ...envelope('wiring', sub),
         'file': id.replaceFirst('file:', ''),
-        'role': matches.first.role,
+        'role': graph.byId[id]?.role,
         ...capped,
         if (remaining.truncated) 'truncated': true,
       }),
     );
-    return;
+    return 0;
   }
 
   final out = <String>[
-    '${id.replaceFirst('file:', '')}  [${matches.first.role}]',
+    '${id.replaceFirst('file:', '')}  [${graph.byId[id]?.role}]',
   ];
   for (final label in ['declares', 'watches', 'reads', 'listens']) {
     final list = record[label]!;
@@ -398,9 +445,10 @@ void _wiring(Graph graph, List<String> rest, int budget, bool asJson) {
     out.addAll(list.map((e) => '  $e'));
   }
   emit(out, budget, hint: 'raise --budget N');
+  return 0;
 }
 
-void _impls(Graph graph, List<String> rest, int budget, bool asJson) {
+void impls(Graph graph, List<String> rest, int budget, bool asJson) {
   if (rest.isEmpty) {
     stderr.writeln('usage: impls <Type>');
     exit(64);
@@ -414,32 +462,51 @@ void _impls(Graph graph, List<String> rest, int budget, bool asJson) {
   // a subtype of C), so the closure introduces no guessed edges. Cycle-guarded.
 
   // parent name -> its direct subtypes: (child name, declaring file), sorted.
-  final childrenOf = <String, List<({String child, String file})>>{};
+  final childrenOf =
+      <String, List<({String child, String file, bool ambiguous})>>{};
   for (final e in graph.edges) {
     if (e.rel != 'implements/extends') continue;
-    final detail = e.detail ?? '';
-    final arrow = detail.indexOf(' -> ');
-    if (arrow < 0) continue;
-    final child = detail.substring(0, arrow);
-    final parent = detail.substring(arrow + 4);
-    childrenOf
-        .putIfAbsent(parent, () => [])
-        .add((child: child, file: e.src.replaceFirst('file:', '')));
+    String? child = e.childName;
+    String? parent = e.parentName;
+    if (child == null || parent == null) {
+      // Pre-format-6 graph: fields weren't emitted, fall back to parsing
+      // the old 'child -> parent' detail text.
+      final detail = e.detail ?? '';
+      final arrow = detail.indexOf(' -> ');
+      if (arrow < 0) continue;
+      child = detail.substring(0, arrow);
+      parent = detail.substring(arrow + 4);
+    }
+    childrenOf.putIfAbsent(parent, () => []).add((
+      child: child,
+      file: e.src.replaceFirst('file:', ''),
+      ambiguous: e.ambiguous,
+    ));
   }
   for (final list in childrenOf.values) {
     list.sort((a, b) => a.child.compareTo(b.child));
   }
 
   // BFS from `type` over the subtype relation, tracking depth for indentation.
-  final rows = <({int depth, String child, String parent, String file})>[];
+  final rows = <({
+    int depth,
+    String child,
+    String parent,
+    String file,
+    bool ambiguous
+  })>[];
   final seen = <String>{type};
   final queue = <({String name, int depth})>[(name: type, depth: 0)];
   while (queue.isNotEmpty) {
     final cur = queue.removeAt(0);
     for (final kid in childrenOf[cur.name] ?? const []) {
-      rows.add(
-        (depth: cur.depth, child: kid.child, parent: cur.name, file: kid.file),
-      );
+      rows.add((
+        depth: cur.depth,
+        child: kid.child,
+        parent: cur.name,
+        file: kid.file,
+        ambiguous: kid.ambiguous,
+      ));
       if (seen.add(kid.child)) {
         queue.add((name: kid.child, depth: cur.depth + 1));
       }
@@ -457,8 +524,7 @@ void _impls(Graph graph, List<String> rest, int budget, bool asJson) {
   if (asJson) {
     stdout.writeln(
       jsonEncode({
-        'verb': 'impls',
-        'query': type,
+        ...envelope('impls', type),
         'results': rows
             .take(budget)
             .map((r) => {
@@ -466,6 +532,7 @@ void _impls(Graph graph, List<String> rest, int budget, bool asJson) {
                   'supertype': r.parent,
                   'depth': r.depth,
                   'file': r.file,
+                  if (r.ambiguous) 'ambiguous': true,
                 })
             .toList(),
         'testSubtypes': testFakes
@@ -487,10 +554,18 @@ void _impls(Graph graph, List<String> rest, int budget, bool asJson) {
 
   final out = <String>['implementers / subtypes of $type (transitive):'];
   if (rows.isEmpty && testFakes.isEmpty) {
-    out.add('  (none found)');
+    // Typed empty: "declared but nothing extends it" is a real answer;
+    // "no such type" is a different one and must say the graph was fresh.
+    final decls = graph.declarationsOf(type);
+    out.add(decls.isNotEmpty
+        ? '  (no subtypes - $type is declared at ${decls.join(', ')})'
+        : '  (no such type - ${freshnessClause(graph.stats['files'] ?? 0)})');
   } else {
     for (final r in rows) {
-      out.add('  ${'  ' * r.depth}${r.child} -> ${r.parent}  (${r.file})');
+      final flag = r.ambiguous
+          ? '  [AMBIGUOUS: ${r.parent} has multiple declarations, verify]'
+          : '';
+      out.add('  ${'  ' * r.depth}${r.child} -> ${r.parent}  (${r.file})$flag');
     }
     if (testFakes.isNotEmpty) {
       out.add('  test fakes (outside the graph, from test roots):');
@@ -627,8 +702,7 @@ void _find(Graph graph, List<String> rest, int budget, bool asJson) {
   if (asJson) {
     stdout.writeln(
       jsonEncode({
-        'verb': 'find',
-        'query': sub,
+        ...envelope('find', sub),
         'results': hits.take(budget).map((h) => h.toJson()).toList(),
         // Non-silent truncation, matching the other --json verbs (callers,
         // impls, …) — a consumer capping at --budget must know results dropped.
@@ -647,7 +721,9 @@ void _find(Graph graph, List<String> rest, int budget, bool asJson) {
 
   final out = hits.map(render).toList();
   emit(
-    out.isEmpty ? ['(no matches)'] : out,
+    out.isEmpty
+        ? ['no matches (${freshnessClause(graph.stats['files'] ?? 0)})']
+        : out,
     budget,
     hint: 'narrow the substring, or: sym <Name> for one symbol',
   );
@@ -742,8 +818,7 @@ void _sym(Graph graph, List<String> rest, int budget, bool asJson) {
       if (asJson) {
         stdout.writeln(
           jsonEncode({
-            'verb': 'sym',
-            'query': query,
+            ...envelope('sym', query),
             'results': memberHits
                 .map((h) => {
                       'kind': 'member',
@@ -775,11 +850,12 @@ void _sym(Graph graph, List<String> rest, int budget, bool asJson) {
     }
     if (asJson) {
       stdout.writeln(
-        jsonEncode({'verb': 'sym', 'query': query, 'results': []}),
+        jsonEncode({...envelope('sym', query), 'results': []}),
       );
       return;
     }
-    stdout.writeln('no symbol matches "$query" — try `find $query`');
+    stdout.writeln('no symbol matches "$query" '
+        '(${freshnessClause(graph.stats['files'] ?? 0)}) — try `find $query`');
     return;
   }
 
@@ -807,8 +883,7 @@ void _sym(Graph graph, List<String> rest, int budget, bool asJson) {
   if (asJson) {
     stdout.writeln(
       jsonEncode({
-        'verb': 'sym',
-        'query': query,
+        ...envelope('sym', query),
         'results': records
             .map(
               (r) => {
@@ -882,43 +957,42 @@ void _unused(Graph graph, List<String> rest, int budget) {
   emit(out, budget);
 }
 
-/// Roles a file needs to have to count as a coverage gap in `untested files`
-/// — the Standard-07-shaped set (view/controller/repository/provider); a
-/// `misc`/`widget`/etc. file isn't expected to carry its own test file.
-const _untestedRoles = {'view', 'controller', 'repository', 'provider'};
+int Function(GraphNode, GraphNode) _byDegThenName(
+        Graph graph, String Function(GraphNode) key) =>
+    (a, b) {
+      final byDeg = (graph.inDeg[b.id] ?? 0).compareTo(graph.inDeg[a.id] ?? 0);
+      return byDeg != 0 ? byDeg : key(a).compareTo(key(b));
+    };
+
+/// Providers with zero test references (candidate data — a token-name match,
+/// not a resolved reference, see `GraphNode.testRefs`), in-degree desc then
+/// name. Shared by `untested` and `health` (intent.dart).
+List<GraphNode> untestedProviders(Graph graph) =>
+    graph.nodes.where((n) => n.isProvider && n.testRefs == 0).toList()
+      ..sort(_byDegThenName(graph, (n) => n.name!));
+
+/// Files with zero test references, filtered to the roles a change to them
+/// is expected to need direct coverage for. Shared with `health`.
+List<GraphNode> untestedFiles(Graph graph) => graph.nodes
+    .where(
+      (n) => n.isFile && n.testRefs == 0 && untestedRoles.contains(n.role),
+    )
+    .toList()
+  ..sort(_byDegThenName(graph, (n) => n.id));
 
 /// `untested` — coverage-gap surface built from Stage 1's `testRefs` counts.
 /// Two sections, both sorted in-degree desc then name (same convention as
-/// `unused`/`find`): providers with zero test references (candidate data —
-/// a token-name match, not a resolved reference, see `GraphNode.testRefs`);
-/// files with zero test references, filtered to the roles a change to them
-/// is expected to need direct coverage for.
+/// `unused`/`find`).
 void _untested(Graph graph, int budget, bool asJson) {
   int inDeg(GraphNode n) => graph.inDeg[n.id] ?? 0;
-  int Function(GraphNode, GraphNode) byDegThenName(
-          String Function(GraphNode) key) =>
-      (a, b) {
-        final byDeg = inDeg(b).compareTo(inDeg(a));
-        return byDeg != 0 ? byDeg : key(a).compareTo(key(b));
-      };
-
-  final providers = graph.nodes
-      .where((n) => n.isProvider && n.testRefs == 0)
-      .toList()
-    ..sort(byDegThenName((n) => n.name!));
-
-  final files = graph.nodes
-      .where(
-        (n) => n.isFile && n.testRefs == 0 && _untestedRoles.contains(n.role),
-      )
-      .toList()
-    ..sort(byDegThenName((n) => n.id));
+  final providers = untestedProviders(graph);
+  final files = untestedFiles(graph);
 
   if (asJson) {
     final remaining = Budget(budget);
     stdout.writeln(
       jsonEncode({
-        'verb': 'untested',
+        ...envelope('untested', ''),
         'providers': remaining.take(
           providers
               .map(
@@ -968,36 +1042,34 @@ void _untested(Graph graph, int budget, bool asJson) {
   emit(out, budget, hint: 'raise --budget N');
 }
 
-void _path(Graph graph, List<String> rest) {
+int _path(Graph graph, List<String> rest) {
   if (rest.length < 2) {
     stderr.writeln('usage: path <A> <B>');
     exit(64);
   }
+  var ambiguous = false;
   String? resolve(String s) {
-    final hits = graph.nodes
-        .where((n) => n.isFile && n.id.contains(s))
-        .map((n) => n.id)
-        .toList();
-    if (hits.length == 1) return hits.first;
-    final exact = hits.where((h) => h.endsWith('/$s') || h.endsWith(':$s'));
-    if (exact.length == 1) return exact.first;
-    if (hits.length > 1) {
-      stdout.writeln('"$s" is ambiguous (${hits.length} files):');
-      for (final h in hits.take(8)) {
-        stdout.writeln('  ${h.replaceFirst('file:', '')}');
-      }
+    switch (resolveFileArg(graph, s)) {
+      case ResolvedFile(:final path):
+        return 'file:$path';
+      case AmbiguousFile(:final candidates):
+        printAmbiguous(s, candidates);
+        ambiguous = true;
+        return null;
+      case NotFoundFile():
+        return null;
     }
-    return null;
   }
 
   final a = resolve(rest[0]);
   final b = resolve(rest[1]);
   if (a == null || b == null) {
+    if (ambiguous) return 2;
     stdout.writeln(
       'could not resolve ${a == null ? rest[0] : rest[1]} to a single file'
       ' — try `find ${a == null ? rest[0] : rest[1]}`',
     );
-    return;
+    return 0;
   }
   // Undirected adjacency over imports + provider wiring (file<->provider<->file).
   final adj = <String, Set<String>>{};
@@ -1032,7 +1104,7 @@ void _path(Graph graph, List<String> rest) {
   }
   if (!prev.containsKey(b)) {
     stdout.writeln('no path found between the two files');
-    return;
+    return 0;
   }
   final path = <String>[];
   String? cur = b;
@@ -1045,4 +1117,5 @@ void _path(Graph graph, List<String> rest) {
         .map((n) => n.replaceFirst('file:', '').replaceFirst('provider:', 'Π '))
         .join('\n  → '),
   );
+  return 0;
 }

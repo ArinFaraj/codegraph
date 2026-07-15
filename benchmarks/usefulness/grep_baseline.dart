@@ -37,7 +37,7 @@ class GrepBaseline {
         workingDirectory: root.path,
       );
 
-  /// `rg -l` then filter — counts as one tool call per scenario in scoring.
+  /// `rg -l` then filter - counts as one tool call per scenario in scoring.
   Set<String> filesMatching(String pattern,
       {List<String> roots = const ['lib', 'packages', 'test']}) {
     final out = <String>{};
@@ -58,7 +58,7 @@ class GrepBaseline {
   Set<String> locateSymbol(String name) =>
       filesMatching('class $name', roots: ['lib', 'packages']);
 
-  /// Textual "method exists" search — matches declarations, calls, comments.
+  /// Textual "method exists" search - matches declarations, calls, comments.
   Set<String> locateMemberName(String name) =>
       filesMatching(name, roots: ['lib', 'packages']);
 
@@ -86,7 +86,7 @@ class GrepBaseline {
     return readers;
   }
 
-  /// Bare name match — includes declaration, tear-offs, string literals.
+  /// Bare name match - includes declaration, tear-offs, string literals.
   Set<String> callSitesByName(String symbol) {
     final out = <String>{};
     for (final r in ['lib', 'packages', 'test']) {
@@ -108,7 +108,7 @@ class GrepBaseline {
     return out;
   }
 
-  /// Direct `extends`/`implements` only — misses transitive subtypes.
+  /// Direct `extends`/`implements` only - misses transitive subtypes.
   Set<String> directSubtypesOf(String type) {
     final out = <String>{};
     for (final r in ['lib', 'packages']) {
@@ -142,32 +142,34 @@ class GrepBaseline {
   }
 
   /// One-hop import followers (reverse: who imports files that import seed).
+  ///
+  /// Matches on the seed's basename, because import statements use
+  /// `package:` URIs that never carry the on-disk `lib/` prefix - matching the
+  /// full disk path can never hit and silently zeroed this arm before.
   Set<String> impactOneHop(String fileSuffix) {
-    final seedFiles = filesMatching(fileSuffix, roots: ['lib', 'packages'])
-        .where((f) => f.endsWith(fileSuffix) || f.contains(fileSuffix))
-        .toSet();
+    // Seeds are located by PATH (what `find`/`rg --files -g` does), not by
+    // grepping file contents for their own name - a file rarely mentions
+    // its own filename, so the old content-grep returned zero seeds.
+    final seedFiles = [
+      ..._dartFilesUnder('lib'),
+      ..._dartFilesUnder('packages')
+    ].where((f) => f.endsWith(fileSuffix)).toSet();
     if (seedFiles.isEmpty) return {};
     final importers = <String>{};
-    for (final rel in _dartFilesUnder('lib')) {
+    for (final rel in [
+      ..._dartFilesUnder('lib'),
+      ..._dartFilesUnder('packages')
+    ]) {
       final content = File('${root.path}/$rel').readAsStringSync();
       for (final seed in seedFiles) {
-        final importNeedle = seed.replaceAll('/', '/');
-        if (content.contains(importNeedle)) importers.add(rel);
-      }
-    }
-    for (final rel in _dartFilesUnder('packages')) {
-      final content = File('${root.path}/$rel').readAsStringSync();
-      for (final seed in seedFiles) {
-        if (content.contains(seed.split('/').last.replaceAll('.dart', ''))) {
-          importers.add(rel);
-        }
+        if (content.contains(seed.split('/').last)) importers.add(rel);
       }
     }
     importers.removeAll(seedFiles);
     return importers;
   }
 
-  /// Providers with token mention in tests but no import closure — very noisy.
+  /// Providers with token mention in tests but no import closure - very noisy.
   Set<String> untestedProvidersHeuristic(List<String> allProviderNames) {
     final untested = <String>{};
     for (final name in allProviderNames) {

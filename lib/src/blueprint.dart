@@ -24,6 +24,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
+import 'freshness.dart';
 import 'model.dart';
 
 /// Canonical top-segment build-order rank for LAYERED features. Anything not
@@ -91,7 +92,7 @@ int run(List<String> args) {
   }
   final arg = positional[1];
 
-  final graph = Graph.load();
+  final graph = loadFresh();
   if (graph == null) return 66;
 
   // Resolve arg to a feature prefix (a dir). Accept with/without trailing
@@ -203,7 +204,7 @@ class _Wiring {
 /// invisible to `_topology`'s provider-only scan — surfaced by an A/B eval).
 /// Mirrors brief's cross-area computation. `name ← declaring-file`, sorted.
 List<String> _externalSeam(Graph graph, String prefix, Set<String> fileIds) {
-  const usage = {'watches', 'reads', 'listens'};
+  const usage = providerConsumerRels;
   final seam = <String, String>{};
   for (final e in graph.edges) {
     if (!fileIds.contains(e.src) || !usage.contains(e.rel)) continue;

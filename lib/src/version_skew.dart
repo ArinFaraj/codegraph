@@ -5,7 +5,7 @@
 /// This binary's version. The single source of truth; `bin/codegraph.dart`
 /// re-exports it so the CLI banner and the stamp written by `init`/`upgrade`
 /// can never drift from what the skew check reads.
-const binaryVersion = '0.9.7';
+const binaryVersion = '3.0.0';
 
 /// Skew of the installed scaffolding vs the running binary. `scaffold` is the
 /// stamp read back from the host (null when absent/unparseable).

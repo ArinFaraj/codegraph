@@ -1,5 +1,69 @@
 import 'dart:io';
 
+/// Writes a minimal `.dart_tool/package_config.json` for the fixture so
+/// `engine.buildResolved` can run the analyzer's resolved element model over
+/// it (3.0). Maps the two local packages (`fixture`, `fixture_ui`); the SDK is
+/// found from the running Dart. External packages the fixture names (go_router)
+/// are intentionally absent - those files resolve self/SDK types and leave the
+/// external symbols unresolved, exercising the per-file partial-resolution path
+/// without vendoring real dependencies.
+void writeFixturePackageConfig(Directory root) {
+  // Minimal resolvable stand-in for go_router, placed OUTSIDE the scanned roots
+  // (`.fixture_deps/`, not `packages/*`) so codegraph never adds it to the graph
+  // but the analyzer can resolve `GoRoute` to a real class. That makes the
+  // fixture's `GoRoute(...)` parse as an InstanceCreationExpression under
+  // resolution (a MethodInvocation under syntax) - the exact fork the engine's
+  // dual GoRoute extraction must handle identically. Permissive params: unknown
+  // named args still classify the call as a constructor, so leniency only
+  // reduces diagnostic noise.
+  File('${root.path}/.fixture_deps/go_router/lib/go_router.dart')
+    ..parent.createSync(recursive: true)
+    ..writeAsStringSync('''
+class GoRoute {
+  GoRoute({
+    Object? path,
+    Object? name,
+    Object? builder,
+    Object? pageBuilder,
+    Object? routes,
+    Object? redirect,
+    Object? parentNavigatorKey,
+  });
+}
+''');
+  // Resolvable Ref/WidgetRef so a receiver's STATIC TYPE can be checked (3.0
+  // Stage 2 element-checked readers). Also outside scanned roots.
+  File('${root.path}/.fixture_deps/riverpod/lib/riverpod.dart')
+    ..parent.createSync(recursive: true)
+    ..writeAsStringSync('''
+class Ref {
+  T watch<T>(Object provider) => throw '';
+  T read<T>(Object provider) => throw '';
+  void listen(Object provider, Object onChange) {}
+}
+class WidgetRef extends Ref {}
+class ProviderContainer {
+  T read<T>(Object provider) => throw '';
+}
+class Notifier<T> {
+  T build() => throw '';
+}
+''');
+  File('${root.path}/.dart_tool/package_config.json')
+    ..parent.createSync(recursive: true)
+    ..writeAsStringSync('''
+{
+  "configVersion": 2,
+  "packages": [
+    { "name": "fixture", "rootUri": "../", "packageUri": "lib/", "languageVersion": "3.5" },
+    { "name": "fixture_ui", "rootUri": "../packages/fixture_ui", "packageUri": "lib/", "languageVersion": "3.5" },
+    { "name": "go_router", "rootUri": "../.fixture_deps/go_router", "packageUri": "lib/", "languageVersion": "3.5" },
+    { "name": "riverpod", "rootUri": "../.fixture_deps/riverpod", "packageUri": "lib/", "languageVersion": "3.5" }
+  ]
+}
+''');
+}
+
 void writeCodegraphFixture(Directory root) {
   void write(String rel, String content) {
     final f = File('${root.path}/$rel');
@@ -229,6 +293,15 @@ class NamedCircle extends Circle {
   NamedCircle(super.radius, this.name);
   final String name;
 }
+
+// mixin `on` clause capture: a stated, syntax-visible supertype constraint
+// that must show up under `impls Shape` same as extends/implements does.
+// Declared in the SAME file as Shape (not a new one) so the frozen
+// subtype-tree benchmark truth ({'lib/sig/shapes.dart'}) is unchanged.
+mixin FixMixinGuard on Shape {}
+
+// extension type `implements` clause capture - same doctrine, same edge path.
+extension type ShapeBox(Circle c) implements Shape {}
 ''');
 
   // 13 public methods — exercises uncapped memberIndex for `find` past the
@@ -430,6 +503,28 @@ void chainLeaf() {
   try {
     chainEntry(false);
   } catch (e) {}
+}
+''');
+
+  // callchain ambiguity-at-depth-cap regression fixture: two unrelated
+  // classes in different files declare the SAME method name, and the caller
+  // reaches that name at the walk's last hop (depth cap). `callchain` resolves
+  // callees by NAME only, so `chainDupTarget` must refuse (ambiguous) here
+  // just like it would at any other depth - never silently pick whichever
+  // file happened to parse/sort first.
+  write('lib/chain/chain_ambig_a.dart', '''
+class ChainAmbigA {
+  void chainDupTarget() {}
+}
+''');
+  write('lib/chain/chain_ambig_b.dart', '''
+class ChainAmbigB {
+  void chainDupTarget() {}
+}
+''');
+  write('lib/chain/chain_ambig_entry.dart', '''
+void chainAmbigEntry() {
+  ChainAmbigA().chainDupTarget();
 }
 ''');
 

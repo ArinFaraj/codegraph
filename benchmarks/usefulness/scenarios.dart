@@ -7,7 +7,7 @@ import 'metrics.dart';
 /// One agent-every-session task: ground truth + both arms.
 ///
 /// GROUND TRUTH IS FROZEN AND HAND-VERIFIED against the fixture source
-/// (test/fixture.dart) — it is NOT derived from the built graph. This matters:
+/// (test/fixture.dart) - it is NOT derived from the built graph. This matters:
 /// if truth came from codegraph's own output, an engine regression that dropped
 /// a real reader would also drop it from truth, and the benchmark would still
 /// show recall 1.0 (the regression stays invisible). Frozen truth turns a miss
@@ -30,14 +30,17 @@ class UsefulnessScenario {
   final String agentQuestion;
   final String category;
 
-  /// Frozen, hand-verified expected set — independent of both tools.
+  /// Frozen, hand-verified expected set - independent of both tools.
   final Set<String> truth;
-  final ({Set<String> items, int outputLines, int wallMs}) Function(
+  final ({Set<String> items, int outputChars, int wallMs}) Function(
     CodegraphArm cg,
     Graph graph,
   ) runCodegraph;
   final Set<String> Function(GrepBaseline grep, Graph graph) runGrep;
   final int codegraphToolCalls;
+
+  /// Charitable LOWER BOUND on the rg calls a competent agent needs - a flat
+  /// constant, not measured (see grep_baselines.yaml header).
   final int grepToolCalls;
   final bool Function(Graph graph)? structuralCheck;
 
@@ -52,14 +55,14 @@ class UsefulnessScenario {
       truth: truth,
       found: cgRun.items,
       toolCalls: codegraphToolCalls,
-      outputLines: cgRun.outputLines,
+      outputChars: cgRun.outputChars,
       wallMs: cgRun.wallMs,
     );
     final grepScore = UsefulnessScore(
       truth: truth,
       found: grepItems,
       toolCalls: grepToolCalls,
-      outputLines: grepItems.length,
+      outputChars: grepItems.join('\n').length,
     );
     final structural = structuralCheck == null ? null : structuralCheck!(graph);
     return {
@@ -86,7 +89,7 @@ class UsefulnessScenario {
 }
 
 /// DupUser (lib/ambig/c/user.dart) extends DupBase, which is declared in TWO
-/// files (ambig/a + ambig/b) and imported from neither — the tool must mark the
+/// files (ambig/a + ambig/b) and imported from neither - the tool must mark the
 /// edge ambiguous and refuse a first-wins file, not point confidently at one.
 bool _duplicateClassRefused(Graph graph) {
   final matches = graph.edges.where(
@@ -139,11 +142,11 @@ final usefulnessScenarios = <UsefulnessScenario>[
     id: 'provider-readers-precision',
     category: 'trust',
     agentQuestion:
-        'Readers of counterProvider — must EXCLUDE the non-ref `_Bag().listen` '
+        'Readers of counterProvider - must EXCLUDE the non-ref `_Bag().listen` '
         'and the bare-token mention (false-positive guard)',
     // Real ref-receiver reads only. non_ref_cascade.dart (a _Bag with a listen
     // method) and barrel_and_chain_importer.dart (bare `counterProvider;` token)
-    // must NOT appear — that is the whole point of this scenario.
+    // must NOT appear - that is the whole point of this scenario.
     truth: const {
       'lib/notif/counter_ref_ext.dart',
       'lib/notif/counter_container_reader.dart',
@@ -193,7 +196,7 @@ final usefulnessScenarios = <UsefulnessScenario>[
   UsefulnessScenario(
     id: 'duplicate-provider-readers',
     category: 'wiring',
-    agentQuestion: 'Readers of dupProvider (two declarations — both readers)?',
+    agentQuestion: 'Readers of dupProvider (two declarations - both readers)?',
     truth: const {'lib/dup/a_reader.dart', 'lib/dup/b_reader.dart'},
     runCodegraph: (cg, _) => cg.readers('dupProvider'),
     runGrep: (grep, _) => grep.providerReaders('dupProvider'),
@@ -230,15 +233,12 @@ final usefulnessScenarios = <UsefulnessScenario>[
     id: 'ambiguous-class-refusal',
     category: 'trust',
     agentQuestion:
-        'DupUser extends DupBase — graph must refuse, not first-wins a file',
+        'DupUser extends DupBase - graph must refuse, not first-wins a file. '
+        'Checked on the SHIPPED CLI surface (impls --json ambiguous flag), '
+        'not just the in-memory edge - a real agent only sees the CLI.',
     truth: const {'refused'},
-    runCodegraph: (_, g) => (
-      items: _duplicateClassRefused(g) ? {'refused'} : {},
-      outputLines: 1,
-      wallMs: 0,
-    ),
+    runCodegraph: (cg, _) => cg.implsRefusal('DupBase'),
     runGrep: (_, __) => {'lib/ambig/a/dup_base.dart'},
-    codegraphToolCalls: 0,
     grepToolCalls: 1,
     structuralCheck: _duplicateClassRefused,
   ),
