@@ -12,9 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
+      - name: Install benchmark dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: dart pub get
       - run: dart analyze --fatal-infos
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart test
       - run: dart run benchmarks/perf.dart --compare benchmarks/perf_baseline.json
       - run: dart run benchmarks/usefulness/run.dart --check --no-write
+      - run: dart run benchmarks/affected_tests.dart
+      - run: dart run benchmarks/route_mutations.dart

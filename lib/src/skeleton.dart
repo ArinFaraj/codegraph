@@ -11,14 +11,15 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 
-import 'cli_util.dart' show emit, envelope, freshnessClause, intFlag;
+import 'cli_util.dart'
+    show emit, envelope, freshnessClause, intFlag, positionalArgs;
 import 'freshness.dart';
 import 'model.dart';
 import 'resolve.dart';
 
 /// `int run(List<String> args)` — resolve + parse + print a file's outline.
 int run(List<String> args) {
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 80;
   final asJson = args.contains('--json');
   if (positional.length < 2) {

@@ -142,7 +142,7 @@ Map<String, List<_Method>> _buildCallGraph(Iterable<String> files) {
 }
 
 int run(List<String> args) {
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final depth = intFlag(args, '--depth') ?? 3;
   final budget = intFlag(args, '--budget') ?? 120;
   final asJson = args.contains('--json');

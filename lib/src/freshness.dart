@@ -34,6 +34,38 @@ bool lastLoadFresh = true;
 /// UNKNOWN, not asserted - output must say "unchecked", never "fresh".
 bool freshnessChecked = true;
 
+/// CLI preflight that preserves v3's resolved-by-default build policy.
+///
+/// The query implementations stay synchronous, so their library-level
+/// [loadFresh] fallback remains syntax-only. The async CLI entry point calls
+/// this first: when a rebuild is needed, it can await [engine.buildDefault]
+/// and then the query's normal [loadFresh] call takes the fresh stat-digest
+/// fast path. This avoids converting every query API to Future while ensuring
+/// real CLI use never silently downgrades a resolved graph after an edit.
+Future<void> ensureFreshDefault() async {
+  if (!autoRebuild) return;
+  if (File('docs/maps/code_graph.json').existsSync()) {
+    final graph = Graph.load();
+    if (graph == null) return;
+    final canResolve = File('.dart_tool/package_config.json').existsSync();
+    final wasExplicitSyntax = graph.stats['analysisPolicy'] == 1;
+    if (canResolve && graph.stats['resolvedBuild'] != 1 && !wasExplicitSyntax) {
+      stderr.writeln(
+        'graph is syntax-only but resolved dependencies are available - '
+        'rebuilding',
+      );
+      await engine.buildDefault(const []);
+      return;
+    }
+    if (graph.stats['statDigest'] == engine.statDigest()) return;
+    if (graph.stats['sourceDigest'] == engine.sourceDigest()) return;
+    stderr.writeln('graph was stale (source changed since build) - rebuilding');
+  } else {
+    stderr.writeln('no graph yet - building');
+  }
+  await engine.buildDefault(const []);
+}
+
 /// [Graph.load] plus the staleness contract above. Returns null only when
 /// there is no graph and rebuilding is disabled or impossible.
 Graph? loadFresh() {

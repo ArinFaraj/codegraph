@@ -81,7 +81,9 @@ Map<String, String> _external(
     for (final name in {
       ...i.watches.keys,
       ...i.reads.keys,
-      ...i.listens.keys
+      ...i.listens.keys,
+      ...i.invalidates.keys,
+      ...i.refreshes.keys,
     }) {
       final decl = providers[name];
       if (decl != null && !decl.file.startsWith(prefix)) {

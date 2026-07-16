@@ -3,6 +3,121 @@
 Design history — including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## Unreleased - v3 trust follow-through
+
+- **Typed GoRouter topology is now a first-class resolved contract.** Graph
+  format 9 adds a deterministic route index built from analyzer-evaluated
+  `TypedGoRoute`, `TypedRelativeGoRoute`, `TypedShellRoute`,
+  `TypedStatefulShellRoute`, and branch constants. It preserves occurrence
+  identity for reusable relative routes, exact nested path patterns, ordered
+  stateful branches, shell/branch ancestry, navigator and parent-navigator
+  ownership, direct page contracts, and statically exact redirect targets.
+  Typed navigation edges now carry stable analyzer route identity plus the
+  exact operation, including relative navigation. `route <RouteData>` returns
+  the complete placement/page/redirect/caller card with one shared JSON budget
+  and refuses unavailable, partial, ambiguous, fake, or dynamic facts instead
+  of guessing. Route topology now participates in ordinary impact and
+  affected-test traversal. A byte-deterministic stateful-shell oracle freezes
+  the topology, and a new executable mutation gate starts green, applies a
+  real page mutation, runs the entire test universe, and proves zero omitted
+  failing tests. The older affected-test benchmark remains a frozen set oracle,
+  not evidence that mutations were executed.
+
+- **`affected-tests` ships as an explainable, fail-open planning surface.** It
+  consumes explicit paths or a merge-base Git change set, computes the full
+  reverse production dependency closure, scans runnable `*_test.dart`
+  entrypoints through test helpers/parts and local packages, and emits complete
+  package/runner argv arrays with per-test witnesses. Machine plans are never
+  budget-truncated. Deleted inputs, stale/unknown graph state, parse failures,
+  global/config/generated/platform/asset/route boundaries, Patrol uncertainty,
+  and zero-test production selections expand to workspace suites. Targeted
+  plans remain explicitly advisory until the mutation oracle proves zero
+  omitted failing suites. The frozen thirteen-scenario CI set oracle gates exact
+  static and resolved-symbol sets, full expansion, determinism, framework
+  edges, runner commands, and zero omissions; it currently reports an 86.7%
+  targeted reduction with low-single-digit-millisecond plans.
+- **Resolved builds now connect typed GoRouter navigation to built pages.** A
+  navigation such as `const AccountRoute().go(context)` is recognized from the
+  receiver's analyzer identity when its class extends the real
+  `package:go_router` `GoRouteData` or `RelativeGoRouteData`. Direct expression
+  returns and exact single-return `build`/`buildPage` bodies resolve through the
+  existing conservative page-wrapper rules, producing resolved `navigates` and
+  `navigates-to` edges that immediately improve wiring, impact, and
+  `affected-tests`. Same-named route classes retain library identity; local fake
+  bases, dynamic receivers, conditional bodies, and ambiguous pages refuse.
+  This receiver-to-page layer is now superseded by the format-9 typed-route
+  topology above.
+- **Tracked body edits now receive resolved changed-symbol attribution.** Git
+  status remains NUL-delimited, while deterministic per-path zero-context hunks
+  are matched against executable bodies in both the merge-base and current
+  source. Stable symbols propagate through resolved caller ownership, override
+  components, test helpers, and runnable entrypoints, avoiding unrelated tests
+  that only import the same file. Every unsupported or ambiguous boundary is a
+  visible `precisionFallback`, never a narrower guess; targeted output remains
+  advisory. The refactor index format is now 4 and records declaration/body
+  spans plus each reference's enclosing executable. Host and local-package test
+  roots now share one deterministic enumerator across freshness, resolved index,
+  graph test credits, callers, and rename fallbacks.
+- **Rename apply is now prevalidated and rollback-backed across files.** Every
+  target is read and every expected span, duplicate, overlap, path alias, and
+  collision is checked before the first staged write. Outputs and recovery
+  backups are flushed beside their targets, file modes/BOM/line endings are
+  preserved, originals are revalidated before install, and an install failure
+  restores attempted files in reverse order. Incomplete rollback reports and
+  retains the exact recovery backup. Same-scope declaration collisions now
+  refuse before apply. Portable filesystems cannot provide one atomic rename
+  over multiple paths, so the contract is explicit transaction-like rollback,
+  not an impossible atomicity claim.
+- **Resolved builds understand source-declared Riverpod codegen contracts.**
+  Functions and Notifier classes annotated by the real
+  `package:riverpod_annotation` element produce their generated provider names,
+  provider kinds, auto-dispose/keep-alive lifecycle, and reader edges without
+  parsing generated files. A same-spelled local annotation is deliberately
+  ignored. `ref.invalidate` and `ref.refresh` are now first-class provider
+  interactions in queries, impact, unused detection, maps, and blueprints.
+- **Resolved refactors are now graph-speed after build.** A resolved build
+  writes a deterministic, gitignored `refactor_index.json` containing stable
+  executable identities, declarations, references, and override links across
+  production and test code. `rename` uses it when complete and source-current,
+  while retaining the cold analyzer path as a compatibility fallback. Syntax
+  builds delete the index rather than risk stale semantic edits. The indexed
+  path preserves all actuator gates: unrelated same-name methods are excluded,
+  whole in-project override sets move together, external override contracts
+  ambiguous targets and unresolved/dynamic target spellings still refuse, and
+  test call sites are included. The public fixture benchmark measures 11 ms
+  indexed vs 446 ms query-time analysis on the development machine (40.5x);
+  CI requires at least 5x.
+- **Resolved callers and references now use the same semantic index.** The
+  artifact records call-vs-reference kind, stable targets (including honest
+  unresolved targets), line locations, and override ancestry. Output remains
+  parity-tested against a fresh analyzer walk, with an additive `indexed: true`
+  proof in JSON. The public benchmark measures 4 ms indexed vs 328 ms fresh
+  analysis (82x), and CI requires at least 5x.
+- **Stale-query rebuilds and `check` now preserve resolved-by-default
+  analysis.** The v3 `build` command selected resolved analysis when a host had
+  `.dart_tool/package_config.json`, but the older synchronous freshness and CI
+  paths still called the syntax builder directly. The first query after an edit
+  (and every `codegraph check`) could therefore silently replace a resolved
+  graph with heuristic-only edges. Build-mode selection now has one shared
+  policy entry point; the async CLI freshness preflight and `check` both use it,
+  while no-package hosts retain the zero-setup syntax fallback. A regression
+  test proves a stale configured host still emits element-resolved subtype
+  edges after automatic rebuilding.
+- **Value-taking flags no longer leak into query operands.** Shared positional
+  parsing now removes both `--budget`/`--depth`/`--base` and their values. This
+  fixes a production-host failure where `find vault --budget 20` searched for
+  both `vault` and `20` and confidently returned no matches.
+- **Reader caveats now reflect v3 resolution.** A resolved-build regression
+  fixture proves `box.ref.read(provider)` is found from the wrapper field's
+  static `Ref` type; query output now limits the warning to syntax fallback
+  instead of claiming wrapper-held refs are always invisible.
+- **Pathological branch comparisons are explicit.** `review`/`diff` now warns
+  when at least 500 Dart files differ from the selected base and suggests an
+  explicit tracking ref, while preserving the requested comparison semantics.
+- **Resolved operations report progress.** Resolved build, callers/refs, and
+  rename now emit rate-limited file progress on stderr, keeping stdout and JSON
+  contracts stable while making long analyzer work visibly alive.
+
 ## 3.0.0 - 2026-07-14 - "v3" (resolved analysis + the actuator turn)
 
 The direction change: from a better-grep to a resolved knowledge-and-action
@@ -12,7 +127,7 @@ compatibility - wire format, graph shape, CLI defaults, and doctrine all change
 freely; a stale graph rebuilds itself. Design docs: plans/BRD-actuator.md
 (vision), plans/knowledge-model.md (the layered-memory model), plans/
 3.0-resolved-core.md and plans/3.1-actuator-rename.md (execution). Validated at
-every step on a real 1546-file Flutter app.
+every step on a production-scale Flutter codebase.
 
 ### Resolved analysis is the default
 
@@ -37,8 +152,8 @@ every step on a real 1546-file Flutter app.
   whatever it is named - catches renamed parameters, aliases, and container
   getters the name allow-list misses (+23 real reader edges on the reference
   host, 0 lost).
-- **subtype edges** carry element-confirmed identity; on the reference host all
-  1708 implements/extends edges are element-resolved under resolution.
+- **subtype edges** carry element-confirmed identity; on the large validation
+  corpus all observed implements/extends edges resolved successfully.
 - **`GraphEdge.confidence`** = `resolved | heuristic | guessed` - the
   NEVER-GUESS doctrine as a queryable column (emitted only when not
   `heuristic`). `readers` marks `[unconfirmed]` (name-matched, not
@@ -59,7 +174,8 @@ every step on a real 1546-file Flutter app.
   ambiguous target, external/framework-base override, incomplete resolution,
   missing package_config - every failure a refusal with a reason, never a
   partial (build-breaking) edit. Dry-run by default; `--apply` writes; refusal
-  exit code 3.
+  exit code 3. Current releases cache rename identities at resolved-build time;
+  this section describes the original query-time implementation.
 
 ### Deferred (not in 3.0)
 
@@ -558,14 +674,14 @@ reachable via `path`/`readers`). Verified fixes:
   (`--budget 100` shows all 56 untested files); the total-output cap no longer
   re-starves later sections.
 - **`impls` is now TRANSITIVE — the full subtype tree, not just direct
-  children.** `impls BaseCachedResourceNotifier` returned only its one direct
+  children.** `impls BaseResource` returned only its one direct
   child and hid the 6 concrete leaf cachers (and their mocks) a level deeper —
   false completeness for "list every subclass". It now walks the whole subtype
   closure (a subtype-of-a-subtype is still a stated fact — no guessing),
   cycle-guarded, depth-indented, with `depth`/`supertype` in `--json`.
 - **`diff` file counts split `appLib`/`pkgLib`** so `lib` isn't misread as
   app-only in a monorepo (baseline agent discarded all packages/ as "noise" and
-  thereby missed krd_theme.dart, the highest-in-degree changed file).
+  thereby missed a shared theme file, the highest-in-degree changed file).
 
 **Known limitations (documented, deferred — not blocker-class; no wrong edges):**
 `find` doesn't index record-typedef FIELDS (`find requiresReauth` → nothing);

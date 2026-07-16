@@ -8,7 +8,7 @@
 //
 // It captures the relations that plain imports miss and that cost AI agents
 // the most grep budget:
-//   * Riverpod wiring   — provider declarations + ref.watch/read/listen edges
+//   * Riverpod wiring   — declarations + watch/read/listen/invalidate/refresh
 //   * Navigation        — context.go/push / router.go(...) targets
 //   * Type graph        — extends / implements (resolved to declarations)
 //   * Coupling          — imports crossing feature boundaries
@@ -52,6 +52,8 @@ import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
+import 'package:analyzer/dart/constant/value.dart';
+import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/error/error.dart' show DiagnosticType;
 import 'package:analyzer/source/line_info.dart';
@@ -59,12 +61,22 @@ import 'package:analyzer/source/line_info.dart';
 import 'attention.dart' as attention;
 import 'markdown.dart' as markdown;
 import 'model.dart';
+import 'progress.dart';
 import 'nav_resolution.dart';
+import 'refactor_index.dart';
 import 'registry.dart';
 import 'resolution.dart';
+import 'workspace_files.dart';
 
 export 'registry.dart'
-    show ConstantDecl, FileInfo, GoRouteDecl, HelperCallSite, HelperRouteDecl;
+    show
+        ConstantDecl,
+        FileInfo,
+        GoRouteDecl,
+        HelperCallSite,
+        HelperRouteDecl,
+        TypedNavigationDecl,
+        TypedRouteDecl;
 export 'resolution.dart'
     show ClassDecl, ClassResolver, ProviderDecl, ProviderResolver, Reachability;
 
@@ -150,6 +162,141 @@ bool _isRefType(DartType? t) {
   return false;
 }
 
+/// Returns the stable identity/kind of a route-data class only when the
+/// analyzer proves that [type] extends a real package:go_router base class.
+/// Package identity is the refusal gate for every same-spelled local decoy.
+({String symbol, String name, String kind})? _routeDataIdentity(
+    DartType? type) {
+  if (type is! InterfaceType) return null;
+  String? kindOf(InterfaceType candidate) {
+    final name = candidate.element.name;
+    final library = candidate.element.library.uri.toString();
+    if (!library.startsWith('package:go_router/')) return null;
+    return const {
+      'GoRouteData': 'go',
+      'RelativeGoRouteData': 'relative-go',
+      'ShellRouteData': 'shell',
+      'StatefulShellRouteData': 'stateful-shell',
+      'StatefulShellBranchData': 'stateful-branch',
+    }[name];
+  }
+
+  String? kind;
+  for (final supertype in type.allSupertypes) {
+    kind = kindOf(supertype);
+    if (kind != null) break;
+  }
+  if (kind == null) return null;
+  final element = type.element;
+  final name = element.name;
+  if (name == null) return null;
+  final library = element.library.uri.toString();
+  return (symbol: '$library::$name', name: name, kind: kind);
+}
+
+({String symbol, String name})? _typedRouteIdentity(DartType? type) {
+  final route = _routeDataIdentity(type);
+  if (route == null || !const {'go', 'relative-go'}.contains(route.kind)) {
+    return null;
+  }
+  return (symbol: route.symbol, name: route.name);
+}
+
+String? _elementSymbol(Element? element) {
+  if (element == null) return null;
+  final library = element.library?.uri.toString();
+  final name = element.name;
+  if (library == null || name == null) return null;
+  final owner = element.enclosingElement;
+  final ownerName = owner is LibraryElement ? null : owner?.name;
+  return '$library::${ownerName == null ? '' : '$ownerName.'}$name';
+}
+
+Expression _unwrapRouteExpression(Expression expression) {
+  var current = expression;
+  while (true) {
+    if (current is ParenthesizedExpression) {
+      current = current.expression;
+    } else if (current is AsExpression) {
+      current = current.expression;
+    } else {
+      return current;
+    }
+  }
+}
+
+String? _referencedKeySymbol(Expression? expression, String fieldSymbol) {
+  if (expression == null) return null;
+  final value = _unwrapRouteExpression(expression);
+  final element = switch (value) {
+    SimpleIdentifier() => value.element,
+    PrefixedIdentifier() => value.identifier.element,
+    PropertyAccess() => value.propertyName.element,
+    _ => null,
+  };
+  if (element != null) return _elementSymbol(element);
+  // A key constructed directly in the static field is owned by that field.
+  if (value is InstanceCreationExpression) return fieldSymbol;
+  return null;
+}
+
+class _RouteAnnotationSpec {
+  _RouteAnnotationSpec({
+    required this.symbol,
+    required this.name,
+    required this.kind,
+    required this.offset,
+    required this.path,
+    required this.routeName,
+    required this.caseSensitive,
+    required this.children,
+    required this.complete,
+    required this.uncertainties,
+  });
+
+  final String symbol;
+  final String name;
+  final String kind;
+  final int offset;
+  final String? path;
+  final String? routeName;
+  final bool? caseSensitive;
+  final List<_RouteAnnotationSpec> children;
+  bool complete;
+  final List<String> uncertainties;
+}
+
+class _ReturnCollector extends RecursiveAstVisitor<void> {
+  final List<Expression?> expressions = [];
+
+  @override
+  void visitReturnStatement(ReturnStatement node) {
+    expressions.add(node.expression);
+  }
+
+  @override
+  void visitFunctionExpression(FunctionExpression node) {
+    // A nested callback's return does not belong to the enclosing redirect.
+  }
+
+  @override
+  void visitFunctionDeclarationStatement(FunctionDeclarationStatement node) {
+    // A local function's return does not belong to the enclosing redirect.
+  }
+}
+
+/// The only block body accepted for a typed route page contract is one exact
+/// top-level return. Branches, local setup, and helper-returned pages refuse.
+Expression? _exactReturnedExpression(FunctionBody body) {
+  if (body is ExpressionFunctionBody) return body.expression;
+  if (body is! BlockFunctionBody) return null;
+  final statements = body.block.statements;
+  if (statements.length != 1 || statements.single is! ReturnStatement) {
+    return null;
+  }
+  return (statements.single as ReturnStatement).expression;
+}
+
 String _baseProvider(String expr) {
   var e = expr.trim();
   final dot = e.indexOf('.');
@@ -217,9 +364,325 @@ class _Visitor extends RecursiveAstVisitor<void> {
     super.visitFormalParameterList(node);
   }
 
+  String? _annotationKind(Element? element) {
+    final annotationClass =
+        element is ConstructorElement ? element.enclosingElement : element;
+    final name = annotationClass?.name;
+    final library = annotationClass?.library?.uri.toString();
+    if (library == null || !library.startsWith('package:go_router/')) {
+      return null;
+    }
+    return const {
+      'TypedGoRoute': 'go',
+      'TypedRelativeGoRoute': 'relative-go',
+      'TypedShellRoute': 'shell',
+      'TypedStatefulShellRoute': 'stateful-shell',
+      'TypedStatefulShellBranch': 'stateful-branch',
+    }[name];
+  }
+
+  _RouteAnnotationSpec? _constantRouteSpec(DartObject object, int offset) {
+    final annotationType = object.type;
+    if (annotationType is! InterfaceType ||
+        annotationType.typeArguments.length != 1) {
+      return null;
+    }
+    final kind = _annotationKind(annotationType.element);
+    final identity = _routeDataIdentity(annotationType.typeArguments.single);
+    if (kind == null || identity == null || identity.kind != kind) return null;
+
+    final uncertainties = <String>[];
+    final path = object.getField('path')?.toStringValue();
+    final routeName = object.getField('name')?.toStringValue();
+    final caseSensitive = object.getField('caseSensitive')?.toBoolValue();
+    if (const {'go', 'relative-go'}.contains(kind) && path == null) {
+      uncertainties.add('path constant could not be evaluated');
+    }
+    final childField = kind == 'stateful-shell' ? 'branches' : 'routes';
+    final childValues = object.getField(childField)?.toListValue();
+    final children = <_RouteAnnotationSpec>[];
+    var complete = uncertainties.isEmpty;
+    if (childValues == null) {
+      complete = false;
+      uncertainties.add('$childField constant could not be evaluated');
+    } else {
+      for (final childValue in childValues) {
+        final child = _constantRouteSpec(childValue, offset);
+        if (child == null) {
+          complete = false;
+          uncertainties.add('$childField contains an unresolved typed route');
+          continue;
+        }
+        if (kind == 'stateful-shell' && child.kind != 'stateful-branch') {
+          complete = false;
+          uncertainties.add('stateful shell contains a non-branch child');
+          continue;
+        }
+        if (kind != 'stateful-shell' && child.kind == 'stateful-branch') {
+          complete = false;
+          uncertainties.add('stateful branch appears outside a stateful shell');
+          continue;
+        }
+        children.add(child);
+        if (!child.complete) complete = false;
+      }
+    }
+    return _RouteAnnotationSpec(
+      symbol: identity.symbol,
+      name: identity.name,
+      kind: kind,
+      offset: offset,
+      path: path,
+      routeName: routeName,
+      caseSensitive: caseSensitive,
+      children: children,
+      complete: complete,
+      uncertainties: uncertainties,
+    );
+  }
+
+  _RouteAnnotationSpec? _rootRouteSpec(
+    Annotation annotation,
+    InterfaceElement classElement,
+  ) {
+    final value = annotation.elementAnnotation?.computeConstantValue();
+    final errors = annotation.elementAnnotation?.constantEvaluationErrors;
+    if (value == null || (errors != null && errors.isNotEmpty)) return null;
+    final spec = _constantRouteSpec(value, annotation.offset);
+    final classIdentity = _routeDataIdentity(classElement.thisType);
+    if (spec == null ||
+        classIdentity == null ||
+        spec.symbol != classIdentity.symbol ||
+        spec.kind != classIdentity.kind) {
+      return null;
+    }
+    return spec;
+  }
+
+  void _recordRouteTree(
+    _RouteAnnotationSpec spec, {
+    required String rootKey,
+    required List<int> position,
+    required String? parentId,
+    required String? shellId,
+    required String? branchId,
+    required int? branchIndex,
+    required String? inheritedPath,
+  }) {
+    final id = '$rootKey#${position.join('.')}';
+    var fullPath = inheritedPath;
+    final uncertainties = <String>[...spec.uncertainties];
+    if (const {'go', 'relative-go'}.contains(spec.kind)) {
+      final segment = spec.path;
+      if (segment == null) {
+        fullPath = null;
+      } else if (inheritedPath == null) {
+        if (segment.startsWith('/')) {
+          fullPath = segment;
+        } else {
+          fullPath = null;
+          uncertainties.add('top-level route path is not absolute');
+        }
+      } else if (segment.startsWith('/')) {
+        fullPath = null;
+        uncertainties.add('nested route path is absolute');
+      } else {
+        final base = inheritedPath.endsWith('/')
+            ? inheritedPath.substring(0, inheritedPath.length - 1)
+            : inheritedPath;
+        fullPath = '$base/$segment';
+      }
+    }
+    final nextShell =
+        const {'shell', 'stateful-shell'}.contains(spec.kind) ? id : shellId;
+    final nextBranch = spec.kind == 'stateful-branch' ? id : branchId;
+    final ownBranchIndex = spec.kind == 'stateful-branch'
+        ? (position.isEmpty ? null : position.last)
+        : branchIndex;
+    info.typedRouteOccurrences.add(
+      TypedRouteOccurrence(
+        id: id,
+        routeSymbol: spec.symbol,
+        routeTypeName: spec.name,
+        kind: spec.kind,
+        annotationFile: info.libPath,
+        annotationLine: lineOf(lineInfo, spec.offset),
+        path: spec.path,
+        fullPath:
+            const {'go', 'relative-go'}.contains(spec.kind) ? fullPath : null,
+        name: spec.routeName,
+        caseSensitive: spec.caseSensitive,
+        parentId: parentId,
+        shellId: shellId,
+        branchId: branchId,
+        branchIndex: ownBranchIndex,
+        complete: spec.complete && uncertainties.isEmpty,
+        uncertainties: uncertainties.toSet().toList()..sort(),
+      ),
+    );
+    for (var index = 0; index < spec.children.length; index++) {
+      _recordRouteTree(
+        spec.children[index],
+        rootKey: rootKey,
+        position: [...position, index],
+        parentId: id,
+        shellId: nextShell,
+        branchId: nextBranch,
+        branchIndex: ownBranchIndex,
+        inheritedPath: fullPath,
+      );
+    }
+  }
+
+  String? _redirectLocationTarget(Expression expression) {
+    final value = _unwrapRouteExpression(expression);
+    Expression? receiver;
+    if (value is PropertyAccess && value.propertyName.name == 'location') {
+      receiver = value.realTarget;
+    } else if (value is PrefixedIdentifier &&
+        value.identifier.name == 'location') {
+      receiver = value.prefix;
+    }
+    return _typedRouteIdentity(receiver?.staticType)?.symbol;
+  }
+
+  ({bool declared, String? symbol}) _navigatorContract(
+    ClassDeclaration node,
+    String memberName,
+    String routeSymbol,
+  ) {
+    final ownSymbol = '$routeSymbol.$memberName';
+    for (final field in node.body.members.whereType<FieldDeclaration>()) {
+      if (!field.isStatic) continue;
+      for (final variable in field.fields.variables) {
+        if (variable.name.lexeme != memberName) continue;
+        return (
+          declared: true,
+          symbol: _referencedKeySymbol(variable.initializer, ownSymbol),
+        );
+      }
+    }
+    for (final method in node.body.members.whereType<MethodDeclaration>()) {
+      if (!method.isStatic ||
+          !method.isGetter ||
+          method.name.lexeme != memberName) {
+        continue;
+      }
+      return (
+        declared: true,
+        symbol: _referencedKeySymbol(
+          _exactReturnedExpression(method.body),
+          ownSymbol,
+        ),
+      );
+    }
+    return (declared: false, symbol: null);
+  }
+
   @override
   void visitClassDeclaration(ClassDeclaration node) {
-    info.declaredNames.add(node.namePart.toSource().split('<').first.trim());
+    final className = node.namePart.toSource().split('<').first.trim();
+    info.declaredNames.add(className);
+    final element = node.declaredFragment?.element;
+    final identity = _routeDataIdentity(element?.thisType);
+    if (identity != null) {
+      final preferredPageMethods = switch (identity.kind) {
+        'go' || 'relative-go' => const ['buildPage', 'build'],
+        'shell' || 'stateful-shell' => const ['pageBuilder', 'builder'],
+        _ => const <String>[],
+      };
+      MethodDeclaration? pageMethod;
+      for (final preferredName in preferredPageMethods) {
+        pageMethod = node.body.members
+            .whereType<MethodDeclaration>()
+            .where((method) => method.name.lexeme == preferredName)
+            .firstOrNull;
+        if (pageMethod != null) break;
+      }
+      final returned =
+          pageMethod == null ? null : _exactReturnedExpression(pageMethod.body);
+      final pageType = returned == null ? null : firstCreatedType(returned);
+
+      final redirect = node.body.members
+          .whereType<MethodDeclaration>()
+          .where((method) => method.name.lexeme == 'redirect')
+          .firstOrNull;
+      final redirectTargets = <String>{};
+      var redirectComplete = redirect != null;
+      if (redirect != null) {
+        final returns = <Expression?>[];
+        if (redirect.body is ExpressionFunctionBody) {
+          returns.add((redirect.body as ExpressionFunctionBody).expression);
+        } else {
+          final collector = _ReturnCollector();
+          redirect.body.accept(collector);
+          returns.addAll(collector.expressions);
+        }
+        if (returns.isEmpty) redirectComplete = false;
+        for (final expression in returns) {
+          if (expression == null || expression is NullLiteral) continue;
+          final target = _redirectLocationTarget(expression);
+          if (target == null) {
+            redirectComplete = false;
+          } else {
+            redirectTargets.add(target);
+          }
+        }
+      }
+
+      final navigator =
+          _navigatorContract(node, r'$navigatorKey', identity.symbol);
+      final parentNavigator =
+          _navigatorContract(node, r'$parentNavigatorKey', identity.symbol);
+      final uncertainties = <String>[];
+      final pageContractComplete = identity.kind == 'stateful-branch' ||
+          (pageMethod != null && returned != null && pageType != null);
+      if (pageMethod != null && !pageContractComplete) {
+        uncertainties.add('page contract is not one exact constructor return');
+      }
+      if (redirect != null && !redirectComplete) {
+        uncertainties.add('redirect contains a dynamic destination');
+      }
+      if (navigator.declared && navigator.symbol == null) {
+        uncertainties.add(r'$navigatorKey is computed dynamically');
+      }
+      if (parentNavigator.declared && parentNavigator.symbol == null) {
+        uncertainties.add(r'$parentNavigatorKey is computed dynamically');
+      }
+      info.typedRoutes.add(
+        TypedRouteDecl(
+          routeSymbol: identity.symbol,
+          routeTypeName: identity.name,
+          kind: identity.kind,
+          pageTypeName: pageType,
+          pageContractComplete: pageContractComplete,
+          file: info.libPath,
+          line: lineOf(lineInfo, node.namePart.offset),
+          hasRedirect: redirect != null,
+          redirectComplete: redirectComplete,
+          redirectTargetSymbols: redirectTargets.toList()..sort(),
+          navigatorKeyDeclared: navigator.declared,
+          navigatorKeySymbol: navigator.symbol,
+          parentNavigatorKeyDeclared: parentNavigator.declared,
+          parentNavigatorKeySymbol: parentNavigator.symbol,
+          uncertainties: uncertainties..sort(),
+        ),
+      );
+      for (final annotation in node.metadata) {
+        final spec = _rootRouteSpec(annotation, element!);
+        if (spec == null) continue;
+        _recordRouteTree(
+          spec,
+          rootKey: '${info.libPath}:${annotation.offset}',
+          position: const [],
+          parentId: null,
+          shellId: null,
+          branchId: null,
+          branchIndex: null,
+          inheritedPath: null,
+        );
+      }
+    }
     super.visitClassDeclaration(node);
   }
 
@@ -311,15 +774,24 @@ class _Visitor extends RecursiveAstVisitor<void> {
         (target == null && _refExtensionDepth > 0);
     if (refScoped && args.isNotEmpty) {
       final p = _baseProvider(args.first.toSource());
-      const relOf = {'watch': 'watches', 'read': 'reads', 'listen': 'listens'};
+      const relOf = {
+        'watch': 'watches',
+        'read': 'reads',
+        'listen': 'listens',
+        'invalidate': 'invalidates',
+        'refresh': 'refreshes',
+      };
       final rel = relOf[method];
       if (rel != null) {
-        (rel == 'watches'
-                ? info.watches
-                : rel == 'reads'
-                    ? info.reads
-                    : info.listens)
-            .putIfAbsent(p, () => line);
+        final interactions = switch (rel) {
+          'watches' => info.watches,
+          'reads' => info.reads,
+          'listens' => info.listens,
+          'invalidates' => info.invalidates,
+          'refreshes' => info.refreshes,
+          _ => throw StateError('unknown provider interaction: $rel'),
+        };
+        interactions.putIfAbsent(p, () => line);
         // Element-confirmed (receiver's static type is a Ref) -> the edge is
         // `resolved`; a name-only match stays `heuristic`.
         if (typedRef) info.typedReaderKeys.add('$rel|$p');
@@ -331,9 +803,27 @@ class _Visitor extends RecursiveAstVisitor<void> {
       'push',
       'replace',
       'pushReplacement',
+      'goRelative',
+      'pushRelative',
       'goNamed',
       'pushNamed',
     };
+    if (const {
+          'go',
+          'push',
+          'replace',
+          'pushReplacement',
+          'goRelative',
+          'pushRelative',
+        }.contains(method) &&
+        args.isNotEmpty) {
+      final route = _typedRouteIdentity(node.realTarget?.staticType);
+      if (route != null) {
+        info.typedNavigations.add(
+          TypedNavigationDecl(route.symbol, route.name, method, line),
+        );
+      }
+    }
     if (navMethods.contains(method) &&
         (target == 'context' || target == 'router') &&
         args.isNotEmpty) {
@@ -347,7 +837,7 @@ class _Visitor extends RecursiveAstVisitor<void> {
     // InstanceCreationExpression and is caught in visitInstanceCreationExpression
     // below — either way it routes through the one `_recordGoRoute`, so resolved
     // builds stay at least as complete as syntax (they lost every GoRoute-based
-    // nav edge before this — found on the krdpass reference host, 2026-07-14).
+    // nav edge before this — found on a production-scale validation host).
     if (node.target == null && method == 'GoRoute') {
       _recordGoRoute(args, line);
     } else if (node.target == null && !looksLikeTypeName(method)) {
@@ -495,6 +985,23 @@ void _collect(CompilationUnit unit, FileInfo info, LineInfo lineInfo) {
           ownerName: name,
         ),
       );
+      final annotation = _riverpodAnnotation(d);
+      if (annotation != null) {
+        final build = d.body.members
+            .whereType<MethodDeclaration>()
+            .where((method) => method.name.lexeme == 'build')
+            .firstOrNull;
+        info.providerDecls.add(ProviderDecl(
+          '${_lowerFirst(name)}Provider',
+          info.libPath,
+          _generatedProviderKind(
+            build?.returnType?.toSource(),
+            notifier: true,
+          ),
+          !annotation.keepAlive,
+          lineOf(lineInfo, d.namePart.offset),
+        ));
+      }
       // Mechanism (a) capture, static-field half: a `static` field whose
       // initializer is a bare dotted chain (see nav_resolution.dart's
       // `looksLikeDottedChain`) — same rule as the top-level-variable half
@@ -603,6 +1110,19 @@ void _collect(CompilationUnit unit, FileInfo info, LineInfo lineInfo) {
           doc: renderDoc(d.documentationComment),
         ),
       );
+      final annotation = _riverpodAnnotation(d);
+      if (annotation != null) {
+        info.providerDecls.add(ProviderDecl(
+          '${d.name.lexeme}Provider',
+          info.libPath,
+          _generatedProviderKind(
+            d.returnType?.toSource(),
+            notifier: false,
+          ),
+          !annotation.keepAlive,
+          lineOf(lineInfo, d.name.offset),
+        ));
+      }
     } else if (d is TopLevelVariableDeclaration) {
       for (final v in d.variables.variables) {
         final init = v.initializer?.toSource();
@@ -632,6 +1152,45 @@ void _collect(CompilationUnit unit, FileInfo info, LineInfo lineInfo) {
   }
   info.symbolRecs.sort((a, b) => a.line.compareTo(b.line));
 }
+
+({bool keepAlive})? _riverpodAnnotation(AnnotatedNode declaration) {
+  for (final annotation in declaration.metadata) {
+    final element = annotation.element;
+    final library = element?.library?.uri.toString();
+    if (library == null ||
+        !library.startsWith('package:riverpod_annotation/')) {
+      continue;
+    }
+    var keepAlive = false;
+    for (final argument in annotation.arguments?.arguments ?? const []) {
+      if (argument is NamedExpression &&
+          argument.name.label.name == 'keepAlive' &&
+          argument.expression is BooleanLiteral) {
+        keepAlive = (argument.expression as BooleanLiteral).value;
+      }
+    }
+    return (keepAlive: keepAlive);
+  }
+  return null;
+}
+
+String _generatedProviderKind(String? returnType, {required bool notifier}) {
+  final type = (returnType ?? '').replaceAll(RegExp(r'\s+'), '');
+  if (type.startsWith('Stream<') || type == 'Stream') {
+    return notifier ? 'StreamNotifierProvider' : 'StreamProvider';
+  }
+  if (type.startsWith('Future<') ||
+      type.startsWith('FutureOr<') ||
+      type == 'Future' ||
+      type == 'FutureOr') {
+    return notifier ? 'AsyncNotifierProvider' : 'FutureProvider';
+  }
+  return notifier ? 'NotifierProvider' : 'Provider';
+}
+
+String _lowerFirst(String value) => value.isEmpty
+    ? value
+    : '${value.substring(0, 1).toLowerCase()}${value.substring(1)}';
 
 /// Mechanism (a) capture (0.5.0): records a [ConstantDecl] for each
 /// variable in [vars] whose initializer source is a bare dotted-identifier
@@ -861,8 +1420,8 @@ List<File> _dartFiles(String dir) => Directory(dir)
   ..sort((a, b) => a.path.compareTo(b.path));
 
 /// Deterministic digest (FNV-1a 64) of every source input `build` reads: the
-/// host pubspec plus the path and CONTENT of each scanned .dart file, using
-/// the exact enumeration build uses. Content-based on purpose - identical
+/// host analysis inputs plus the path and CONTENT of each scanned .dart file,
+/// using the exact enumeration build uses. Content-based on purpose - identical
 /// source always yields an identical value regardless of mtimes or checkout,
 /// so storing it in code_graph.json keeps the byte-determinism doctrine (and
 /// check()'s content-diff gate) intact. Queries compare this against the
@@ -883,9 +1442,20 @@ int sourceDigest() {
     mix(f.readAsBytesSync());
   }
 
-  final pubspec = File('pubspec.yaml');
-  if (pubspec.existsSync()) mixFile(pubspec);
-  for (final root in ['lib', ..._localPackages().values]) {
+  for (final path in [
+    'pubspec.yaml',
+    'pubspec.lock',
+    'analysis_options.yaml',
+    '.dart_tool/package_config.json',
+  ]) {
+    final file = File(path);
+    if (file.existsSync()) mixFile(file);
+  }
+  for (final root in [
+    'lib',
+    ..._localPackages().values,
+    ...workspaceTestRoots(['lib', ..._localPackages().values]),
+  ]) {
     if (!Directory(root).existsSync()) continue;
     _dartFiles(root).forEach(mixFile);
   }
@@ -918,19 +1488,25 @@ int statDigest() {
         .encode('${f.path}|${s.size}|${s.modified.millisecondsSinceEpoch}'));
   }
 
-  final pubspec = File('pubspec.yaml');
-  if (pubspec.existsSync()) mixFile(pubspec);
-  for (final root in ['lib', ..._localPackages().values]) {
+  for (final path in [
+    'pubspec.yaml',
+    'pubspec.lock',
+    'analysis_options.yaml',
+    '.dart_tool/package_config.json',
+  ]) {
+    final file = File(path);
+    if (file.existsSync()) mixFile(file);
+  }
+  for (final root in [
+    'lib',
+    ..._localPackages().values,
+    ...workspaceTestRoots(['lib', ..._localPackages().values]),
+  ]) {
     if (!Directory(root).existsSync()) continue;
     _dartFiles(root).forEach(mixFile);
   }
   return h;
 }
-
-/// Test roots scanned by the Stage 1 test-reference pass, in fixed order (the
-/// order doesn't affect output — every root's files are merged into one
-/// sorted walk — but keeps the source readable).
-const _testRoots = <String>['test', 'integration_test', 'patrol_test'];
 
 /// Every declared provider name, split into tokens on the same rule used to
 /// tokenize test source (`[A-Za-z_$][A-Za-z0-9_$]*`) — providers are always
@@ -1011,7 +1587,7 @@ TestRefs _scanTestRefs(
   // Pass A: parse every test file once and record its own resolved imports
   // plus (if it's a `part` file resolvable by URI) its parent library path.
   final records = <_TestFileRecord>[];
-  for (final root in _testRoots) {
+  for (final root in workspaceTestRoots(['lib', ...pkgs.packages.values])) {
     if (!Directory(root).existsSync()) continue;
     for (final f in _dartFiles(root)) {
       testFileCount++;
@@ -1084,9 +1660,13 @@ class _TestFileRecord {
 
 /// `codegraph build [lib/<area>]` — regenerate graph + all area maps
 /// (+ a scoped map when a directory is given).
-void build(List<String> args) {
+void build(List<String> args, {String analysisPolicy = 'syntax'}) {
   final positional = args.where((a) => !a.startsWith('--')).toList();
   final pkgs = _buildSetup();
+  // A syntax build cannot prove element identity. Never leave an older
+  // resolved index beside a fresh syntax graph where a refactor could mistake
+  // it for current data.
+  RefactorIndex.remove();
 
   // Pass 1 (syntax): parse lib/ + every local package's lib/.
   final all = <FileInfo>[];
@@ -1095,7 +1675,39 @@ void build(List<String> args) {
       all.add(_parseFile(f, pkgs));
     }
   }
-  _emitBuild(all, positional, pkgs);
+  _emitBuild(
+    all,
+    positional,
+    pkgs,
+    analysisMode: 'syntax',
+    analysisPolicy: analysisPolicy,
+  );
+}
+
+/// Builds with the best analysis mode available to the host.
+///
+/// This is the single v3 policy entry point used by the explicit `build`
+/// command, query freshness preflight, and CI `check`: resolved analysis when
+/// package configuration exists, syntax-only when it does not, or syntax-only
+/// when the caller explicitly passes `--syntax`. Keeping the choice here
+/// prevents background rebuilds from silently downgrading a resolved graph.
+Future<void> buildDefault(List<String> args) async {
+  final wantSyntax = args.contains('--syntax');
+  final hasPkgConfig = File('.dart_tool/package_config.json').existsSync();
+  if (!wantSyntax && (args.contains('--resolved') || hasPkgConfig)) {
+    await buildResolved(
+      args,
+      analysisPolicy: args.contains('--resolved') ? 'resolved' : 'auto',
+    );
+    return;
+  }
+  if (!wantSyntax) {
+    stderr.writeln(
+      'note: building syntax-only (no .dart_tool/package_config.json). '
+      'Run `dart pub get` for resolved element analysis.',
+    );
+  }
+  build(args, analysisPolicy: wantSyntax ? 'syntax' : 'auto');
 }
 
 /// `codegraph build --resolved` (3.0 Stage 1) — same output as `build`, but
@@ -1104,7 +1716,10 @@ void build(List<String> args) {
 /// file will not resolve. Requires the host's own `pub get` (a
 /// `.dart_tool/package_config.json`); refuses with an instruction if absent
 /// rather than silently degrading the whole build to syntax.
-Future<void> buildResolved(List<String> args) async {
+Future<void> buildResolved(
+  List<String> args, {
+  String analysisPolicy = 'resolved',
+}) async {
   final positional = args.where((a) => !a.startsWith('--')).toList();
   final pkgs = _buildSetup();
   if (!File('.dart_tool/package_config.json').existsSync()) {
@@ -1115,8 +1730,20 @@ Future<void> buildResolved(List<String> args) async {
     );
     exit(66);
   }
-  final all = await _resolveFiles(['lib', ...pkgs.packages.values], pkgs);
-  _emitBuild(all, positional, pkgs);
+  final result = await _resolveFiles(['lib', ...pkgs.packages.values], pkgs);
+  _emitBuild(
+    result.files,
+    positional,
+    pkgs,
+    analysisMode: 'resolved',
+    analysisPolicy: analysisPolicy,
+  );
+  result.index.write();
+  stderr.writeln(
+    'wrote $refactorIndexPath '
+    '(${result.index.declarations.length} declarations, '
+    '${result.index.references.length} references)',
+  );
 }
 
 /// Shared build preamble: guard the package root and reset the per-run
@@ -1135,15 +1762,26 @@ _PkgContext _buildSetup() {
 /// (thrown error or a non-[ResolvedUnitResult]) falls back to syntax parsing
 /// and is counted. Same deterministic `_dartFiles` enumeration as the syntax
 /// pass, so node/edge order is unchanged.
-Future<List<FileInfo>> _resolveFiles(
+Future<({List<FileInfo> files, RefactorIndex index})> _resolveFiles(
     List<String> roots, _PkgContext pkgs) async {
+  final files = [for (final root in roots) ..._dartFiles(root)];
+  final testFiles = [
+    for (final root in workspaceTestRoots(['lib', ...pkgs.packages.values]))
+      if (Directory(root).existsSync()) ..._dartFiles(root),
+  ];
+  final indexedFiles = [...files, ...testFiles];
   final collection = AnalysisContextCollection(
-    includedPaths: [for (final r in roots) File(r).absolute.path],
+    includedPaths: [for (final f in indexedFiles) f.absolute.path],
   );
   final all = <FileInfo>[];
+  final index = RefactorIndexBuilder();
   var fellBack = 0;
-  for (final root in roots) {
-    for (final f in _dartFiles(root)) {
+  var indexedResolved = 0;
+  var completed = 0;
+  final progress = ProgressReporter('resolve build', indexedFiles.length)
+    ..start();
+  try {
+    for (final f in files) {
       final abs = f.absolute.path;
       final libPath = _libPathOf(f.path);
       ResolvedUnitResult? r;
@@ -1159,28 +1797,67 @@ Future<List<FileInfo>> _resolveFiles(
       if (r != null) {
         // Match the syntax path's meaning of "extraction may be incomplete":
         // SYNTACTIC errors only (a best-effort AST). Semantic errors from
-        // absent external deps (e.g. an unresolved `package:` import) leave the
-        // AST complete, so they must NOT trip the parse-error note.
+        // absent external deps (e.g. an unresolved `package:` import) leave
+        // the AST complete, so they must NOT trip the parse-error note.
         final hasError = r.diagnostics.any(
-            (d) => d.diagnosticCode.type == DiagnosticType.SYNTACTIC_ERROR);
+          (d) => d.diagnosticCode.type == DiagnosticType.SYNTACTIC_ERROR,
+        );
         all.add(_extractUnit(libPath, r.unit, hasError, pkgs)..resolved = true);
+        index.addUnit(libPath, r.unit);
+        indexedResolved++;
       } else {
         fellBack++;
         all.add(_parseFile(f, pkgs)); // resolved stays false
       }
+      progress.advance(++completed);
     }
+
+    // Tests are not graph nodes, but their element-resolved references are
+    // essential to a complete rename. Index them in the same analyzer session
+    // so a refactor can prove that production and test call sites move as one.
+    for (final f in testFiles) {
+      final abs = f.absolute.path;
+      ResolvedUnitResult? r;
+      try {
+        final unit = await collection
+            .contextFor(abs)
+            .currentSession
+            .getResolvedUnit(abs);
+        if (unit is ResolvedUnitResult) r = unit;
+      } catch (_) {}
+      if (r != null) {
+        index.addUnit(f.path.replaceFirst(RegExp(r'^\./'), ''), r.unit);
+        indexedResolved++;
+      }
+      progress.advance(++completed);
+    }
+  } finally {
+    await collection.dispose();
   }
   stderr.writeln(
     'resolved ${all.length - fellBack}/${all.length} files'
     '${fellBack > 0 ? ' ($fellBack fell back to syntax)' : ''}',
   );
-  return all;
+  return (
+    files: all,
+    index: index.finish(
+      sourceDigest: sourceDigest(),
+      totalFiles: indexedFiles.length,
+      resolvedFiles: indexedResolved,
+    ),
+  );
 }
 
 /// Everything after Pass 1: registries, resolvers, test-reference scan, nav
 /// resolution, graph + markdown emission. Shared verbatim by the syntax and
 /// resolved build paths (they differ only in how `all` was produced).
-void _emitBuild(List<FileInfo> all, List<String> positional, _PkgContext pkgs) {
+void _emitBuild(
+  List<FileInfo> all,
+  List<String> positional,
+  _PkgContext pkgs, {
+  required String analysisMode,
+  required String analysisPolicy,
+}) {
   // Group by name (not last-write-wins) so shared names survive to the
   // resolver below; see CHANGELOG: duplicate provider name misattribution.
   final providerDeclsByName = <String, List<ProviderDecl>>{};
@@ -1242,7 +1919,11 @@ void _emitBuild(List<FileInfo> all, List<String> positional, _PkgContext pkgs) {
     navTables.routeTable,
     constantTable,
     navTables.nameTable,
+    navTables.typedRouteTable,
+    navTables.routeIndex,
     reach,
+    analysisMode,
+    analysisPolicy,
   );
   final graph = written.graph;
   stderr.writeln(
@@ -1252,8 +1933,8 @@ void _emitBuild(List<FileInfo> all, List<String> positional, _PkgContext pkgs) {
   attention.writeAttentionMd(graph);
   stderr.writeln('wrote docs/maps/ATTENTION.md');
 
-  // Project-wide reader counts (watches+reads+listens occurrences, by
-  // provider name) — used by every area map's Summary section. Computed once
+  // Project-wide provider-interaction counts (reads plus invalidation/refresh,
+  // by provider name) — used by every area map's Summary section. Computed once
   // here rather than per-map so a provider's count reflects the WHOLE
   // project, not just the area it's declared in.
   final readerCounts = <String, int>{};
@@ -1261,7 +1942,9 @@ void _emitBuild(List<FileInfo> all, List<String> positional, _PkgContext pkgs) {
     for (final name in [
       ...i.watches.keys,
       ...i.reads.keys,
-      ...i.listens.keys
+      ...i.listens.keys,
+      ...i.invalidates.keys,
+      ...i.refreshes.keys,
     ]) {
       readerCounts[name] = (readerCounts[name] ?? 0) + 1;
     }
@@ -1307,8 +1990,8 @@ const _checkDiffScope = ['docs/maps/', ':(exclude)docs/maps/notes/'];
 /// `codegraph check` — regen, then fail if committed docs/maps/ drifted.
 /// Untracked maps that have never been committed are ignored, so this does not
 /// false-fail before first commit.
-int check() {
-  build(const []);
+int check({bool rebuild = true}) {
+  if (rebuild) build(const []);
   final quiet = Process.runSync('git', [
     'diff',
     '--quiet',
@@ -1343,7 +2026,11 @@ int check() {
   Map<String, String> routeTable,
   Map<String, List<ConstantDecl>> constantTable,
   Map<String, String> nameTable,
+  Map<String, TypedRouteTarget> typedRouteTable,
+  RouteIndex routeIndex,
   Reachability reach,
+  String analysisMode,
+  String analysisPolicy,
 ) {
   var navResolvedCount = 0;
   var navResolvedTotal = 0;
@@ -1415,6 +2102,8 @@ int check() {
     provEdges(i.watches, 'watches');
     provEdges(i.reads, 'reads');
     provEdges(i.listens, 'listens');
+    provEdges(i.invalidates, 'invalidates');
+    provEdges(i.refreshes, 'refreshes');
     for (final p in i.providerDecls) {
       edges.add(
         GraphEdge(
@@ -1464,6 +2153,41 @@ int check() {
         );
       }
     }
+    for (final navigation in i.typedNavigations) {
+      navResolvedTotal++;
+      final target = typedRouteTable[navigation.routeSymbol];
+      final routeId = target?.routeId ??
+          'route:${navigation.routeTypeName}@${navigation.routeSymbol.split('::').first}';
+      final pageFile = target?.pageFile;
+      edges.add(
+        GraphEdge(
+          src: src,
+          rel: 'navigates',
+          dst: routeId,
+          line: navigation.line,
+          detail: 'typed-route ${navigation.method}',
+          unresolved: pageFile == null,
+          confidence: 'resolved',
+          routeSymbol: navigation.routeSymbol,
+          operation: navigation.method,
+        ),
+      );
+      if (pageFile != null) {
+        navResolvedCount++;
+        edges.add(
+          GraphEdge(
+            src: src,
+            rel: 'navigates-to',
+            dst: 'file:$pageFile',
+            line: navigation.line,
+            detail: 'typed-route ${navigation.method}',
+            confidence: 'resolved',
+            routeSymbol: navigation.routeSymbol,
+            operation: navigation.method,
+          ),
+        );
+      }
+    }
     for (final c in i.classDecls) {
       for (final s in c.supertypes) {
         final fields = classResolver.typeEdgeFieldsFor(i.libPath, s);
@@ -1484,6 +2208,74 @@ int check() {
     }
   }
 
+  // Resolved typed-route topology. These are class-level dependency edges;
+  // occurrence-specific placement remains in routeIndex so reusable relative
+  // routes are never collapsed into one fabricated canonical path.
+  final emittedTopology = <String>{};
+  void topologyEdge(String src, String rel, String dst, {int? line}) {
+    final key = '$src\u0000$rel\u0000$dst';
+    if (!emittedTopology.add(key)) return;
+    edges.add(GraphEdge(
+      src: src,
+      rel: rel,
+      dst: dst,
+      line: line,
+      confidence: 'resolved',
+    ));
+  }
+
+  final routeByOccurrence =
+      routeIndex.contracts.fold<Map<String, RouteContract>>(
+    <String, RouteContract>{},
+    (result, route) => result..[route.id] = route,
+  );
+  final routeIdBySymbol = <String, String>{};
+  for (final route in routeIndex.contracts) {
+    routeIdBySymbol.putIfAbsent(route.symbol, () => route.navigationId);
+  }
+  for (final route in routeIndex.contracts) {
+    final routeId = route.navigationId;
+    if (route.declaredIn != null) {
+      topologyEdge(
+        'file:${route.declaredIn}',
+        'declares-route',
+        routeId,
+        line: route.line,
+      );
+    }
+    if (route.pageFile != null) {
+      topologyEdge(routeId, 'builds', 'file:${route.pageFile}');
+    }
+    final parent =
+        route.parentId == null ? null : routeByOccurrence[route.parentId!];
+    if (parent != null) {
+      topologyEdge(
+        routeId,
+        route.kind == 'stateful-branch'
+            ? 'branch-of'
+            : parent.kind == 'stateful-branch'
+                ? 'in-branch'
+                : 'nested-under',
+        parent.navigationId,
+      );
+    }
+    final branch =
+        route.branchId == null ? null : routeByOccurrence[route.branchId!];
+    if (branch != null && branch.navigationId != parent?.navigationId) {
+      topologyEdge(routeId, 'in-branch', branch.navigationId);
+    }
+    final shell =
+        route.shellId == null ? null : routeByOccurrence[route.shellId!];
+    if (shell != null && shell.navigationId != parent?.navigationId) {
+      topologyEdge(routeId, 'in-shell', shell.navigationId);
+    }
+    for (final targetSymbol in route.redirectTargets) {
+      final targetId = routeIdBySymbol[targetSymbol] ??
+          typedRouteTable[targetSymbol]?.routeId;
+      if (targetId != null) topologyEdge(routeId, 'redirects-to', targetId);
+    }
+  }
+
   final graph = Graph(
     // No wall-clock timestamp here on purpose: `check()` content-diffs this
     // file against the committed copy as a CI staleness gate, so a field
@@ -1496,6 +2288,21 @@ int check() {
       'files': all.length,
       'providers': resolver.declsByName.length,
       'edges': edges.length,
+      // v3 freshness needs to know not only whether source changed, but
+      // whether an automatic rebuild may use resolved analysis. `policy`
+      // preserves an explicit --syntax opt-out across later stale-query
+      // rebuilds; `auto` upgrades after package_config becomes available.
+      'resolvedBuild': analysisMode == 'resolved' ? 1 : 0,
+      // 0 = automatic, 1 = explicit syntax, 2 = explicit resolved. Stats are
+      // intentionally integer-only in the frozen Graph model.
+      'analysisPolicy': switch (analysisPolicy) {
+        'syntax' => 1,
+        'resolved' => 2,
+        _ => 0,
+      },
+      'resolvedFiles': all.where((i) => i.resolved).length,
+      'parseErrorFiles': _parseErrorFiles.toSet().length,
+      'routeContracts': routeIndex.contracts.length,
       // Content digest of the source this graph was built from - queries use
       // it to detect staleness and auto-rebuild (freshness.dart). Additive,
       // deterministic (no wall clock; see the comment above). Inserted BEFORE
@@ -1510,6 +2317,7 @@ int check() {
       'testFiles': testFileCount,
     },
     nodes: nodes,
+    routeIndex: routeIndex,
     edges: edges,
   );
   final out = File('docs/maps/code_graph.json');

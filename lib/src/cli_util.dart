@@ -13,6 +13,30 @@ int? intFlag(List<String> args, String name) {
   return null;
 }
 
+/// Returns command/operand arguments while removing flags AND the values of
+/// known value-taking flags.
+///
+/// A plain `where(!startsWith('--'))` leaves `20` from `--budget 20` behind as
+/// an operand. That is mostly harmless for single-argument verbs, but turns a
+/// multi-term query such as `find vault --budget 20` into `find vault 20` and
+/// produces a false empty result. Keep this shared so every CLI parser makes
+/// the same distinction.
+List<String> positionalArgs(
+  List<String> args, {
+  Set<String> valueFlags = const {'--budget', '--depth', '--base'},
+}) {
+  final out = <String>[];
+  for (var i = 0; i < args.length; i++) {
+    final arg = args[i];
+    if (!arg.startsWith('--')) {
+      out.add(arg);
+      continue;
+    }
+    if (valueFlags.contains(arg) && i + 1 < args.length) i++;
+  }
+  return out;
+}
+
 void emit(List<String> lines, int budget, {String? hint}) {
   for (final l in lines.take(budget)) {
     stdout.writeln(l);
@@ -70,16 +94,16 @@ String freshnessClause(int files) => !freshnessChecked
 /// that prevents over-trust at the moment of use.
 const verbCaveats = <String, List<String>>{
   'readers': [
-    'reader edges are file-level and lib-only; reads through wrapper objects '
-        '(x.ref.read) are not detected',
+    'reader edges are file-level and lib-only; typed wrapper-held refs are '
+        'detected in resolved builds but may be missed by syntax fallback',
     'ProviderScope overrides are not modeled - which implementation actually '
         'executes may differ per scope (bootstrap/test/route overrides)',
     'family providers collapse to one node - userProvider(a) and '
         'userProvider(b) are the same reader edge',
   ],
   'provider': [
-    'reader edges are file-level and lib-only; reads through wrapper objects '
-        '(x.ref.read) are not detected',
+    'reader edges are file-level and lib-only; typed wrapper-held refs are '
+        'detected in resolved builds but may be missed by syntax fallback',
     'ProviderScope overrides are not modeled - which implementation actually '
         'executes may differ per scope (bootstrap/test/route overrides)',
     'family providers collapse to one node - userProvider(a) and '
@@ -87,6 +111,13 @@ const verbCaveats = <String, List<String>>{
   ],
   'wiring': [
     'lib-only; navigation targets are captured expressions, not a route graph'
+  ],
+  'route': [
+    'resolved typed go_router annotations only; raw GoRoute trees, global '
+        'redirects, dynamic navigation, and generated-only behavior are not '
+        'modeled',
+    'paths are patterns, not runtime locations; relative routes may have '
+        'multiple placements and navigators',
   ],
   'impls': [
     'stated extends/implements only; "test fakes" entries are scanned from '
@@ -96,17 +127,23 @@ const verbCaveats = <String, List<String>>{
   'sym': ['imported-by lists lib importers only (tests excluded)'],
   'callers': [
     'AST call sites; dynamic dispatch/reflection is invisible',
-    'same-named declarations are merged - sites match by name across ALL '
-        'declarations, so count can be inflated',
+    'syntax mode merges same-named declarations; --resolved attributes each '
+        'site to its analyzer target',
   ],
   'refs': [
-    'name-matched references; dynamic dispatch/reflection is invisible',
-    'same-named declarations are merged - sites match by name across ALL '
-        'declarations, so count can be inflated',
+    'AST references; dynamic dispatch/reflection is invisible',
+    'syntax mode merges same-named declarations; --resolved attributes each '
+        'site to its analyzer target',
   ],
   'impact': [
-    'follows import/reader edges only; runtime coupling (DI, string routes) '
-        'is not included'
+    'follows imports, Riverpod readers, and resolved typed-route topology; '
+        'runtime DI, dynamic dispatch, and string-computed routes are not included'
+  ],
+  'affected-tests': [
+    'targeted plans are advisory until the mutation oracle proves zero omitted '
+        'failing suites; uncertainty expands to package/workspace commands',
+    'static imports, provider interactions, test helpers, and parts cannot see '
+        'every runtime, platform, service-locator, or generated edge',
   ],
   'unused': [
     'CANDIDATES, not verdicts - confirm with exact-path grep across lib test '

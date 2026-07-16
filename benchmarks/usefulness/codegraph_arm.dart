@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:codegraph/src/model.dart';
+
 /// Runs codegraph CLI verbs (--json) and parses item sets for scoring.
 class CodegraphArm {
   CodegraphArm(this.root, this.cliSnapshot);
@@ -55,7 +57,7 @@ class CodegraphArm {
           final out = <String>{};
           for (final r in (j['results'] as List? ?? const [])) {
             final rec = r as Map<String, dynamic>;
-            for (final rel in ['watches', 'reads', 'listens']) {
+            for (final rel in providerInteractionRelOrder) {
               out.addAll((rec[rel] as List? ?? const []).cast<String>());
             }
           }

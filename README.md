@@ -1,8 +1,10 @@
 # codegraph
 
-Analyzer-built code graph + query CLI so AI coding agents can navigate a
-Dart/Flutter codebase **without grepping** — plus an `init` command that
-installs the agent trigger layer (a `CLAUDE.md` block, a session-start
+Analyzer-built code graph + safe-change CLI for Dart/Flutter codebases. It
+gives AI coding agents a resolved model of the project, answers structural
+questions without reconstructing the codebase from grep, and can emit or apply
+element-precise renames while refusing changes it cannot prove safe. An `init`
+command installs the agent trigger layer (a `CLAUDE.md` block, a session-start
 freshness hook, and a `code-map` skill) into any project.
 
 Answers the questions that otherwise cost an agent many greps and file reads —
@@ -17,7 +19,8 @@ dart pub global activate -sgit https://github.com/ArinFaraj/codegraph
 # make sure ~/.pub-cache/bin is on PATH
 ```
 
-Update later with the same command (or pin a version with `--git-ref v0.x.y`).
+Update later with the same command (or pin a version, for example
+`--git-ref v3.0.0`).
 
 **IMPORTANT:** Always invoke the installed `codegraph` binary directly.
 `dart run` or `dart pub global run` can interleave pub-resolution output into
@@ -50,21 +53,25 @@ codegraph uses <thing>         # who uses X - readers, call sites, subtypes, or 
 codegraph change <thing>       # what must change if I touch X - dependents + subtype tree
                                #   + state-type follow-ups + untested-in-blast-radius
 codegraph review [--base ref]  # is my branch safe - blast radius, untested, lint violations
+codegraph affected-tests       # explain targeted tests; uncertainty expands to full suites
 codegraph health               # where to start - triage, dead-code and coverage candidates
 codegraph plan <feature-dir>   # build-order plan from an exemplar feature
+codegraph route <RouteData>    # full typed route card: placements/paths,
+                               #   parent/shell/branch, navigator, page, redirect, callers
 ```
 
 Low-level verbs (the intent verbs compose these; all still work directly):
 
 ```bash
-codegraph brief|sym|skeleton|readers|callers|refs|callchain|wiring|impls|path
-codegraph unused|untested|impact|diff|passport|attention|doctor
+codegraph brief|sym|skeleton|readers|callers|refs|callchain|wiring|route|impls|path
+codegraph unused|untested|impact|diff|affected-tests|passport|attention|doctor
 ```
 
 Resolved analysis (v3): `build` uses the analyzer's element model by default
 (falls back to syntax-only with no `.dart_tool/package_config.json`; `--syntax`
-forces it). Element identity powers three opt-in, resolution-backed answers
-(slow - whole-context resolution, the "once in a while" refactor case):
+forces it). Element identity powers three opt-in, resolution-backed answers.
+A resolved build persists their identities, so normal calls are graph-speed;
+a fresh whole-context analyzer walk remains the compatibility fallback:
 
 ```bash
 codegraph callers|refs <Symbol> --resolved   # attribute each call site to its REAL target
@@ -104,18 +111,31 @@ Branch and code-review actions (verb-only output, never committed artifacts):
 
 ```bash
 codegraph diff [--base <ref>]   # branch blast-radius: what files changed, providers affected, dependencies broken, untested code touched
+codegraph affected-tests        # complete package/runner test plan with evidence and fail-open expansion
 codegraph impact <thing>        # transitive dependents: all files/pages that would break if this provider or file changes
 codegraph untested              # coverage gaps: all providers and relevant files with zero test references, ranked by impact
 ```
 
-Example: `codegraph diff` shows a 4-file change touches 12 downstream files and leaves 2 new providers untested. `codegraph impact homeProvider` shows 8 files read it; if you change it, those 8 are affected.
+Example: `codegraph affected-tests --base main` connects changed production
+files to runnable `*_test.dart` entrypoints through imports, provider
+interactions, test helpers, and parts. Deleted files, configuration/generated
+boundaries, stale graphs, parse errors, unknown paths, and empty production
+selections expand to workspace suites instead of silently skipping tests.
+When a tracked Git hunk is wholly inside the same executable body before and
+after the change, the resolved index follows that exact symbol through callers,
+overrides, test helpers, and test entrypoints. Sibling tests that merely import
+the same file can then be excluded from the recommended first pass. Signature,
+directive, generated-provider, dynamic-dispatch, and framework-override changes
+fall back to file/workspace coverage and are reported in `precisionFallbacks`.
 
 Note: `diff` and `impact` may call git (requires a clean working tree or `--base` arg). Output is verb-only; the data never lives in committed artifacts.
 
 ## --json output
 
-Pass `--json` to `find`, `readers`, `wiring`, `impls`, `sym`, `skeleton`,
-`untested`, `impact`, or `diff` for machine-readable JSON. Response envelope:
+Pass `--json` to `find`, `readers`, `wiring`, `route`, `impls`, `sym`, `skeleton`,
+`untested`, `impact`, `diff`, or `affected-tests` for machine-readable JSON.
+Affected-test plans are never budget-truncated because their selected paths and
+argv arrays are executable contracts. Other verbs use the standard envelope:
 
 ```json
 {
@@ -130,28 +150,44 @@ Pass `--json` to `find`, `readers`, `wiring`, `impls`, `sym`, `skeleton`,
 
 Budgets cap the TOTAL results across all sections, so `--budget N` limits the
 combined output. Verbs supporting `--json`: `find`, `readers`, `wiring`,
-`impls`, `sym`, `skeleton`, `untested`, `impact`, `diff`.
+`route`, `impls`, `sym`, `skeleton`, `untested`, `impact`, `diff`,
+`affected-tests`.
 
 ## What the graph captures
 
-Riverpod wiring (provider declarations + `ref.watch/read/listen` edges),
-navigation targets (`context.go/push`, `router.go`), the type graph
+Riverpod wiring (manual and source-declared `@riverpod` providers plus
+`ref.watch/read/listen/invalidate/refresh` edges),
+navigation targets (`context.go/push`, `router.go`, and resolved typed-route
+`.go/.push/.replace/.pushReplacement/.goRelative/.pushRelative` calls), the
+resolved typed GoRouter annotation tree (nested path patterns, reusable
+relative-route placements, shell/stateful branch ownership, navigator keys,
+direct pages, static redirect destinations, and callers), the type graph
 (extends/implements, resolved to declarations), imports/exports/parts
 (including conditional configurations), per-file symbols (classes, enums,
-functions), and test references (scanned from test roots). Built with the real
-Dart analyzer parser — syntax only, so it needs **no `pub get`** in the host
-project and never breaks on unresolvable dependencies.
+functions), and test references (scanned from test roots). With a host
+`.dart_tool/package_config.json`, `build` uses the Dart analyzer's resolved
+element model by default. Without it, codegraph automatically uses its
+zero-setup syntax path; `--syntax` forces that path explicitly. A single file
+that cannot resolve falls back independently instead of breaking the build.
 
-Because resolution is **syntax-only name matching** (not type resolution), it
-is a careful heuristic, not ground truth: it resolves a reference only when the
-name is unambiguous or reachability narrows it to one declaration, and refuses
-(never guesses) otherwise. Two known coverage limits: provider detection sees
-**manually declared** providers (`final xProvider = NotifierProvider(...)`) but
-**not `@riverpod` code-generated** ones (the generated `xProvider` lives in an
-excluded `.g.dart`); and several nav/role heuristics are tuned to common
-Riverpod + GoRouter conventions (`AppPaths.` route chains, `_page.dart` /
-`_controller.dart` naming), so a project with different idioms gets the generic
-graph plus whatever of the deep layer its conventions happen to match.
+The graph records confidence rather than presenting every edge as ground
+truth: element-confirmed facts are `resolved`, conservative name/reachability
+matches are `heuristic`, and inferred navigation facts are `guessed`. Safe
+write operations act only on a complete resolved target and refuse otherwise.
+Resolved builds recognize `@riverpod` functions and Notifier classes by the
+annotation element's `package:riverpod_annotation` identity, deriving the
+generated provider name, kind, lifecycle, and interaction edges without
+reading excluded `.g.dart` files. Syntax-only builds retain manual-provider
+coverage. Resolved builds also connect real `GoRouteData`/`RelativeGoRouteData` receiver
+calls to pages returned directly by `build` or `buildPage`, while refusing fake
+bases, dynamic receivers, conditional bodies, and ambiguous pages.
+`codegraph route <RouteData>` is resolved-only and fails closed when the route
+index is unavailable or incomplete; it never fabricates one canonical path for
+a relative route used in several placements. One important limit remains:
+several raw navigation and role heuristics
+are tuned to common Riverpod + GoRouter conventions (`AppPaths.` route chains,
+`_page.dart` / `_controller.dart` naming), so projects with different idioms
+receive the generic graph plus only the deep facts Codegraph can prove.
 
 ### Known query gaps
 
@@ -160,7 +196,7 @@ graph plus whatever of the deep layer its conventions happen to match.
 | `callers` tracks method *calls*, not field *reads* | `find <field>` or read the declaring class |
 | `impact` resolves providers/files, not methods | `callers <method>` + `impls <Interface>` for signature changes |
 | OpenAPI / generated DTO field removals | `git diff` on the API package |
-| `@riverpod` codegen providers | grep for the generated `*Provider` in `.g.dart` files |
+| Global `GoRouter.redirect`/`onEnter`, runtime redirect outcomes, and custom navigator containers | `route` shows statically exact route-level redirects and resolved navigator ownership; inspect router construction for global policy |
 
 ## Artifacts and freshness
 
@@ -174,9 +210,11 @@ graph plus whatever of the deep layer its conventions happen to match.
     `brief <area>` surfaces their first 20 lines; `attention` flags stale notes.
   - `.claude/hooks/code-graph-refresh.sh` — SessionStart hook script.
   - `.claude/skills/code-map/SKILL.md` — code-map skill prompt.
-  - `.gitignore` line: `docs/maps/code_graph.json`.
-- **Never commit `docs/maps/code_graph.json`** — the entire resolved graph
-  (~3.7 MB). Untracked; rebuilt by the SessionStart hook and by CI, not by hand.
+  - `.gitignore` lines: `docs/maps/code_graph.json` and
+    `docs/maps/refactor_index.json`.
+- **Never commit the generated JSON indexes** — the graph and resolved
+  refactor identities are workspace caches. They are rebuilt by the
+  SessionStart hook and by CI, not maintained by hand.
   Note: testRefs counts are token/import matching (candidate data — a name in a
   comment counts), same doctrine as `unused` — confirm with grep before acting
   on them. Credit follows direct imports plus their export closure; token
@@ -194,13 +232,12 @@ graph plus whatever of the deep layer its conventions happen to match.
 
 ## Roadmap
 
-Execution-ready plans for the next releases live in [`plans/`](plans/) —
-0.6.0 "Trust" (nav-gap legibility, registry-resolved testRefs, doctor,
-summary-only maps), 0.7.0 "Lint" (the graph becomes a CI-enforced
-architecture gate with a baseline ratchet), 0.8.0 "Leverage" (affected-tests
-selection, change risk score, Riverpod health rules). See
-[`plans/ROADMAP.md`](plans/ROADMAP.md) for ordering and the standing
-doctrine.
+v3.0 is shipped: resolved analysis is now the default, element identity powers
+precise `callers`/`refs`, and `rename` is the first guarded write actuator.
+Resolved builds now persist refactor identities, so repeated safe renames avoid
+whole-workspace reanalysis. The next milestone is indexed callers/refs plus
+high-signal conformance rules, measured by the public deterministic benchmark.
+See [`plans/ROADMAP.md`](plans/ROADMAP.md) for current priorities and doctrine.
 
 ## The improvement loop
 
@@ -211,10 +248,10 @@ point back here. When the graph is wrong in any project:
    generic wording — no product or vendor SDK names).
 2. Fix the engine here — `lib/src/engine.dart` (extraction) or
    `lib/src/query.dart` (queries). Add a `CHANGELOG.md` line. Tag if you want
-   pinning (`git tag v0.x.y`).
+   pinning (`git tag v3.x.y`).
 3. Update the CLI everywhere it's installed:
-   `dart pub global activate -sgit <this repo>` (add `--git-ref v0.x.y` to
-   pin).
+   `dart pub global activate -sgit <this repo>` (add `--git-ref v3.x.y` to
+   pin, for example `--git-ref v3.0.0`).
 4. `codegraph build` in the affected project.
 5. Review `docs/maps/LIMITATIONS.md` in each host — merge any new known gaps
    from the release notes (`upgrade` refreshes the skill but never overwrites

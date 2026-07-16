@@ -6,6 +6,7 @@
 //   codegraph readers <provider>   # who watches/reads/listens it
 //   codegraph provider <name>      # declaration + all consumers
 //   codegraph wiring <file>        # a file's full wiring (both directions)
+//   codegraph route <RouteData>    # typed route placements + callers
 //   codegraph impls <Type>         # who implements/extends a type
 //   codegraph find <substr> [more terms]  # locate files/providers/symbols (incl. packages/), ranked
 //   codegraph sym <Name>           # symbol card (sig + doc + members + imported-by)
@@ -13,7 +14,8 @@
 //   codegraph untested             # coverage gaps: providers/files with zero test references
 //
 // Add --budget N to cap output lines (default 80). Add --json to any of
-// find/readers/wiring/impls/sym for a machine-readable record instead of text.
+// find/readers/wiring/route/impls/sym for a machine-readable record instead
+// of text.
 // Reads docs/maps/code_graph.json. Syntax-tree only — no analyzer import here
 // (see lib/src/skeleton.dart for the one verb that needs a fresh parse).
 
@@ -31,13 +33,14 @@ int run(List<String> args) {
   final graph = loadFresh();
   if (graph == null) return 66;
 
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 80;
   final asJson = args.contains('--json');
   const validVerbs = [
     'readers',
     'provider',
     'wiring',
+    'route',
     'impls',
     'find',
     'sym',
@@ -62,6 +65,8 @@ int run(List<String> args) {
       readers(graph, rest, budget, asJson);
     case 'wiring':
       code = _wiring(graph, rest, budget, asJson);
+    case 'route':
+      code = _route(graph, rest, budget, asJson);
     case 'impls':
       impls(graph, rest, budget, asJson);
     case 'find':
@@ -106,7 +111,7 @@ void readersInto(Graph graph, List<String> out, GraphNode decl) {
         (resolvedBuild && e.confidence != 'resolved') ? '  [unconfirmed]' : '';
     byRel.putIfAbsent(e.rel, () => []).add('$f$mark');
   }
-  for (final rel in ['watches', 'reads', 'listens']) {
+  for (final rel in providerInteractionRelOrder) {
     final list = (byRel[rel] ?? [])..sort();
     if (list.isEmpty) continue;
     out.add('$rel (${list.length}):');
@@ -130,7 +135,7 @@ Map<String, dynamic> _readersRecord(
 ) {
   final id = decl.id;
   final byRel = <String, List<String>>{
-    for (final rel in ['watches', 'reads', 'listens'])
+    for (final rel in providerInteractionRelOrder)
       rel: remaining.take(
         graph.edges
             .where((e) => e.dst == id && e.rel == rel)
@@ -448,6 +453,266 @@ int _wiring(Graph graph, List<String> rest, int budget, bool asJson) {
   return 0;
 }
 
+int _route(Graph graph, List<String> rest, int budget, bool asJson) {
+  if (rest.isEmpty) {
+    stderr.writeln('usage: route <RouteData>');
+    return 64;
+  }
+  final query = rest.first;
+  final index = graph.routeIndex;
+  if (index == null || !index.available) {
+    if (asJson) {
+      stdout.writeln(jsonEncode({
+        ...envelope('route', query),
+        'available': false,
+        'complete': false,
+        'results': const [],
+      }));
+    } else {
+      stdout.writeln(
+        'typed route topology unavailable — rebuild with resolved analysis: '
+        'codegraph build --resolved',
+      );
+    }
+    return 1;
+  }
+
+  final normalizedId = query.startsWith('route:') ? query : 'route:$query';
+  Iterable<RouteContract> candidates;
+  final exactSymbol = index.contracts.where((route) => route.symbol == query);
+  if (exactSymbol.isNotEmpty) {
+    candidates = exactSymbol;
+  } else {
+    final exactId =
+        index.contracts.where((route) => route.navigationId == normalizedId);
+    candidates = exactId.isNotEmpty
+        ? exactId
+        : index.contracts.where((route) => route.name == query);
+  }
+  final symbols = candidates.map((route) => route.symbol).toSet().toList()
+    ..sort();
+  if (symbols.length > 1) {
+    if (asJson) {
+      stdout.writeln(jsonEncode({
+        ...envelope('route', query),
+        'available': true,
+        'complete': index.complete,
+        'ambiguous': symbols,
+      }));
+    } else {
+      stdout.writeln('$query is ambiguous (${symbols.length} route classes):');
+      for (final symbol in symbols.take(budget)) {
+        stdout.writeln('  $symbol');
+      }
+    }
+    return 2;
+  }
+  if (symbols.isEmpty) {
+    if (asJson) {
+      stdout.writeln(jsonEncode({
+        ...envelope('route', query),
+        'available': true,
+        'complete': index.complete,
+        'results': const [],
+        if (!index.complete) 'unresolvedFiles': index.unresolvedFiles,
+      }));
+    } else if (index.complete) {
+      stdout.writeln('no typed route named $query (complete resolved index)');
+    } else {
+      stdout.writeln(
+        'no proven typed route named $query, but the route index is incomplete'
+        '${index.unresolvedFiles.isEmpty ? '' : ' (${index.unresolvedFiles.length} unresolved files)'}',
+      );
+    }
+    return index.complete ? 0 : 1;
+  }
+
+  final symbol = symbols.single;
+  final placements = index.contracts
+      .where((route) => route.symbol == symbol)
+      .toList()
+    ..sort((a, b) => a.id.compareTo(b.id));
+  final declaration = placements.first;
+  final byId = graph.routeById;
+  final nameBySymbol = <String, String>{};
+  final idBySymbol = <String, String>{};
+  for (final route in index.contracts) {
+    nameBySymbol.putIfAbsent(route.symbol, () => route.name);
+    idBySymbol.putIfAbsent(route.symbol, () => route.navigationId);
+  }
+  final callerRows = graph.edges
+      .where((edge) =>
+          edge.rel == 'navigates' && edge.routeSymbol == declaration.symbol)
+      .map((edge) => <String, dynamic>{
+            'file': edge.src.replaceFirst('file:', ''),
+            if (edge.line != null) 'line': edge.line,
+            if (edge.operation != null) 'operation': edge.operation,
+            'confidence': edge.confidence,
+          })
+      .toList()
+    ..sort((a, b) {
+      final file = (a['file'] as String).compareTo(b['file'] as String);
+      if (file != 0) return file;
+      return (a['line'] as int? ?? 0).compareTo(b['line'] as int? ?? 0);
+    });
+  final redirectTargets = declaration.redirectTargets
+      .map((target) => <String, dynamic>{
+            'symbol': target,
+            if (nameBySymbol[target] != null) 'name': nameBySymbol[target],
+            if (idBySymbol[target] != null) 'navigationId': idBySymbol[target],
+          })
+      .toList()
+    ..sort((a, b) => (a['symbol'] as String).compareTo(b['symbol'] as String));
+  final uncertainties = <String>{
+    for (final route in placements) ...route.uncertainties,
+  }.toList()
+    ..sort();
+
+  Map<String, dynamic> placementRecord(RouteContract route) {
+    final parent = route.parentId == null ? null : byId[route.parentId!];
+    final shell = route.shellId == null ? null : byId[route.shellId!];
+    final branch = route.branchId == null ? null : byId[route.branchId!];
+    final owner =
+        route.navigatorOwnerId == null ? null : byId[route.navigatorOwnerId!];
+    return {
+      'id': route.id,
+      'annotationFile': route.annotationFile,
+      'annotationLine': route.annotationLine,
+      if (route.path != null) 'path': route.path,
+      if (route.fullPath != null) 'fullPath': route.fullPath,
+      if (route.routeName != null) 'routeName': route.routeName,
+      if (route.caseSensitive != null) 'caseSensitive': route.caseSensitive,
+      if (parent != null)
+        'parent': {
+          'id': parent.id,
+          'name': parent.name,
+          'navigationId': parent.navigationId,
+        },
+      if (shell != null)
+        'shell': {
+          'id': shell.id,
+          'name': shell.name,
+          'navigationId': shell.navigationId,
+        },
+      if (branch != null)
+        'branch': {
+          'id': branch.id,
+          'name': branch.name,
+          'navigationId': branch.navigationId,
+          if (route.branchIndex != null) 'index': route.branchIndex,
+        },
+      if (route.navigatorKeyDeclared ||
+          route.parentNavigatorKeyDeclared ||
+          owner != null)
+        'navigator': {
+          if (route.navigatorKeyDeclared) 'declaresOwnKey': true,
+          if (route.navigatorKey != null) 'key': route.navigatorKey,
+          if (route.parentNavigatorKeyDeclared) 'declaresParentKey': true,
+          if (route.parentNavigatorKey != null)
+            'parentKey': route.parentNavigatorKey,
+          if (owner != null)
+            'owner': {
+              'id': owner.id,
+              'name': owner.name,
+              'navigationId': owner.navigationId,
+            },
+        },
+      if (route.uncertainties.isNotEmpty) 'uncertainties': route.uncertainties,
+    };
+  }
+
+  if (asJson) {
+    final remaining = Budget(budget);
+    final placementRecords =
+        remaining.take(placements.map(placementRecord).toList());
+    final targetRecords = remaining.take(redirectTargets);
+    final callers = remaining.take(callerRows);
+    stdout.writeln(jsonEncode({
+      ...envelope('route', query),
+      'available': true,
+      'complete': index.complete,
+      if (!index.complete) 'unresolvedFiles': index.unresolvedFiles,
+      'results': [
+        {
+          'symbol': declaration.symbol,
+          'navigationId': declaration.navigationId,
+          'name': declaration.name,
+          'kind': declaration.kind,
+          if (declaration.declaredIn != null)
+            'declaredIn': declaration.declaredIn,
+          if (declaration.line != null) 'line': declaration.line,
+          if (declaration.pageFile != null) 'pageFile': declaration.pageFile,
+          'placementTotal': placements.length,
+          'placements': placementRecords,
+          'redirect': {
+            'declared': declaration.redirectDeclared,
+            'complete': declaration.redirectComplete,
+            'targetTotal': redirectTargets.length,
+            'targets': targetRecords,
+          },
+          'callerTotal': callerRows.length,
+          'callers': callers,
+          if (uncertainties.isNotEmpty) 'uncertainties': uncertainties,
+        },
+      ],
+      if (remaining.truncated) 'truncated': true,
+    }));
+    return 0;
+  }
+
+  final out = <String>[
+    '${declaration.name}  ${declaration.kind}  '
+        '${declaration.declaredIn ?? '(declaration unavailable)'}'
+        '${declaration.line == null ? '' : ':${declaration.line}'}',
+    'identity: ${declaration.symbol}',
+    if (declaration.pageFile != null) 'page: ${declaration.pageFile}',
+    '',
+    'placements (${placements.length}):',
+  ];
+  for (final route in placements) {
+    final parent = route.parentId == null ? null : byId[route.parentId!];
+    final shell = route.shellId == null ? null : byId[route.shellId!];
+    final branch = route.branchId == null ? null : byId[route.branchId!];
+    final owner =
+        route.navigatorOwnerId == null ? null : byId[route.navigatorOwnerId!];
+    out.add('  ${route.fullPath ?? route.path ?? '(no path)'}  '
+        '(${route.annotationFile}:${route.annotationLine})');
+    if (parent != null) out.add('    parent: ${parent.name}');
+    if (shell != null) out.add('    shell: ${shell.name}');
+    if (branch != null) {
+      out.add('    branch: ${route.branchIndex ?? '?'} ${branch.name}');
+    }
+    if (owner != null) {
+      out.add('    navigator: ${owner.name}'
+          '${route.parentNavigatorKey == null ? '' : ' via ${route.parentNavigatorKey}'}');
+    }
+  }
+  if (redirectTargets.isNotEmpty) {
+    out
+      ..add('')
+      ..add('redirect targets (${redirectTargets.length}):')
+      ..addAll(redirectTargets.map(
+        (target) => '  ${target['name'] ?? target['symbol']}',
+      ));
+  }
+  out
+    ..add('')
+    ..add('callers (${callerRows.length}):')
+    ..addAll(callerRows.isEmpty
+        ? const ['  (none found)']
+        : callerRows
+            .map((caller) => '  ${caller['file']}:${caller['line'] ?? '?'}  '
+                '${caller['operation'] ?? 'navigate'}'));
+  if (uncertainties.isNotEmpty) {
+    out
+      ..add('')
+      ..add('uncertainties (${uncertainties.length}):')
+      ..addAll(uncertainties.map((uncertainty) => '  $uncertainty'));
+  }
+  emit(out, budget, hint: 'raise --budget N');
+  return 0;
+}
+
 void impls(Graph graph, List<String> rest, int budget, bool asJson) {
   if (rest.isEmpty) {
     stderr.writeln('usage: impls <Type>');
@@ -455,8 +720,8 @@ void impls(Graph graph, List<String> rest, int budget, bool asJson) {
   }
   final type = rest.first;
   // TRANSITIVE subtype tree, not just direct children. `impls X` used to return
-  // only one-level subtypes, so `impls BaseCachedResourceNotifier` showed just
-  // `UserCachedResourceNotifier` and hid its 6 concrete leaves — false
+  // only one-level subtypes, so `impls BaseResource` showed just
+  // `CachedResource` and hid its concrete leaves — false
   // completeness for "list every subclass" (found by an A/B eval). A
   // subtype-of-a-subtype is still a STATED fact (A extends B, B extends C ⇒ A is
   // a subtype of C), so the closure introduces no guessed edges. Cycle-guarded.

@@ -47,7 +47,7 @@ void init(List<String> args,
 Done. Next steps:
   1. codegraph build          # generate docs/maps/ for this project
   2. codegraph doctor         # verify the install
-  3. commit CLAUDE.md, .claude/, docs/maps/*.md (NOT code_graph.json — gitignored)
+  3. commit CLAUDE.md, .claude/, docs/maps/*.md (NOT generated JSON indexes)
 Engine wrong or missing a relation? Fix it at $repoUrl, changelog it there,
 then update everywhere: dart pub global activate -sgit $repoUrl --git-ref v$version''');
 }
@@ -204,20 +204,28 @@ NOTE  no codegraph.json — starter for a Riverpod+GoRouter app:
 }
 
 const _graphJsonEntry = 'docs/maps/code_graph.json';
+const _refactorIndexEntry = 'docs/maps/refactor_index.json';
+const _generatedJsonEntries = [_graphJsonEntry, _refactorIndexEntry];
 
 /// Appends the generated-graph JSON to `.gitignore` (creating the file if
 /// missing). Idempotent — skips if the line is already present anywhere in
 /// the file.
 void _gitignoreGraphJson() {
   final f = File('.gitignore');
-  final existing = f.existsSync() ? f.readAsStringSync() : '';
-  if (existing.split('\n').map((l) => l.trim()).contains(_graphJsonEntry)) {
-    stdout.writeln('skip  .gitignore ($_graphJsonEntry already present)');
+  var existing = f.existsSync() ? f.readAsStringSync() : '';
+  final lines = existing.split('\n').map((line) => line.trim()).toSet();
+  final missing =
+      _generatedJsonEntries.where((entry) => !lines.contains(entry));
+  if (missing.isEmpty) {
+    stdout.writeln('skip  .gitignore (generated indexes already present)');
     return;
   }
-  final sep = existing.isEmpty || existing.endsWith('\n') ? '' : '\n';
-  f.writeAsStringSync('$existing$sep$_graphJsonEntry\n');
-  stdout.writeln('wrote .gitignore ($_graphJsonEntry)');
+  for (final entry in missing) {
+    final sep = existing.isEmpty || existing.endsWith('\n') ? '' : '\n';
+    existing = '$existing$sep$entry\n';
+    stdout.writeln('wrote .gitignore ($entry)');
+  }
+  f.writeAsStringSync(existing);
 }
 
 /// If `docs/maps/code_graph.json` is already tracked by git (from before it
@@ -291,6 +299,7 @@ codegraph wiring <file>        # a file's full wiring, both directions
 codegraph impls <Type>         # implementers/subtypes (transitive)
 codegraph path <A> <B>         # how two files connect
 codegraph diff [--base main]   # branch blast-radius card — what changed, what it touches, what's untested
+codegraph affected-tests       # targeted test plan; uncertainty expands to full suites
 codegraph impact <thing>       # transitive dependents (what breaks if this changes)
 codegraph lint               # architecture rules — run before committing
 ```
@@ -472,6 +481,7 @@ codegraph impls   <TypeName>       # who implements/extends a type (incl. test f
 codegraph path    <A> <B>          # how two files connect
 codegraph impact  <thing>          # transitive dependents (what breaks if this changes)
 codegraph diff    [--base main]    # branch blast-radius card
+codegraph affected-tests [--base main] # explain targeted/full test commands
 codegraph unused  [providers|files] # dead-code candidates
 codegraph untested                 # coverage gaps (zero test references)
 ```
@@ -488,6 +498,8 @@ Learned something non-obvious about an area? Append it to `docs/maps/notes/<area
 
 - "What does this feature do / how is it wired?" → read `docs/maps/<area>.md`.
 - "If I change provider X, what breaks?" → `readers X`.
+- "Which tests should this branch run?" → `affected-tests --base main`;
+  targeted plans remain advisory until the mutation oracle unlocks skipping.
 - "What does file Y depend on / who depends on it?" → `wiring Y`.
 - "What are the implementations of interface Z?" → `impls Z`.
 - "Where is thing T?" → `find T`.
@@ -552,8 +564,9 @@ Dart analyzer but uses pragmatic resolution:
   whole-project analyze before deleting. (`callers` and `impls` do scan the test
   roots on demand, so a method's call sites and an interface's test fakes are
   covered without a separate grep.)
-- **`ref.watch/read/listen` detection requires a `ref.`/`this.ref.` target**;
-  indirected refs may be missed.
+- **Syntax fallback recognizes common Ref receiver names**. Resolved builds use
+  the receiver's Ref/WidgetRef/ProviderContainer type and also model
+  watch/read/listen/invalidate/refresh, including wrapper-held refs.
 - **`callers` tracks method/function calls only** — field/member *access*
   (e.g. `state.sessionToken`) is not indexed; use `find <field>` for lifecycle
   helpers or read the declaring class.
@@ -562,9 +575,10 @@ Dart analyzer but uses pragmatic resolution:
 - **ProviderScope overrides are not modeled** - readers/wiring tell you who
   SUBSCRIBES to a provider, not which implementation RUNS in a given scope
   (bootstrap/test/route overrides can swap it).
-- **`callers`/`refs` match by name across ALL same-named declarations**, so
-  counts can be inflated; family providers collapse to one node (every
-  instance is the same edge).
+- **Syntax `callers` merges same-named declarations**. Pass `--resolved` for
+  element-precise target attribution; a current resolved build serves that
+  answer from its semantic index. Family providers still collapse to one node
+  (every instance is the same provider interaction edge).
 - **OpenAPI / generated model changes** (field removals on DTOs) are outside
   the graph — `find` locates the class but not what changed; use `git diff` on
   the API package or the regen report.

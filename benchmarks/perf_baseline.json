@@ -1,13 +1,22 @@
 {
-  "generated": "2026-07-08T06:38:14.685768Z",
+  "generated": "2026-07-16T06:02:01.815660Z",
   "iterations": 5,
   "metrics": {
-    "build_ms": 49,
-    "find_home_ms": 1,
-    "sym_home_ms": 0,
-    "readers_homeProvider_ms": 0,
-    "impls_shape_ms": 0,
-    "callers_pingTarget_ms": 8,
-    "callchain_chainEntry_ms": 23
+    "build_ms": 61,
+    "find_home_ms": 4,
+    "sym_home_ms": 3,
+    "readers_homeProvider_ms": 3,
+    "impls_shape_ms": 4,
+    "callers_pingTarget_ms": 13,
+    "callchain_chainEntry_ms": 28,
+    "resolved_build_ms": 896,
+    "rename_indexed_ms": 6,
+    "rename_analyzer_ms": 344,
+    "callers_indexed_ms": 4,
+    "callers_analyzer_ms": 328
+  },
+  "derived": {
+    "rename_speedup_x": 57.3,
+    "callers_speedup_x": 82.0
   }
 }

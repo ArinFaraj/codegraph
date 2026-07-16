@@ -47,7 +47,7 @@ bool _hasCallableDecl(Graph g, String name) {
 /// callable -> call sites; file -> inbound wiring. Strongest match renders,
 /// other matching interpretations get a one-line pointer.
 int runUses(List<String> args) {
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 80;
   if (positional.length < 2) {
     stderr.writeln('usage: uses <thing>');
@@ -109,7 +109,7 @@ int runUses(List<String> args) {
 /// Kills the canonical agent failure: renaming a provider and missing its
 /// Notifier subclasses.
 int runChange(List<String> args) {
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 80;
   if (positional.length < 2) {
     stderr.writeln('usage: change <thing>');

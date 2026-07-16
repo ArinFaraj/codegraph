@@ -30,6 +30,79 @@ class GoRoute {
     Object? parentNavigatorKey,
   });
 }
+
+class GoRouteData {
+  const GoRouteData();
+  void go(Object context) {}
+  void push(Object context) {}
+  void replace(Object context) {}
+  void pushReplacement(Object context) {}
+  void goRelative(Object context) {}
+  void pushRelative(Object context) {}
+  String get location => '/';
+}
+
+class RelativeGoRouteData extends GoRouteData {
+  const RelativeGoRouteData();
+}
+
+class ShellRouteData {
+  const ShellRouteData();
+}
+
+class StatefulShellRouteData extends ShellRouteData {
+  const StatefulShellRouteData();
+}
+
+class StatefulShellBranchData {
+  const StatefulShellBranchData();
+}
+
+class TypedGoRoute<T extends GoRouteData> {
+  const TypedGoRoute({
+    required this.path,
+    this.name,
+    this.caseSensitive = true,
+    this.routes = const [],
+  });
+  final String path;
+  final String? name;
+  final bool caseSensitive;
+  final List<Object> routes;
+}
+
+class TypedRelativeGoRoute<T extends RelativeGoRouteData> {
+  const TypedRelativeGoRoute({
+    required this.path,
+    this.name,
+    this.caseSensitive = true,
+    this.routes = const [],
+  });
+  final String path;
+  final String? name;
+  final bool caseSensitive;
+  final List<Object> routes;
+}
+
+class TypedShellRoute<T extends ShellRouteData> {
+  const TypedShellRoute({this.routes = const []});
+  final List<Object> routes;
+}
+
+class TypedStatefulShellRoute<T extends StatefulShellRouteData> {
+  const TypedStatefulShellRoute({this.branches = const []});
+  final List<Object> branches;
+}
+
+class TypedStatefulShellBranch<T extends StatefulShellBranchData> {
+  const TypedStatefulShellBranch({this.routes = const []});
+  final List<Object> routes;
+}
+
+class MaterialPage<T> {
+  const MaterialPage({required this.child});
+  final T child;
+}
 ''');
   // Resolvable Ref/WidgetRef so a receiver's STATIC TYPE can be checked (3.0
   // Stage 2 element-checked readers). Also outside scanned roots.
@@ -40,13 +113,27 @@ class Ref {
   T watch<T>(Object provider) => throw '';
   T read<T>(Object provider) => throw '';
   void listen(Object provider, Object onChange) {}
+  void invalidate(Object provider) {}
+  T refresh<T>(Object provider) => throw '';
 }
 class WidgetRef extends Ref {}
 class ProviderContainer {
   T read<T>(Object provider) => throw '';
+  void invalidate(Object provider) {}
+  T refresh<T>(Object provider) => throw '';
 }
 class Notifier<T> {
   T build() => throw '';
+}
+''');
+  File(
+      '${root.path}/.fixture_deps/riverpod_annotation/lib/riverpod_annotation.dart')
+    ..parent.createSync(recursive: true)
+    ..writeAsStringSync('''
+const riverpod = Riverpod();
+class Riverpod {
+  const Riverpod({this.keepAlive = false});
+  final bool keepAlive;
 }
 ''');
   File('${root.path}/.dart_tool/package_config.json')
@@ -58,7 +145,8 @@ class Notifier<T> {
     { "name": "fixture", "rootUri": "../", "packageUri": "lib/", "languageVersion": "3.5" },
     { "name": "fixture_ui", "rootUri": "../packages/fixture_ui", "packageUri": "lib/", "languageVersion": "3.5" },
     { "name": "go_router", "rootUri": "../.fixture_deps/go_router", "packageUri": "lib/", "languageVersion": "3.5" },
-    { "name": "riverpod", "rootUri": "../.fixture_deps/riverpod", "packageUri": "lib/", "languageVersion": "3.5" }
+    { "name": "riverpod", "rootUri": "../.fixture_deps/riverpod", "packageUri": "lib/", "languageVersion": "3.5" },
+    { "name": "riverpod_annotation", "rootUri": "../.fixture_deps/riverpod_annotation", "packageUri": "lib/", "languageVersion": "3.5" }
   ]
 }
 ''');

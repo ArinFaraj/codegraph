@@ -48,6 +48,105 @@ class GoRouteDecl {
   final String? helperKey;
 }
 
+/// A source-declared class whose resolved type is a real
+/// `package:go_router` `GoRouteData`/`RelativeGoRouteData` subtype.
+///
+/// [routeSymbol] is the analyzer identity (`library-uri::class-name`), so two
+/// packages may declare the same route-data class name without being merged.
+/// [pageTypeName] is intentionally nullable: only a direct expression return
+/// or an exact single-return block from `build`/`buildPage` is accepted.
+class TypedRouteDecl {
+  TypedRouteDecl({
+    required this.routeSymbol,
+    required this.routeTypeName,
+    required this.kind,
+    required this.pageTypeName,
+    required this.pageContractComplete,
+    required this.file,
+    required this.line,
+    required this.hasRedirect,
+    required this.redirectComplete,
+    required this.redirectTargetSymbols,
+    required this.navigatorKeyDeclared,
+    required this.navigatorKeySymbol,
+    required this.parentNavigatorKeyDeclared,
+    required this.parentNavigatorKeySymbol,
+    required this.uncertainties,
+  });
+
+  final String routeSymbol;
+  final String routeTypeName;
+  final String kind;
+  final String? pageTypeName;
+  final bool pageContractComplete;
+  final String file;
+  final int line;
+  final bool hasRedirect;
+  final bool redirectComplete;
+  final List<String> redirectTargetSymbols;
+  final bool navigatorKeyDeclared;
+  final String? navigatorKeySymbol;
+  final bool parentNavigatorKeyDeclared;
+  final String? parentNavigatorKeySymbol;
+  final List<String> uncertainties;
+}
+
+/// A navigation method invoked on a resolved typed-route receiver.
+class TypedNavigationDecl {
+  TypedNavigationDecl(
+    this.routeSymbol,
+    this.routeTypeName,
+    this.method,
+    this.line,
+  );
+
+  final String routeSymbol;
+  final String routeTypeName;
+  final String method;
+  final int line;
+}
+
+/// One flattened occurrence from a resolved typed-route annotation tree.
+/// Relationships use occurrence ids because relative route classes may be
+/// intentionally reused at multiple paths.
+class TypedRouteOccurrence {
+  TypedRouteOccurrence({
+    required this.id,
+    required this.routeSymbol,
+    required this.routeTypeName,
+    required this.kind,
+    required this.annotationFile,
+    required this.annotationLine,
+    required this.path,
+    required this.fullPath,
+    required this.name,
+    required this.caseSensitive,
+    required this.parentId,
+    required this.shellId,
+    required this.branchId,
+    required this.branchIndex,
+    required this.complete,
+    required this.uncertainties,
+  });
+
+  final String id;
+  final String routeSymbol;
+  final String routeTypeName;
+  final String kind;
+  final String annotationFile;
+  final int annotationLine;
+  final String? path;
+  final String? fullPath;
+  final String? name;
+  final bool? caseSensitive;
+  final String? parentId;
+  final String? shellId;
+  final String? branchId;
+  final int? branchIndex;
+  final bool complete;
+  final List<String> uncertainties;
+}
+
 /// Mechanism (a) — route-constant substitution (0.5.0, gated by the
 /// shadowing/reachability and cross-file-identity checks below): a
 /// project-wide `constantName -> declarations` table built from top-level
@@ -144,6 +243,8 @@ class FileInfo {
   final Map<String, int> watches = {};
   final Map<String, int> reads = {};
   final Map<String, int> listens = {};
+  final Map<String, int> invalidates = {};
+  final Map<String, int> refreshes = {};
   // 3.0 Stage 2: `'<rel>|<provider>'` keys (e.g. `watches|homeProvider`) for
   // reader edges detected by the receiver's STATIC TYPE (element identity) vs
   // the name allow-list. Drives the edge `confidence`: resolved if present,
@@ -155,6 +256,10 @@ class FileInfo {
   // subtype edge `resolved` vs the name-matched `heuristic`.
   final Set<String> elementResolvedSupers = {};
   final Map<String, int> navigates = {};
+  // Resolved-only typed-route contracts. Syntax builds leave both empty.
+  final List<TypedRouteDecl> typedRoutes = [];
+  final List<TypedNavigationDecl> typedNavigations = [];
+  final List<TypedRouteOccurrence> typedRouteOccurrences = [];
   // GoRoute(...) declarations found anywhere in this file — Stage 4.
   final List<GoRouteDecl> goRoutes = [];
   // Mechanism (b): top-level functions declared in this file whose body

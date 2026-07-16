@@ -25,8 +25,10 @@ import 'package:analyzer/source/line_info.dart';
 
 import 'cli_util.dart';
 import 'freshness.dart';
-
-const _testRoots = ['test', 'integration_test', 'patrol_test'];
+import 'model.dart';
+import 'progress.dart';
+import 'refactor_index.dart';
+import 'workspace_files.dart';
 
 class _Hit {
   _Hit(this.file, this.line, this.kind, this.text);
@@ -78,24 +80,13 @@ class _Finder extends RecursiveAstVisitor<void> {
   }
 }
 
-List<File> _dartFilesUnder(String dir) {
-  final d = Directory(dir);
-  if (!d.existsSync()) return const [];
-  return d
-      .listSync(recursive: true)
-      .whereType<File>()
-      .where((f) => f.path.endsWith('.dart'))
-      .toList()
-    ..sort((a, b) => a.path.compareTo(b.path));
-}
-
 /// `int run(List<String> args)` — `callers|refs <Symbol> [--json] [--budget N]`.
 /// [caveat] false suppresses the trailing caveat line — `uses` (intent.dart)
 /// delegates here and prints its own union caveat instead.
 int run(List<String> args, {bool caveat = true}) {
   final verb = args.isNotEmpty ? args.first : 'callers';
   final refsMode = verb == 'refs';
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 80;
   final asJson = args.contains('--json');
   if (positional.length < 2) {
@@ -116,7 +107,7 @@ int run(List<String> args, {bool caveat = true}) {
   final files = <File>[
     for (final p in paths)
       if (File(p).existsSync()) File(p),
-    for (final root in _testRoots) ..._dartFilesUnder(root),
+    ...dartFilesUnderTestRoots(workspaceTestRoots(paths)),
   ];
 
   final hits = <_Hit>[];
@@ -196,8 +187,8 @@ int run(List<String> args, {bool caveat = true}) {
 // `build()` together. The resolved path resolves each call/ref to its declaring
 // element and ATTRIBUTES it to the real target (`HomePage.build` vs
 // `SettingsPage.build`), so a refactor of one specific method sees only its own
-// sites. Slow (query-time whole-context resolution, tens of seconds on a large
-// app) - opt-in via `--resolved`; the doctrine's "once in a while" case.
+// sites. Opt-in via `--resolved`; normally served from the persistent semantic
+// index, with a fresh whole-context analyzer walk as the compatibility fallback.
 
 class _RHit {
   _RHit(this.file, this.line, this.kind, this.text, this.target);
@@ -266,13 +257,8 @@ class _ResolvedFinder extends RecursiveAstVisitor<void> {
   @override
   void visitSimpleIdentifier(SimpleIdentifier node) {
     if (refsMode && node.name == symbol) {
-      final p = node.parent;
-      final isCallName = p is MethodInvocation && identical(p.methodName, node);
-      final isDeclName = (p is MethodDeclaration && identical(p.name, node)) ||
-          (p is FunctionDeclaration && identical(p.name, node)) ||
-          (p is VariableDeclaration && identical(p.name, node)) ||
-          (p is NamedType);
-      if (!isCallName && !isDeclName) {
+      if (isRefactorReferenceUse(node) &&
+          refactorSiteKind(node) != refactorSiteCall) {
         final line = lineInfo.getLocation(node.offset).lineNumber;
         hits.add(
             _RHit(file, line, 'ref', _lineText(line), _target(node.element)));
@@ -280,80 +266,37 @@ class _ResolvedFinder extends RecursiveAstVisitor<void> {
     }
     super.visitSimpleIdentifier(node);
   }
+
+  @override
+  void visitFunctionExpressionInvocation(FunctionExpressionInvocation node) {
+    final function = node.function;
+    if (function is SimpleIdentifier && function.name == symbol) {
+      final line = lineInfo.getLocation(function.offset).lineNumber;
+      hits.add(_RHit(
+          file, line, 'call', _lineText(line), _target(function.element)));
+    }
+    super.visitFunctionExpressionInvocation(node);
+  }
 }
 
-/// `callers|refs <Symbol> --resolved` - element-precise, attributed by target.
-Future<int> runResolved(List<String> args, {bool caveat = true}) async {
-  final verb = args.isNotEmpty ? args.first : 'callers';
-  final refsMode = verb == 'refs';
-  final positional = args.where((a) => !a.startsWith('--')).toList();
-  final budget = intFlag(args, '--budget') ?? 80;
-  final asJson = args.contains('--json');
-  if (positional.length < 2) {
-    stderr.writeln('usage: $verb <Symbol> --resolved');
-    return 64;
-  }
-  final symbol = positional[1];
-
-  if (!File('.dart_tool/package_config.json').existsSync()) {
-    stderr.writeln('--resolved needs resolved dependencies but no '
-        '.dart_tool/package_config.json was found. Run: dart pub get, then '
-        'retry - or drop --resolved for the name-match path.');
-    return 66;
-  }
-
-  final graph = loadFresh();
-  if (graph == null) return 66;
-
-  final paths = <String>{
-    for (final n in graph.nodes)
-      if (n.isFile) n.id.replaceFirst('file:', ''),
-  };
-  final files = <File>[
-    for (final p in paths)
-      if (File(p).existsSync()) File(p),
-    for (final root in _testRoots) ..._dartFilesUnder(root),
-  ];
-
-  final collection = AnalysisContextCollection(
-    includedPaths: [for (final f in files) f.absolute.path],
-  );
-  final hits = <_RHit>[];
-  final overrides = <String, List<String>>{};
-  var unresolvedFiles = 0;
-  for (final f in files) {
-    final String content;
-    try {
-      content = f.readAsStringSync();
-    } on FileSystemException {
-      continue;
-    }
-    if (!content.contains(symbol)) continue; // prefilter: skip resolution
-    final abs = f.absolute.path;
-    ResolvedUnitResult? r;
-    try {
-      final u =
-          await collection.contextFor(abs).currentSession.getResolvedUnit(abs);
-      if (u is ResolvedUnitResult) r = u;
-    } catch (_) {}
-    if (r == null) {
-      unresolvedFiles++;
-      continue;
-    }
-    final rel = f.path.startsWith('./') ? f.path.substring(2) : f.path;
-    r.unit.accept(_ResolvedFinder(symbol, r.unit.lineInfo, rel,
-        content.split('\n'), hits, refsMode, overrides));
-  }
-
-  // Refactor-safety context: supertype methods the target(s) override. A rename
-  // or signature change to an override must also change the base + every
-  // sibling override (and can't touch an external/framework base at all).
+int _emitResolvedResults({
+  required String verb,
+  required String symbol,
+  required bool refsMode,
+  required int budget,
+  required bool asJson,
+  required bool caveat,
+  required Graph graph,
+  required List<_RHit> hits,
+  required Map<String, List<String>> overrides,
+  required int unresolvedFiles,
+  required bool indexed,
+}) {
   final overridden = {
     for (final e in overrides.entries)
       if (e.value.isNotEmpty) e.key: e.value,
   };
 
-  // Group by resolved target, most sites first.
   final byTarget = <String, int>{};
   for (final h in hits) {
     byTarget[h.target] = (byTarget[h.target] ?? 0) + 1;
@@ -378,6 +321,7 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
     stdout.writeln(jsonEncode({
       ...envelope(verb, symbol),
       'resolved': true,
+      if (indexed) 'indexed': true,
       'count': hits.length,
       'targets': {for (final e in targets) e.key: e.value},
       if (overridden.isNotEmpty) 'overrides': overridden,
@@ -428,4 +372,181 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
   emit(out, budget, hint: 'raise --budget ${hits.length}');
   if (caveat) emitCaveats(verb);
   return 0;
+}
+
+int _runIndexedResolved({
+  required String verb,
+  required String symbol,
+  required bool refsMode,
+  required int budget,
+  required bool asJson,
+  required bool caveat,
+  required Graph graph,
+  required RefactorIndex index,
+}) {
+  final targetBySymbol = {
+    for (final target in index.targets) target.symbol: target,
+  };
+  final sites = index.references.where((site) {
+    final targetName = targetBySymbol[site.symbol]?.name;
+    if ((targetName ?? executableName(site.symbol)) != symbol) return false;
+    return refsMode || site.kind == refactorSiteCall;
+  });
+  final linesByFile = <String, List<String>>{};
+  String lineText(String file, int line) {
+    final lines = linesByFile.putIfAbsent(file, () {
+      try {
+        return File(file).readAsStringSync().split('\n');
+      } on FileSystemException {
+        return const [];
+      }
+    });
+    return line >= 1 && line <= lines.length ? lines[line - 1].trim() : '';
+  }
+
+  final hits = <_RHit>[
+    for (final site in sites)
+      _RHit(
+        site.file,
+        site.line,
+        site.kind,
+        lineText(site.file, site.line),
+        targetBySymbol[site.symbol]?.display ?? executableDisplay(site.symbol),
+      ),
+  ];
+  final hitSymbols = {
+    for (final site in sites) site.symbol,
+  };
+  final overrides = <String, List<String>>{};
+  for (final target in hitSymbols) {
+    final metadata = targetBySymbol[target];
+    if (metadata == null) continue;
+    overrides[metadata.display] = [
+      for (final parent in metadata.overrides)
+        '${targetBySymbol[parent]?.display ?? executableDisplay(parent)} '
+            '[${targetBySymbol[parent]?.library ?? executableLibrary(parent)}]',
+    ];
+  }
+  return _emitResolvedResults(
+    verb: verb,
+    symbol: symbol,
+    refsMode: refsMode,
+    budget: budget,
+    asJson: asJson,
+    caveat: caveat,
+    graph: graph,
+    hits: hits,
+    overrides: overrides,
+    unresolvedFiles: 0,
+    indexed: true,
+  );
+}
+
+/// `callers|refs <Symbol> --resolved` - element-precise, attributed by target.
+Future<int> runResolved(List<String> args, {bool caveat = true}) async {
+  final verb = args.isNotEmpty ? args.first : 'callers';
+  final refsMode = verb == 'refs';
+  final positional = positionalArgs(args);
+  final budget = intFlag(args, '--budget') ?? 80;
+  final asJson = args.contains('--json');
+  if (positional.length < 2) {
+    stderr.writeln('usage: $verb <Symbol> --resolved');
+    return 64;
+  }
+  final symbol = positional[1];
+
+  if (!File('.dart_tool/package_config.json').existsSync()) {
+    stderr.writeln('--resolved needs resolved dependencies but no '
+        '.dart_tool/package_config.json was found. Run: dart pub get, then '
+        'retry - or drop --resolved for the name-match path.');
+    return 66;
+  }
+
+  final graph = loadFresh();
+  if (graph == null) return 66;
+
+  final index = RefactorIndex.load();
+  if (!args.contains('--no-index') &&
+      index != null &&
+      index.complete &&
+      (!refsMode || !index.nonExecutableNames.contains(symbol)) &&
+      index.sourceDigest == graph.stats['sourceDigest']) {
+    return _runIndexedResolved(
+      verb: verb,
+      symbol: symbol,
+      refsMode: refsMode,
+      budget: budget,
+      asJson: asJson,
+      caveat: caveat,
+      graph: graph,
+      index: index,
+    );
+  }
+
+  final paths = <String>{
+    for (final n in graph.nodes)
+      if (n.isFile) n.id.replaceFirst('file:', ''),
+  };
+  final files = <File>[
+    for (final p in paths)
+      if (File(p).existsSync()) File(p),
+    ...dartFilesUnderTestRoots(workspaceTestRoots(paths)),
+  ];
+
+  final collection = AnalysisContextCollection(
+    includedPaths: [for (final f in files) f.absolute.path],
+  );
+  final hits = <_RHit>[];
+  final overrides = <String, List<String>>{};
+  var unresolvedFiles = 0;
+  final progress = ProgressReporter('resolve $verb', files.length)..start();
+  var completed = 0;
+  try {
+    for (final f in files) {
+      final String content;
+      try {
+        content = f.readAsStringSync();
+      } on FileSystemException {
+        progress.advance(++completed);
+        continue;
+      }
+      if (!content.contains(symbol)) {
+        progress.advance(++completed);
+        continue; // prefilter: skip resolution
+      }
+      final abs = f.absolute.path;
+      ResolvedUnitResult? r;
+      try {
+        final u = await collection
+            .contextFor(abs)
+            .currentSession
+            .getResolvedUnit(abs);
+        if (u is ResolvedUnitResult) r = u;
+      } catch (_) {}
+      if (r == null) {
+        unresolvedFiles++;
+        progress.advance(++completed);
+        continue;
+      }
+      final rel = f.path.startsWith('./') ? f.path.substring(2) : f.path;
+      r.unit.accept(_ResolvedFinder(symbol, r.unit.lineInfo, rel,
+          content.split('\n'), hits, refsMode, overrides));
+      progress.advance(++completed);
+    }
+  } finally {
+    await collection.dispose();
+  }
+  return _emitResolvedResults(
+    verb: verb,
+    symbol: symbol,
+    refsMode: refsMode,
+    budget: budget,
+    asJson: asJson,
+    caveat: caveat,
+    graph: graph,
+    hits: hits,
+    overrides: overrides,
+    unresolvedFiles: unresolvedFiles,
+    indexed: false,
+  );
 }

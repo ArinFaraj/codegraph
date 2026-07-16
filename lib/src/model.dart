@@ -12,7 +12,7 @@
 // A provider name declared more than once gets one node per declaration,
 // id'd `provider:<name>@<file>` (see `engine.dart`'s `_ProviderResolver`).
 // Each such node carries `ambiguous: true` ([GraphNode.isAmbiguousProvider]).
-// A watch/read/listen edge from a reader that can't be resolved to exactly
+// A provider-interaction edge that can't be resolved to exactly
 // one reachable declaration points at the bare `provider:<name>` id (no
 // `@file`) and carries `ambiguous: true` plus a `candidates` list of every
 // declaring file ([GraphEdge.isUnresolvedAmbiguous]) — this is the
@@ -30,13 +30,28 @@ const _defaultGraphPath = 'docs/maps/code_graph.json';
 /// Current wire-format generation (`stats.format`). Bumped on additive schema
 /// changes; `Graph.load()` warns (stderr, never fails) when a loaded graph's
 /// `format` is missing (pre-0.6) or newer than this binary knows.
-const graphFormatVersion = 6;
+const graphFormatVersion = 9;
 
-/// THE set of provider-consumer relations (`GraphEdge.rel` values a reader
-/// edge can carry). Adding a relation means updating only this constant —
-/// every consumer (unused-provider detection, in-degree counts, brief/query
-/// rendering) reads from here instead of copy-pasting the literal set.
-const providerConsumerRels = {'watches', 'reads', 'listens'};
+/// Stable display order for every Riverpod provider interaction Codegraph
+/// models. Dependency reads come first, then state-changing interactions.
+const providerInteractionRelOrder = [
+  'watches',
+  'reads',
+  'listens',
+  'invalidates',
+  'refreshes',
+];
+
+/// THE set of provider-interaction relations (`GraphEdge.rel` values a
+/// provider-use edge can carry). These all matter to impact and unused-provider
+/// analysis: a provider that is only invalidated or refreshed is still used.
+const providerConsumerRels = {
+  'watches',
+  'reads',
+  'listens',
+  'invalidates',
+  'refreshes',
+};
 
 /// Roles a file needs to have to count as a coverage gap in `untested files`
 /// — the Standard-07-shaped set (view/controller/repository/provider); a
@@ -212,6 +227,8 @@ class GraphEdge {
     this.childName,
     this.parentName,
     this.confidence = 'heuristic',
+    this.routeSymbol,
+    this.operation,
   });
 
   factory GraphEdge.fromJson(Map<String, dynamic> j) => GraphEdge(
@@ -227,6 +244,8 @@ class GraphEdge {
         childName: j['child'] as String?,
         parentName: j['parent'] as String?,
         confidence: j['confidence'] as String? ?? 'heuristic',
+        routeSymbol: j['routeSymbol'] as String?,
+        operation: j['operation'] as String?,
       );
 
   final String src;
@@ -256,6 +275,8 @@ class GraphEdge {
   /// Lets a query or the future actuator filter by trust (act only on
   /// `resolved`). Absent in JSON means `heuristic` (kept lean like the flags).
   final String confidence;
+  final String? routeSymbol;
+  final String? operation;
 
   /// True on a `navigates` edge when no sibling `navigates-to` edge (same
   /// `src`+`line`) was emitted — the resolver couldn't map the nav target to
@@ -263,7 +284,7 @@ class GraphEdge {
   /// itself; join on the `navigates-to` sibling for that (see [Graph.navLines]).
   final bool unresolved;
 
-  /// True when this is a watch/read/listen edge that `_ProviderResolver`
+  /// True when this is a provider-interaction edge that `_ProviderResolver`
   /// could not resolve to exactly one reachable declaration — see the
   /// sentinel doc above. `dst` is the bare `provider:<name>` id and
   /// [candidates] lists every declaring file.
@@ -298,6 +319,176 @@ class GraphEdge {
         if (childName != null) 'child': childName,
         if (parentName != null) 'parent': parentName,
         if (confidence != 'heuristic') 'confidence': confidence,
+        if (routeSymbol != null) 'routeSymbol': routeSymbol,
+        if (operation != null) 'operation': operation,
+      };
+}
+
+/// One occurrence in a resolved go_router_builder annotation tree.
+///
+/// A route-data class may occur more than once (relative routes explicitly
+/// support reuse), so [id] identifies the tree occurrence while [symbol]
+/// identifies the Dart class. Every relationship uses occurrence ids; direct
+/// navigation uses [navigationId], which remains class-identity based.
+class RouteContract {
+  RouteContract({
+    required this.id,
+    required this.symbol,
+    required this.navigationId,
+    required this.name,
+    required this.kind,
+    required this.declaredIn,
+    required this.line,
+    required this.annotationFile,
+    required this.annotationLine,
+    required this.path,
+    required this.fullPath,
+    required this.routeName,
+    required this.caseSensitive,
+    required this.parentId,
+    required this.shellId,
+    required this.branchId,
+    required this.branchIndex,
+    required this.pageFile,
+    required this.navigatorKey,
+    required this.navigatorKeyDeclared,
+    required this.parentNavigatorKey,
+    required this.parentNavigatorKeyDeclared,
+    required this.navigatorOwnerId,
+    required this.redirectTargets,
+    required this.redirectDeclared,
+    required this.redirectComplete,
+    required this.uncertainties,
+  });
+
+  factory RouteContract.fromJson(Map<String, dynamic> json) => RouteContract(
+        id: json['id'] as String,
+        symbol: json['symbol'] as String,
+        navigationId: json['navigationId'] as String,
+        name: json['name'] as String,
+        kind: json['kind'] as String,
+        declaredIn: json['declaredIn'] as String?,
+        line: json['line'] as int?,
+        annotationFile: json['annotationFile'] as String,
+        annotationLine: json['annotationLine'] as int,
+        path: json['path'] as String?,
+        fullPath: json['fullPath'] as String?,
+        routeName: json['routeName'] as String?,
+        caseSensitive: json['caseSensitive'] as bool?,
+        parentId: json['parent'] as String?,
+        shellId: json['shell'] as String?,
+        branchId: json['branch'] as String?,
+        branchIndex: json['branchIndex'] as int?,
+        pageFile: json['pageFile'] as String?,
+        navigatorKey: json['navigatorKey'] as String?,
+        navigatorKeyDeclared: json['navigatorKeyDeclared'] == true,
+        parentNavigatorKey: json['parentNavigatorKey'] as String?,
+        parentNavigatorKeyDeclared: json['parentNavigatorKeyDeclared'] == true,
+        navigatorOwnerId: json['navigatorOwner'] as String?,
+        redirectTargets:
+            (json['redirectTargets'] as List?)?.cast<String>() ?? const [],
+        redirectDeclared: json['redirectDeclared'] == true,
+        redirectComplete: json['redirectComplete'] == true,
+        uncertainties:
+            (json['uncertainties'] as List?)?.cast<String>() ?? const [],
+      );
+
+  final String id;
+  final String symbol;
+  final String navigationId;
+  final String name;
+  final String kind;
+  final String? declaredIn;
+  final int? line;
+  final String annotationFile;
+  final int annotationLine;
+  final String? path;
+  final String? fullPath;
+  final String? routeName;
+  final bool? caseSensitive;
+  final String? parentId;
+  final String? shellId;
+  final String? branchId;
+  final int? branchIndex;
+  final String? pageFile;
+  final String? navigatorKey;
+  final bool navigatorKeyDeclared;
+  final String? parentNavigatorKey;
+  final bool parentNavigatorKeyDeclared;
+  final String? navigatorOwnerId;
+  final List<String> redirectTargets;
+  final bool redirectDeclared;
+  final bool redirectComplete;
+  final List<String> uncertainties;
+
+  bool get isTopLevel => parentId == null;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'symbol': symbol,
+        'navigationId': navigationId,
+        'name': name,
+        'kind': kind,
+        if (declaredIn != null) 'declaredIn': declaredIn,
+        if (line != null) 'line': line,
+        'annotationFile': annotationFile,
+        'annotationLine': annotationLine,
+        if (path != null) 'path': path,
+        if (fullPath != null) 'fullPath': fullPath,
+        if (routeName != null) 'routeName': routeName,
+        if (caseSensitive != null) 'caseSensitive': caseSensitive,
+        if (parentId != null) 'parent': parentId,
+        if (shellId != null) 'shell': shellId,
+        if (branchId != null) 'branch': branchId,
+        if (branchIndex != null) 'branchIndex': branchIndex,
+        if (pageFile != null) 'pageFile': pageFile,
+        if (navigatorKey != null) 'navigatorKey': navigatorKey,
+        if (navigatorKeyDeclared) 'navigatorKeyDeclared': true,
+        if (parentNavigatorKey != null)
+          'parentNavigatorKey': parentNavigatorKey,
+        if (parentNavigatorKeyDeclared) 'parentNavigatorKeyDeclared': true,
+        if (navigatorOwnerId != null) 'navigatorOwner': navigatorOwnerId,
+        if (redirectTargets.isNotEmpty) 'redirectTargets': redirectTargets,
+        if (redirectDeclared) 'redirectDeclared': true,
+        if (redirectComplete) 'redirectComplete': true,
+        if (uncertainties.isNotEmpty) 'uncertainties': uncertainties,
+      };
+}
+
+/// Availability/completeness envelope for resolved typed-route contracts.
+/// A syntax build emits an unavailable index instead of an apparently complete
+/// empty list; older graphs omit the sidecar entirely.
+class RouteIndex {
+  RouteIndex({
+    required this.available,
+    required this.complete,
+    required this.unresolvedFiles,
+    required this.contracts,
+  });
+
+  factory RouteIndex.fromJson(Map<String, dynamic> json) => RouteIndex(
+        available: json['available'] == true,
+        complete: json['complete'] == true,
+        unresolvedFiles:
+            (json['unresolvedFiles'] as List?)?.cast<String>() ?? const [],
+        contracts: (json['contracts'] as List?)
+                ?.cast<Map<String, dynamic>>()
+                .map(RouteContract.fromJson)
+                .toList() ??
+            const [],
+      );
+
+  final bool available;
+  final bool complete;
+  final List<String> unresolvedFiles;
+  final List<RouteContract> contracts;
+
+  Map<String, dynamic> toJson() => {
+        'format': 1,
+        'available': available,
+        'complete': complete,
+        'unresolvedFiles': unresolvedFiles,
+        'contracts': contracts.map((route) => route.toJson()).toList(),
       };
 }
 
@@ -309,7 +500,8 @@ class Graph {
       {required this.libRoot,
       required this.stats,
       required this.nodes,
-      required this.edges})
+      required this.edges,
+      this.routeIndex})
       : byId = {for (final n in nodes) n.id: n};
 
   factory Graph.fromJson(Map<String, dynamic> j) => Graph(
@@ -323,6 +515,9 @@ class Graph {
             .cast<Map<String, dynamic>>()
             .map(GraphEdge.fromJson)
             .toList(),
+        routeIndex: j['routeIndex'] is Map<String, dynamic>
+            ? RouteIndex.fromJson(j['routeIndex'] as Map<String, dynamic>)
+            : null,
       );
 
   /// Reads and parses `docs/maps/code_graph.json` (or [path]). Returns
@@ -358,9 +553,24 @@ class Graph {
   final Map<String, int> stats;
   final List<GraphNode> nodes;
   final List<GraphEdge> edges;
+  final RouteIndex? routeIndex;
+
+  List<RouteContract> get routes => routeIndex?.contracts ?? const [];
 
   /// node id -> node, for O(1) lookup instead of a linear `firstWhere` scan.
   final Map<String, GraphNode> byId;
+
+  late final Map<String, RouteContract> routeById = {
+    for (final route in routes) route.id: route,
+  };
+
+  late final Map<String, List<RouteContract>> routesBySymbol = () {
+    final result = <String, List<RouteContract>>{};
+    for (final route in routes) {
+      result.putIfAbsent(route.symbol, () => []).add(route);
+    }
+    return result;
+  }();
 
   /// node id -> count of incoming `imports` edges (file nodes) or
   /// `watches`/`reads`/`listens` edges (provider nodes). Computed once,
@@ -411,6 +621,7 @@ class Graph {
         'libRoot': libRoot,
         'stats': stats,
         'nodes': nodes.map((n) => n.toJson()).toList(),
+        if (routeIndex != null) 'routeIndex': routeIndex!.toJson(),
         'edges': edges.map((e) => e.toJson()).toList(),
       };
 

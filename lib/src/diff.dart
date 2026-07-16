@@ -105,6 +105,19 @@ List<String> _cappedList(List<String> lines, int cap) {
   return shown;
 }
 
+/// Warns when a branch comparison is too broad to be a useful change review.
+///
+/// Do not silently swap to the tracking branch: callers may intentionally be
+/// reviewing a long-lived integration branch against main. The warning keeps
+/// that semantic choice intact while making the likely failure mode explicit.
+String? comparisonWarning(int dartFiles, String base) {
+  if (dartFiles < 500) return null;
+  return '$dartFiles Dart files differ from $base; this is probably a '
+      'long-lived integration-branch comparison. Pass --base <tracking-ref> '
+      'for a narrower review, or keep this base if the full comparison is '
+      'intentional.';
+}
+
 /// `int run(List<String> args)` — `diff [--base <ref>] [--json] [--budget N]`.
 int run(List<String> args) {
   final asJson = args.contains('--json');
@@ -178,6 +191,8 @@ int run(List<String> args) {
     stdout.writeln('no dart changes vs $base');
     return 0;
   }
+
+  final broadComparison = comparisonWarning(changes.length, base);
 
   final graph = loadFresh();
   if (graph == null) return 66;
@@ -330,6 +345,7 @@ int run(List<String> args) {
       'verb': 'diff',
       'base': base,
       'mergeBase': mergeBase,
+      if (broadComparison != null) 'warning': broadComparison,
       // `lib` kept for back-compat (app + package lib); split out so a consumer
       // isn't misled into reading it as app-only.
       'files': {
@@ -406,6 +422,7 @@ int run(List<String> args) {
     'diff vs $base (merge-base ${_short(mergeBase)})',
     '${libChanges.length + testChanges.length} dart files changed '
         '(${libChanges.length} lib · ${testChanges.length} test)',
+    if (broadComparison != null) 'warning: $broadComparison',
     '',
     'areas touched:',
     ...(areaLines.isEmpty ? ['  (none)'] : _cappedList(areaLines, sectionCap)),

@@ -55,7 +55,7 @@ void main() {
     expect(
       err,
       contains(
-        'valid verbs: readers, provider, wiring, impls, find, sym, path, unused, untested',
+        'valid verbs: readers, provider, wiring, route, impls, find, sym, path, unused, untested',
       ),
     );
   });
@@ -72,7 +72,7 @@ void main() {
     expect(
       err,
       contains(
-        'valid verbs: readers, provider, wiring, impls, find, sym, path, unused, untested',
+        'valid verbs: readers, provider, wiring, route, impls, find, sym, path, unused, untested',
       ),
     );
   });

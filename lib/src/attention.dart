@@ -43,7 +43,7 @@ List<String> _capped(List<String> lines) {
 }
 
 /// Ambiguous providers: name declared >1x, each with its declaration files
-/// and the count of unresolved reader edges (watches/reads/listens edges the
+/// and the count of unresolved provider-interaction edges the
 /// resolver couldn't narrow to one declaration — see model.dart's sentinel
 /// doc). One line per name, sorted by name.
 AttentionSection _ambiguousProviders(Graph graph) {
@@ -65,7 +65,7 @@ AttentionSection _ambiguousProviders(Graph graph) {
     );
     lines.add(
       '- `$name` — declared in ${files.map((f) => '`$f`').join(', ')} '
-      '— ${unresolved.length} unresolved reader edge(s)',
+      '— ${unresolved.length} unresolved interaction edge(s)',
     );
   }
   return AttentionSection('Ambiguous providers', _capped(lines), lines.length);

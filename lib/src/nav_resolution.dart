@@ -20,8 +20,14 @@
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
+import 'model.dart' show RouteContract, RouteIndex;
 import 'registry.dart'
-    show ConstantDecl, FileInfo, HelperCallSite, HelperRouteDecl;
+    show
+        ConstantDecl,
+        FileInfo,
+        HelperCallSite,
+        HelperRouteDecl,
+        TypedRouteDecl;
 import 'resolution.dart' show ClassResolver, Reachability;
 
 /// Normalizes an `AppPaths.<chain>` expression to its route-identity prefix
@@ -428,9 +434,26 @@ class _NestedCreationVisitor extends RecursiveAstVisitor<void> {
 /// resolved `AppPaths.<chain>` route -> declaring page file, and resolved
 /// `goNamed` route name -> declaring page file.
 class NavTables {
-  NavTables(this.routeTable, this.nameTable);
+  NavTables(
+    this.routeTable,
+    this.nameTable,
+    this.typedRouteTable,
+    this.routeIndex,
+  );
   final Map<String, String> routeTable;
   final Map<String, String> nameTable;
+  final Map<String, TypedRouteTarget> typedRouteTable;
+  final RouteIndex routeIndex;
+}
+
+/// The resolved destination of a typed route-data class. [pageFile] remains
+/// null when its build contract is not statically exact; callers still get a
+/// resolved route identity plus an explicit unresolved marker.
+class TypedRouteTarget {
+  TypedRouteTarget(this.routeId, this.pageFile);
+
+  final String routeId;
+  final String? pageFile;
 }
 
 /// Nav's own pipeline entry point: builds the helper-route table (mechanism
@@ -522,5 +545,135 @@ NavTables resolveNavigation(
       if (e.value.length == 1) e.key: e.value.single,
   };
 
-  return NavTables(routeTable, nameTable);
+  // Resolved typed route-data identity -> display-safe graph route id + page.
+  // A unique class name stays concise (`route:AccountRoute`); duplicate names
+  // are qualified by their analyzer library URI rather than merged.
+  final typedDecls = <TypedRouteDecl>[
+    for (final info in all) ...info.typedRoutes,
+  ];
+  final typedNameSymbols = <String, Set<String>>{};
+  for (final route in typedDecls) {
+    typedNameSymbols
+        .putIfAbsent(route.routeTypeName, () => <String>{})
+        .add(route.routeSymbol);
+  }
+  final typedRouteTable = <String, TypedRouteTarget>{};
+  for (final route in typedDecls) {
+    final suffix = typedNameSymbols[route.routeTypeName]?.length == 1
+        ? route.routeTypeName
+        : '${route.routeTypeName}@${route.routeSymbol.split('::').first}';
+    final pageFile = route.pageTypeName == null
+        ? null
+        : classResolver.fileFor(route.pageTypeName!, route.file);
+    typedRouteTable[route.routeSymbol] = TypedRouteTarget(
+      'route:$suffix',
+      pageFile,
+    );
+  }
+
+  final declsBySymbol = <String, TypedRouteDecl>{};
+  final duplicateDeclSymbols = <String>{};
+  for (final decl in typedDecls) {
+    if (declsBySymbol.containsKey(decl.routeSymbol)) {
+      duplicateDeclSymbols.add(decl.routeSymbol);
+    } else {
+      declsBySymbol[decl.routeSymbol] = decl;
+    }
+  }
+  final occurrences = [
+    for (final info in all) ...info.typedRouteOccurrences,
+  ]..sort((a, b) => a.id.compareTo(b.id));
+  final occurrencesById = {
+    for (final occurrence in occurrences) occurrence.id: occurrence
+  };
+
+  String? navigatorOwner(String occurrenceId, TypedRouteDecl? decl) {
+    final occurrence = occurrencesById[occurrenceId];
+    if (occurrence == null) return null;
+    if (decl?.navigatorKeySymbol != null) return occurrenceId;
+    final requested = decl?.parentNavigatorKeySymbol;
+    var ancestorId = occurrence.parentId;
+    while (ancestorId != null) {
+      final ancestor = occurrencesById[ancestorId];
+      if (ancestor == null) return null;
+      final ancestorDecl = declsBySymbol[ancestor.routeSymbol];
+      final ancestorKey = ancestorDecl?.navigatorKeySymbol;
+      if (requested != null) {
+        if (ancestorKey == requested) return ancestorId;
+      } else if (ancestorKey != null &&
+          const {
+            'shell',
+            'stateful-shell',
+            'stateful-branch',
+          }.contains(ancestor.kind)) {
+        return ancestorId;
+      }
+      ancestorId = ancestor.parentId;
+    }
+    return null;
+  }
+
+  final contracts = <RouteContract>[];
+  for (final occurrence in occurrences) {
+    final decl = duplicateDeclSymbols.contains(occurrence.routeSymbol)
+        ? null
+        : declsBySymbol[occurrence.routeSymbol];
+    final target = typedRouteTable[occurrence.routeSymbol];
+    final uncertainties = <String>{
+      ...occurrence.uncertainties,
+      ...?decl?.uncertainties,
+      if (decl == null) 'route declaration identity is ambiguous or missing',
+    }.toList()
+      ..sort();
+    contracts.add(
+      RouteContract(
+        id: occurrence.id,
+        symbol: occurrence.routeSymbol,
+        navigationId: target?.routeId ??
+            'route:${occurrence.routeTypeName}@${occurrence.routeSymbol.split('::').first}',
+        name: occurrence.routeTypeName,
+        kind: occurrence.kind,
+        declaredIn: decl?.file,
+        line: decl?.line,
+        annotationFile: occurrence.annotationFile,
+        annotationLine: occurrence.annotationLine,
+        path: occurrence.path,
+        fullPath: occurrence.fullPath,
+        routeName: occurrence.name,
+        caseSensitive: occurrence.caseSensitive,
+        parentId: occurrence.parentId,
+        shellId: occurrence.shellId,
+        branchId: occurrence.branchId,
+        branchIndex: occurrence.branchIndex,
+        pageFile: target?.pageFile,
+        navigatorKey: decl?.navigatorKeySymbol,
+        navigatorKeyDeclared: decl?.navigatorKeyDeclared ?? false,
+        parentNavigatorKey: decl?.parentNavigatorKeySymbol,
+        parentNavigatorKeyDeclared: decl?.parentNavigatorKeyDeclared ?? false,
+        navigatorOwnerId: navigatorOwner(occurrence.id, decl),
+        redirectTargets: [...?decl?.redirectTargetSymbols]..sort(),
+        redirectDeclared: decl?.hasRedirect ?? false,
+        redirectComplete: decl?.redirectComplete ?? false,
+        uncertainties: uncertainties,
+      ),
+    );
+  }
+  final unresolvedCandidates = [
+    for (final info in all)
+      if (!info.resolved) info.libPath,
+  ]..sort();
+  final available = all.any((info) => info.resolved);
+  // A syntax build is wholly unavailable, not "partially unresolved"; avoid
+  // bloating every syntax graph with the complete file inventory twice.
+  final unresolvedFiles = available ? unresolvedCandidates : <String>[];
+  final routeIndex = RouteIndex(
+    available: available,
+    complete: available &&
+        unresolvedFiles.isEmpty &&
+        occurrences.every((occurrence) => occurrence.complete),
+    unresolvedFiles: unresolvedFiles,
+    contracts: contracts,
+  );
+
+  return NavTables(routeTable, nameTable, typedRouteTable, routeIndex);
 }

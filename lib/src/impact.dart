@@ -1,7 +1,7 @@
 // `codegraph impact <thing> [--depth N]` — transitive dependents: what
 // breaks if `<thing>` changes. Same resolve UX as `wiring`/`skeleton`/`path`
 // (exact provider name, else unique file substring), then BFS outward over
-// the reverse of imports/watches/reads/listens/declares.
+// the reverse of imports/provider interactions/declares.
 import 'dart:convert';
 import 'dart:io';
 
@@ -13,15 +13,17 @@ import 'resolve.dart';
 /// One BFS step: file ids that directly depend on any id in [nodeIds].
 /// A file F depends on X if:
 ///  (a) F --imports--> X, X a file;
-///  (b) F --watches/reads/listens--> X, X a provider;
-///  (c) X is a file and F watches/reads/listens a provider declared in X
-///      (F -> p, X --declares--> p).
+///  (b) F --provider interaction--> X, X a provider;
+///  (c) X is a file and F interacts with a provider declared in X
+///      (F -> p, X --declares--> p);
+///  (d) resolved typed-route dependencies (caller -> route -> page/parent/
+///      redirect target), crossing non-file route ids within one BFS step.
 ///
 /// Reverse indexes are precomputed once per call so repeated levels don't
 /// rescan `graph.edges`. Pure over [Graph] — exported for Stage 3 (`diff`'s
 /// blast-radius section) to reuse.
 Set<String> dependentsOf(Graph g, Set<String> nodeIds) {
-  // dst -> readers (src), for imports/watches/reads/listens.
+  // dst -> readers/interactors (src), including resolved route dependencies.
   final readersOf = <String, List<String>>{};
   // declaring file -> provider ids it declares.
   final declaredBy = <String, List<String>>{};
@@ -31,19 +33,37 @@ Set<String> dependentsOf(Graph g, Set<String> nodeIds) {
       case 'watches':
       case 'reads':
       case 'listens':
+      case 'invalidates':
+      case 'refreshes':
+      case 'navigates':
+      case 'builds':
+      case 'redirects-to':
+      case 'nested-under':
+      case 'branch-of':
+      case 'in-branch':
+      case 'in-shell':
         readersOf.putIfAbsent(e.dst, () => []).add(e.src);
       case 'declares':
+      case 'declares-route':
         declaredBy.putIfAbsent(e.src, () => []).add(e.dst);
     }
   }
 
   final out = <String>{};
-  for (final id in nodeIds) {
-    // (a) + (b): direct readers of this id (file or provider).
-    out.addAll(readersOf[id] ?? const []);
-    // (c): id is a file — pull in readers of every provider it declares.
-    for (final p in declaredBy[id] ?? const []) {
-      out.addAll(readersOf[p] ?? const []);
+  final virtualQueue = <String>[...nodeIds];
+  final seenVirtual = <String>{};
+  while (virtualQueue.isNotEmpty) {
+    final id = virtualQueue.removeLast();
+    if (!seenVirtual.add(id)) continue;
+    for (final declared in declaredBy[id] ?? const []) {
+      virtualQueue.add(declared);
+    }
+    for (final reader in readersOf[id] ?? const []) {
+      if (reader.startsWith('file:')) {
+        if (!nodeIds.contains(reader)) out.add(reader);
+      } else {
+        virtualQueue.add(reader);
+      }
     }
   }
   return out;
@@ -110,7 +130,7 @@ List<String> renderImpactLines(
 /// `int run(List<String> args)` — `impact <thing> [--depth N] [--json]
 /// [--budget N]`.
 int run(List<String> args) {
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 80;
   final asJson = args.contains('--json');
   var depth = intFlag(args, '--depth') ?? 2;

@@ -19,7 +19,7 @@ import 'version_skew.dart';
 /// `int run(List<String> args)` — dispatches `brief <thing>` (args[0] ==
 /// 'brief') and `passport` (args[0] == 'passport').
 int run(List<String> args) {
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 150;
 
   if (positional.first == 'passport') {
@@ -213,7 +213,7 @@ List<String> _fileBrief(
     );
   }
 
-  for (final rel in ['watches', 'reads', 'listens']) {
+  for (final rel in providerInteractionRelOrder) {
     final list = section(rel, withLine: true);
     out.add(
       list.isEmpty
@@ -313,7 +313,7 @@ List<String> _providerBrief(Graph graph, List<GraphNode> decls) {
       ' — declared in ${decl.declaredIn}:${decl.line}',
     );
     final byRel = <String, List<String>>{};
-    for (final rel in ['watches', 'reads', 'listens']) {
+    for (final rel in providerInteractionRelOrder) {
       final list = graph.edges
           .where((e) => e.dst == id && e.rel == rel)
           .map((e) => e.src.replaceFirst('file:', ''))
@@ -324,7 +324,7 @@ List<String> _providerBrief(Graph graph, List<GraphNode> decls) {
     if (byRel.isEmpty) {
       out.add('  (no readers)');
     } else {
-      for (final rel in ['watches', 'reads', 'listens']) {
+      for (final rel in providerInteractionRelOrder) {
         final list = byRel[rel];
         if (list == null) continue;
         out.add('  $rel (${list.length}): ${joinCapped(list)}');
@@ -406,7 +406,7 @@ List<String> _areaBrief(Graph graph, String prefix) {
   final crossConsumed = <String, String>{}; // name -> declaredIn
   for (final f in files) {
     final id = f.id;
-    for (final rel in ['watches', 'reads', 'listens']) {
+    for (final rel in providerInteractionRelOrder) {
       for (final e in graph.edges.where((e) => e.src == id && e.rel == rel)) {
         final dst = e.dst;
         if (!dst.startsWith('provider:')) continue;

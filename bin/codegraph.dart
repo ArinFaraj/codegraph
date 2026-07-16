@@ -3,6 +3,7 @@
 import 'dart:io';
 
 import 'package:codegraph/src/attention.dart' as attention;
+import 'package:codegraph/src/affected_tests.dart' as affected_tests;
 import 'package:codegraph/src/blueprint.dart' as blueprint;
 import 'package:codegraph/src/brief.dart' as brief;
 import 'package:codegraph/src/callchain.dart' as callchain;
@@ -22,6 +23,37 @@ import 'package:codegraph/src/version_skew.dart' show binaryVersion;
 
 const version = binaryVersion;
 const repoUrl = 'https://github.com/ArinFaraj/codegraph';
+
+const _graphQueryVerbs = {
+  'skeleton',
+  'brief',
+  'passport',
+  'callers',
+  'refs',
+  'rename',
+  'callchain',
+  'blueprint',
+  'plan',
+  'find',
+  'sym',
+  'readers',
+  'provider',
+  'wiring',
+  'route',
+  'impls',
+  'path',
+  'unused',
+  'untested',
+  'uses',
+  'change',
+  'health',
+  'impact',
+  'diff',
+  'review',
+  'attention',
+  'lint',
+  'affected-tests',
+};
 
 void _usage() {
   stderr.writeln('''
@@ -43,16 +75,19 @@ operator verbs:
   codegraph doctor                    verify the install (hook, gitignore, CLAUDE.md, CI gate)
   codegraph lint                      architecture rules (cross-feature imports, layer order) — CI gate
   codegraph rename <Sym> <new>        element-precise rename (resolved; refuses if unsafe; --apply to write)
+  codegraph affected-tests [paths...] explain the safest test plan; fail-open on uncertainty
 
 low-level verbs (intent verbs compose these):
   sym <Name> | skeleton <file> | brief <thing> | passport
   readers <provider> | provider <name> | callers <Symbol> | refs <Symbol>
-  callchain <Symbol> [--depth N] | wiring <file> | impls <Type> | path <A> <B>
-  impact <thing> [--depth N] | diff [--base main] | blueprint <feature-dir>
+  callchain <Symbol> [--depth N] | wiring <file> | route <RouteData>
+  impls <Type> | path <A> <B>
+  impact <thing> [--depth N] | diff [--base main] | affected-tests [--base main]
+  blueprint <feature-dir>
   unused [providers|files|all] | untested | attention
 
 Query flags: --budget N (cap output lines, default 80; brief/diff/health default to 150).
-             --json    (find/readers/wiring/impls/sym/skeleton/untested/impact/diff/blueprint: machine-readable output)
+             --json    (find/readers/wiring/route/impls/sym/skeleton/untested/impact/diff/blueprint: machine-readable output)
              --no-rebuild  (query verbs rebuild a stale/missing graph automatically; this answers from the graph as-is)
 Exit codes: 0 answered (incl. typed empties), 2 ambiguous file arg (candidates listed), 64 usage, 66 no graph.
 Run from the package root of the host project.''');
@@ -71,26 +106,18 @@ Future<void> main(List<String> rawArgs) async {
     stdout.writeln('codegraph $version');
     return;
   }
+  if (_graphQueryVerbs.contains(args.first)) {
+    await freshness.ensureFreshDefault();
+  }
   switch (args.first) {
     case 'build':
-      // v3 default: resolved analysis. Syntax is the automatic zero-setup
-      // fallback (no package_config) or the explicit `--syntax` opt-out.
-      // Explicit `--resolved` with no package_config refuses (in buildResolved)
-      // instead of silently degrading — the user asked for resolved by name.
-      final wantSyntax = args.contains('--syntax');
-      final hasPkgConfig = File('.dart_tool/package_config.json').existsSync();
-      if (!wantSyntax && (args.contains('--resolved') || hasPkgConfig)) {
-        await engine.buildResolved(args.skip(1).toList());
-      } else {
-        if (!wantSyntax) {
-          stderr.writeln('note: building syntax-only (no '
-              '.dart_tool/package_config.json). Run `dart pub get` for '
-              'resolved element analysis.');
-        }
-        engine.build(args.skip(1).toList());
-      }
+      await engine.buildDefault(args.skip(1).toList());
     case 'check':
-      exit(engine.check());
+      // `check` always regenerates, but must use the same resolved-by-default
+      // policy as `build`; the synchronous library check keeps its old
+      // syntax-only default for direct tests/callers.
+      await engine.buildDefault(args.skip(1).toList());
+      exit(engine.check(rebuild: false));
     case 'init':
       scaffold.init(args.skip(1).toList(), version: version, repoUrl: repoUrl);
     case 'upgrade':
@@ -116,6 +143,7 @@ Future<void> main(List<String> rawArgs) async {
           'readers' ||
           'provider' ||
           'wiring' ||
+          'route' ||
           'impls' ||
           'path' ||
           'unused' ||
@@ -133,6 +161,8 @@ Future<void> main(List<String> rawArgs) async {
     // blast radius, changed-but-untested, and lint new-violations.
     case 'diff' || 'review':
       exit(diff.run(args));
+    case 'affected-tests':
+      exit(affected_tests.run(args));
     case 'attention':
       exit(attention.run(args));
     case 'lint':

@@ -102,6 +102,47 @@ void main() {
     expect(graph!.stats['sourceDigest'], engine.sourceDigest());
   });
 
+  test('CLI freshness preflight keeps resolved analysis after a stale rebuild',
+      () async {
+    writeFixturePackageConfig(tempDir);
+    await engine.buildDefault(const []);
+    addCanaryClass();
+
+    await freshness.ensureFreshDefault();
+
+    final g = jsonDecode(
+      File('docs/maps/code_graph.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
+    final resolvedSubtypeEdges = (g['edges'] as List)
+        .cast<Map<String, dynamic>>()
+        .where((e) =>
+            e['rel'] == 'implements/extends' && e['confidence'] == 'resolved')
+        .length;
+    expect(resolvedSubtypeEdges, greaterThan(0),
+        reason: 'an automatic rebuild in a configured host must not silently '
+            'replace its resolved graph with a syntax-only graph');
+    expect(graphHasSymbol('FreshnessCanary'), isTrue);
+  });
+
+  test('CLI freshness upgrades an automatic syntax fallback after pub get',
+      () async {
+    await engine.buildDefault(const []);
+    var g = jsonDecode(
+      File('docs/maps/code_graph.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
+    expect((g['stats'] as Map)['resolvedBuild'], 0);
+    expect((g['stats'] as Map)['analysisPolicy'], 0);
+
+    writeFixturePackageConfig(tempDir);
+    await freshness.ensureFreshDefault();
+
+    g = jsonDecode(
+      File('docs/maps/code_graph.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
+    expect((g['stats'] as Map)['resolvedBuild'], 1);
+    expect((g['stats'] as Map)['resolvedFiles'], greaterThan(0));
+  });
+
   test('loadFresh builds when no graph exists yet', () {
     expect(File('docs/maps/code_graph.json').existsSync(), isFalse);
     final graph = freshness.loadFresh();

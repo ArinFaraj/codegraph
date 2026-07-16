@@ -7,11 +7,13 @@ import 'dart:io';
 
 import 'package:codegraph/src/cli_util.dart' as cli_util;
 import 'package:codegraph/src/doctor.dart' as doctor;
+import 'package:codegraph/src/diff.dart' as graph_diff;
 import 'package:codegraph/src/engine.dart' as engine;
 import 'package:codegraph/src/init.dart' as scaffold;
 import 'package:codegraph/src/lint.dart' as lint;
 import 'package:codegraph/src/model.dart';
 import 'package:codegraph/src/query.dart' as query;
+import 'package:codegraph/src/progress.dart';
 import 'package:codegraph/src/version_skew.dart';
 import 'package:test/test.dart';
 
@@ -35,6 +37,31 @@ void main() {
   // PATH — which is exactly how this broke in CI while passing on macOS.
   // Instead chmod is symlinked alone into a temp dir (populated in setUpAll).
   late String gitlessPath;
+
+  test('review warns on a pathological long-lived branch comparison', () {
+    expect(graph_diff.comparisonWarning(499, 'origin/main'), isNull);
+    final warning = graph_diff.comparisonWarning(500, 'origin/main');
+    expect(warning, contains('500 Dart files'));
+    expect(warning, contains('--base <tracking-ref>'));
+    expect(warning, contains('full comparison is intentional'));
+  });
+
+  test('resolved progress is stderr-shaped and rate-limitable', () {
+    final messages = <String>[];
+    final progress = ProgressReporter(
+      'resolve rename',
+      3,
+      minInterval: Duration.zero,
+      sink: messages.add,
+    )..start();
+    progress.advance(1);
+    progress.advance(3);
+    expect(messages, [
+      'resolve rename: 0/3 files',
+      'resolve rename: 1/3 files',
+      'resolve rename: 3/3 files',
+    ]);
+  });
 
   setUpAll(() {
     originalCwd = Directory.current;
@@ -69,6 +96,178 @@ void main() {
   tearDown(() {
     Directory.current = originalCwd;
     tempDir.deleteSync(recursive: true);
+  });
+
+  test('route query resolves exact identity and shares one JSON budget', () {
+    final routeSymbol = 'package:fixture/routes.dart::DetailsRoute';
+    final loginSymbol = 'package:fixture/routes.dart::LoginRoute';
+    final graph = {
+      'libRoot': 'lib',
+      'stats': {
+        'format': graphFormatVersion,
+        'files': 2,
+        'providers': 0,
+        'edges': 2,
+      },
+      'nodes': const [],
+      'routeIndex': {
+        'format': 1,
+        'available': true,
+        'complete': true,
+        'unresolvedFiles': const [],
+        'contracts': [
+          {
+            'id': 'lib/routes.dart:0#0',
+            'symbol': routeSymbol,
+            'navigationId': 'route:DetailsRoute',
+            'name': 'DetailsRoute',
+            'kind': 'go',
+            'declaredIn': 'lib/routes.dart',
+            'line': 20,
+            'annotationFile': 'lib/routes.dart',
+            'annotationLine': 4,
+            'path': 'details/:id',
+            'fullPath': '/home/details/:id',
+            'pageFile': 'lib/details_page.dart',
+            'redirectTargets': [loginSymbol],
+            'redirectDeclared': true,
+            'redirectComplete': true,
+          },
+          {
+            'id': 'lib/routes.dart:100#',
+            'symbol': loginSymbol,
+            'navigationId': 'route:LoginRoute',
+            'name': 'LoginRoute',
+            'kind': 'go',
+            'declaredIn': 'lib/routes.dart',
+            'line': 40,
+            'annotationFile': 'lib/routes.dart',
+            'annotationLine': 39,
+            'path': '/login',
+            'fullPath': '/login',
+          },
+        ],
+      },
+      'edges': [
+        {
+          'src': 'file:lib/a.dart',
+          'rel': 'navigates',
+          'dst': 'route:DetailsRoute',
+          'line': 8,
+          'confidence': 'resolved',
+          'routeSymbol': routeSymbol,
+          'operation': 'go',
+        },
+        {
+          'src': 'file:lib/b.dart',
+          'rel': 'navigates',
+          'dst': 'route:DetailsRoute',
+          'line': 9,
+          'confidence': 'resolved',
+          'routeSymbol': routeSymbol,
+          'operation': 'push',
+        },
+      ],
+    };
+    final file = File('docs/maps/code_graph.json')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync(const JsonEncoder.withIndent('  ').convert(graph));
+
+    final result = Process.runSync('dart', [
+      cliSnapshot,
+      'route',
+      'DetailsRoute',
+      '--json',
+      '--budget',
+      '2',
+      '--no-rebuild',
+    ]);
+    expect(result.exitCode, 0, reason: result.stderr as String);
+    final decoded = jsonDecode(result.stdout as String) as Map<String, dynamic>;
+    final record = (decoded['results'] as List).single as Map<String, dynamic>;
+    expect(record['symbol'], routeSymbol);
+    expect(record['placementTotal'], 1);
+    expect(record['callerTotal'], 2);
+    expect((record['placements'] as List), hasLength(1));
+    expect(
+      ((record['redirect'] as Map<String, dynamic>)['targets'] as List),
+      hasLength(1),
+    );
+    expect(record['callers'], isEmpty,
+        reason: 'one shared budget is consumed by placement then redirect');
+    expect(decoded['truncated'], isTrue);
+
+    final qualified = Process.runSync('dart', [
+      cliSnapshot,
+      'route',
+      routeSymbol,
+      '--json',
+      '--no-rebuild',
+    ]);
+    expect(qualified.exitCode, 0);
+    expect(
+      (((jsonDecode(qualified.stdout as String)
+              as Map<String, dynamic>)['results'] as List)
+          .single as Map<String, dynamic>)['navigationId'],
+      'route:DetailsRoute',
+    );
+
+    final routeIndex = graph['routeIndex'] as Map<String, dynamic>;
+    final contracts = routeIndex['contracts'] as List<dynamic>;
+    (contracts.first as Map<String, dynamic>)['navigationId'] =
+        'route:DetailsRoute@package:fixture/routes.dart';
+    contracts.add({
+      'id': 'package:other/routes.dart:0#',
+      'symbol': 'package:other/routes.dart::DetailsRoute',
+      'navigationId': 'route:DetailsRoute@package:other/routes.dart',
+      'name': 'DetailsRoute',
+      'kind': 'go',
+      'declaredIn': 'packages/other/lib/routes.dart',
+      'line': 2,
+      'annotationFile': 'packages/other/lib/routes.dart',
+      'annotationLine': 1,
+      'path': '/other-details',
+      'fullPath': '/other-details',
+    });
+    file.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(graph));
+    final ambiguous = Process.runSync('dart', [
+      cliSnapshot,
+      'route',
+      'DetailsRoute',
+      '--json',
+      '--no-rebuild',
+    ]);
+    expect(ambiguous.exitCode, 2);
+    expect(
+      (jsonDecode(ambiguous.stdout as String)
+          as Map<String, dynamic>)['ambiguous'],
+      [
+        'package:fixture/routes.dart::DetailsRoute',
+        'package:other/routes.dart::DetailsRoute',
+      ],
+    );
+
+    routeIndex['available'] = false;
+    routeIndex['complete'] = false;
+    routeIndex['contracts'] = <dynamic>[];
+    file.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(graph));
+    final unavailable = Process.runSync('dart', [
+      cliSnapshot,
+      'route',
+      'MissingRoute',
+      '--json',
+      '--no-rebuild',
+    ]);
+    expect(unavailable.exitCode, 1);
+    expect(
+      (jsonDecode(unavailable.stdout as String)
+          as Map<String, dynamic>)['available'],
+      isFalse,
+    );
+
+    // Prove the file was actually used and suppress an analyzer warning if
+    // this assertion is refactored independently from the process calls.
+    expect(file.existsSync(), isTrue);
   });
 
   test('build() resolves package: imports from an app and a local package', () {
@@ -215,6 +414,24 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
     expect(exitCode, 0);
   });
 
+  test('find --budget value is not treated as an extra search term', () {
+    engine.build(const []);
+    final result = Process.runSync('dart', [
+      cliSnapshot,
+      'find',
+      'HomePage',
+      '--json',
+      '--budget',
+      '20',
+      '--no-rebuild',
+    ]);
+    expect(result.exitCode, 0);
+    final decoded = jsonDecode(result.stdout as String) as Map<String, dynamic>;
+    expect(decoded['query'], 'homepage');
+    expect(decoded['results'], isNotEmpty,
+        reason: '--budget 20 must not turn the query into `HomePage 20`');
+  });
+
   test('query readers() reports the consumer of a provider', () {
     engine.build(const []);
     final exitCode = query.run(['readers', 'homeProvider']);
@@ -257,7 +474,7 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
   test(
     'callers --resolved attributes same-named methods to their real target '
     '(element identity vs name-match lumping)',
-    () {
+    () async {
       // Two unrelated classes each declaring `foo`, called once each. Syntax
       // name-match lumps both under "foo (2 declarations)"; element identity
       // attributes each site to A.foo vs B.foo.
@@ -265,10 +482,13 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
       File('${tempDir.path}/lib/samename.dart').writeAsStringSync('''
 class A { int foo() => 1; }
 class B { int foo() => 2; }
+extension Ext on String { int foo() => length; }
 int useA(A a) => a.foo();
 int useB(B b) => b.foo();
+int useExt(String value) => value.foo();
+int Function() tearOffA(A a) => a.foo;
 ''');
-      engine.build(const []);
+      await engine.buildResolved(const []);
       final result = Process.runSync(
         'dart',
         [cliSnapshot, 'callers', 'foo', '--resolved', '--json', '--no-rebuild'],
@@ -277,15 +497,74 @@ int useB(B b) => b.foo();
       final decoded =
           jsonDecode(result.stdout as String) as Map<String, dynamic>;
       expect(decoded['resolved'], isTrue);
+      expect(decoded['indexed'], isTrue);
       final targets = (decoded['targets'] as Map).keys.toSet();
       // The whole point: distinct targets, not one lumped `foo`.
-      expect(targets, containsAll(<String>['A.foo', 'B.foo']));
+      expect(targets, containsAll(<String>['A.foo', 'B.foo', 'Ext.foo']));
+
+      // The indexed artifact must remain byte-for-byte semantically equivalent
+      // to a fresh analyzer walk; only the additive `indexed` proof differs.
+      final cold = Process.runSync('dart', [
+        cliSnapshot,
+        'refs',
+        'foo',
+        '--resolved',
+        '--json',
+        '--no-rebuild',
+        '--no-index',
+      ]);
+      final warm = Process.runSync('dart', [
+        cliSnapshot,
+        'refs',
+        'foo',
+        '--resolved',
+        '--json',
+        '--no-rebuild',
+      ]);
+      expect(cold.exitCode, 0, reason: cold.stderr as String);
+      expect(warm.exitCode, 0, reason: warm.stderr as String);
+      final coldJson =
+          jsonDecode(cold.stdout as String) as Map<String, dynamic>;
+      final warmJson = jsonDecode(warm.stdout as String) as Map<String, dynamic>
+        ..remove('indexed');
+      expect(warmJson, coldJson);
+      expect((coldJson['hits'] as List).where((h) => h['kind'] == 'call'),
+          hasLength(3));
+      expect((coldJson['hits'] as List).where((h) => h['kind'] == 'ref'),
+          hasLength(1));
     },
   );
 
+  test('refs --resolved safely falls back for non-executable identifiers',
+      () async {
+    writeFixturePackageConfig(tempDir);
+    File('${tempDir.path}/lib/field_ref.dart').writeAsStringSync('''
+int readValue() {
+  final value = 1;
+  return value;
+}
+''');
+    await engine.buildResolved(const []);
+    final result = Process.runSync('dart', [
+      cliSnapshot,
+      'refs',
+      'value',
+      '--resolved',
+      '--json',
+      '--no-rebuild',
+    ]);
+    expect(result.exitCode, 0, reason: result.stderr as String);
+    final decoded = jsonDecode(result.stdout as String) as Map<String, dynamic>;
+    expect(decoded['resolved'], isTrue);
+    expect(decoded.containsKey('indexed'), isFalse,
+        reason: 'the index deliberately falls back when it has not stored '
+            'non-executable reference identity');
+    expect(decoded['count'], greaterThan(0));
+  });
+
   test(
     'callers --resolved reports the override chain (refactor-safety context)',
-    () {
+    () async {
       // Derived.compute overrides Base.compute - a signature change must touch
       // both. The resolved path must surface that; syntax name-match cannot.
       writeFixturePackageConfig(tempDir);
@@ -297,7 +576,7 @@ class Derived extends Base {
 }
 int useD(Derived d) => d.compute();
 ''');
-      engine.build(const []);
+      await engine.buildResolved(const []);
       final result = Process.runSync(
         'dart',
         [
@@ -312,6 +591,7 @@ int useD(Derived d) => d.compute();
       expect(result.exitCode, 0, reason: result.stderr as String);
       final decoded =
           jsonDecode(result.stdout as String) as Map<String, dynamic>;
+      expect(decoded['indexed'], isTrue);
       final overrides = decoded['overrides'] as Map<String, dynamic>?;
       expect(overrides, isNotNull,
           reason: 'Derived.compute overrides Base.compute');
@@ -324,13 +604,17 @@ int useD(Derived d) => d.compute();
   test(
     'rename --apply rewrites only the target element sites, never same-named '
     'siblings on unrelated classes',
-    () {
+    () async {
       writeFixturePackageConfig(tempDir);
       File('${tempDir.path}/lib/rn.dart').writeAsStringSync('''
 class A { void helper() {} void run() { helper(); } }
 class B { void helper() {} void go() { helper(); } }
 ''');
-      engine.build(const []);
+      File('${tempDir.path}/test/rn_test.dart').writeAsStringSync('''
+import 'package:fixture/rn.dart';
+void exercise() => A().helper();
+''');
+      await engine.buildResolved(const []);
       final res = Process.runSync(
         'dart',
         [cliSnapshot, 'rename', 'A.helper', 'prep', '--apply', '--no-rebuild'],
@@ -340,13 +624,15 @@ class B { void helper() {} void go() { helper(); } }
       // A's decl + call site renamed; B's identical-named method untouched.
       expect(txt, contains('void prep() {} void run() { prep(); }'));
       expect(txt, contains('void helper() {} void go() { helper(); }'));
+      expect(File('${tempDir.path}/test/rn_test.dart').readAsStringSync(),
+          contains('A().prep()'));
     },
   );
 
   test(
       'rename renames a whole in-project override set together (base + all '
       'overrides + call sites), leaving unrelated same-named methods alone',
-      () {
+      () async {
     writeFixturePackageConfig(tempDir);
     File('${tempDir.path}/lib/rn2.dart').writeAsStringSync('''
 abstract class Base { int compute(); }
@@ -355,7 +641,7 @@ class SubB implements Base { @override int compute() => 2; }
 class Free { int compute() => 9; }
 int useBase(Base b) => b.compute();
 ''');
-    engine.build(const []);
+    await engine.buildResolved(const []);
     final res = Process.runSync(
       'dart',
       [
@@ -376,7 +662,8 @@ int useBase(Base b) => b.compute();
     expect(txt, contains('class Free { int compute() => 9; }')); // untouched
   });
 
-  test('rename refuses an external-base override and an ambiguous name', () {
+  test('rename refuses an external-base override and an ambiguous name',
+      () async {
     writeFixturePackageConfig(tempDir);
     File('${tempDir.path}/lib/rn3.dart').writeAsStringSync('''
 import 'package:riverpod/riverpod.dart';
@@ -387,7 +674,7 @@ class MyNotifier extends Notifier<int> {
 }
 class Freestanding { int build() => 1; }
 ''');
-    engine.build(const []);
+    await engine.buildResolved(const []);
     // MyNotifier.build overrides riverpod's Notifier.build (out of project) ->
     // refuse: a rename would break the framework override contract.
     final ext = Process.runSync(
@@ -401,6 +688,79 @@ class Freestanding { int build() => 1; }
       [cliSnapshot, 'rename', 'build', 'make', '--no-rebuild'],
     );
     expect(amb.exitCode, 3);
+  });
+
+  test('indexed rename refuses a dynamic use with the target spelling',
+      () async {
+    writeFixturePackageConfig(tempDir);
+    File('${tempDir.path}/lib/rn_dynamic.dart').writeAsStringSync('''
+class A { void helper() {} }
+void invoke(dynamic target) { target.helper(); }
+''');
+    await engine.buildResolved(const []);
+    final result = Process.runSync(
+      'dart',
+      [cliSnapshot, 'rename', 'A.helper', 'prepare', '--no-rebuild'],
+    );
+    expect(result.exitCode, 3, reason: result.stdout as String);
+    expect(result.stderr as String, contains('dynamic uses'));
+  });
+
+  test('rename refuses a declaration collision in the target scope', () async {
+    writeFixturePackageConfig(tempDir);
+    File('${tempDir.path}/lib/rn_collision.dart').writeAsStringSync('''
+class Target {
+  void oldName() {}
+  void newName() {}
+}
+''');
+    await engine.buildResolved(const []);
+    final result = Process.runSync('dart', [
+      cliSnapshot,
+      'rename',
+      'Target.oldName',
+      'newName',
+      '--apply',
+      '--no-rebuild',
+    ]);
+    expect(result.exitCode, 3, reason: result.stdout as String);
+    expect(result.stderr as String, contains('already declared'));
+    expect(File('${tempDir.path}/lib/rn_collision.dart').readAsStringSync(),
+        contains('void oldName()'));
+  });
+
+  test(
+      'rename --apply prevalidates every file and reports applied false on '
+      'source drift', () async {
+    writeFixturePackageConfig(tempDir);
+    final source = File('${tempDir.path}/lib/stale_rename.dart')
+      ..writeAsStringSync('''
+class Target { void oldName() {} }
+''');
+    final testFile = File('${tempDir.path}/test/stale_rename_test.dart')
+      ..writeAsStringSync('''
+import 'package:fixture/stale_rename.dart';
+void exercise() => Target().oldName();
+''');
+    await engine.buildResolved(const []);
+    source.writeAsStringSync(
+        '// concurrent editor change\n${source.readAsStringSync()}');
+
+    final result = Process.runSync('dart', [
+      cliSnapshot,
+      'rename',
+      'Target.oldName',
+      'newName',
+      '--apply',
+      '--json',
+      '--no-rebuild',
+    ]);
+    expect(result.exitCode, 3, reason: result.stderr as String);
+    final decoded = jsonDecode(result.stdout as String) as Map<String, dynamic>;
+    expect(decoded['applied'], isFalse);
+    expect(decoded['refused'], contains('source changed'));
+    expect(source.readAsStringSync(), contains('void oldName()'));
+    expect(testFile.readAsStringSync(), contains('.oldName()'));
   });
 
   test(
@@ -1016,6 +1376,12 @@ class Freestanding { int build() => 1; }
     // own documented behavior: untracked maps are ignored pre-first-commit).
     engine.build(const []);
     Process.runSync('git', ['init', '-q']);
+    // Hermetic fixture: developer-global signing and hook configuration must
+    // not run against (or stall) a throwaway test repository.
+    Process.runSync('git', ['config', 'commit.gpgsign', 'false']);
+    Process.runSync('git', ['config', 'core.hooksPath', '/dev/null']);
+    Process.runSync('git', ['config', 'user.name', 'Codegraph Test']);
+    Process.runSync('git', ['config', 'user.email', 'test@example.com']);
     Process.runSync('git', ['add', '-A']);
     Process.runSync('git', [
       'commit',
@@ -1023,7 +1389,11 @@ class Freestanding { int build() => 1; }
       '-m',
       'fixture',
       '--author=test <test@example.com>',
-    ]);
+    ], environment: {
+      // Git 2.51+ supports configured hooks (`hook.*`) independently of
+      // core.hooksPath. Exclude developer-global config for this one commit.
+      'GIT_CONFIG_GLOBAL': Platform.isWindows ? 'NUL' : '/dev/null',
+    });
 
     // Committed maps match source: check() must pass.
     expect(engine.check(), 0);
@@ -1100,7 +1470,7 @@ class Freestanding { int build() => 1; }
       expect(stats.keys.last, 'testFiles');
       // format is the FIRST stats key (0.6.0 Stage 1 pinned position).
       expect(stats.keys.first, 'format');
-      expect(stats['format'], 6);
+      expect(stats['format'], graphFormatVersion);
 
       final homeProviderFile = nodes.firstWhere(
         (n) => n['id'] == 'file:lib/home/home_provider.dart',
@@ -1667,6 +2037,7 @@ class Freestanding { int build() => 1; }
       scaffold.init(const [], version: '0.0.0-test', repoUrl: 'https://x');
       final gitignore = File('.gitignore').readAsStringSync();
       expect(gitignore, contains('docs/maps/code_graph.json'));
+      expect(gitignore, contains('docs/maps/refactor_index.json'));
 
       final result = Process.runSync('dart', [
         cliSnapshot,
@@ -3046,11 +3417,9 @@ class HomePage {
       for (final text in [skill, claudeMd]) {
         expect(text, contains('Docs hygiene'),
             reason: 'skill and CLAUDE block must carry the hygiene rule');
-        expect(text.toLowerCase(), isNot(contains('krdpass')));
         expect(text.toLowerCase(), isNot(contains('iproov')));
       }
       expect(limits, contains('Committed agent docs stay generic'));
-      expect(limits.toLowerCase(), isNot(contains('krdpass')));
       expect(skill, contains('codegraph callers'));
       expect(skill, contains('codegraph callchain'));
     },

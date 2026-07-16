@@ -83,7 +83,7 @@ int _roleRank(String? role) {
 
 /// `int run(List<String> args)` — resolve the feature dir + emit the plan.
 int run(List<String> args) {
-  final positional = args.where((a) => !a.startsWith('--')).toList();
+  final positional = positionalArgs(args);
   final budget = intFlag(args, '--budget') ?? 300;
   final asJson = args.contains('--json');
   if (positional.length < 2) {
@@ -233,7 +233,7 @@ List<_Wiring> _topology(Graph graph, String prefix, Set<String> fileIds) {
     final ownNames = decls.map((p) => p.name!).toSet();
     final internal = <String>{};
     final external = <String>{};
-    for (final rel in const ['watches', 'reads', 'listens']) {
+    for (final rel in providerInteractionRelOrder) {
       for (final e
           in graph.edges.where((e) => e.src == 'file:$file' && e.rel == rel)) {
         if (!e.dst.startsWith('provider:')) continue;
