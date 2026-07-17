@@ -261,6 +261,16 @@ List<String> evalChecks(Directory root, BenchTask task) {
   return failures;
 }
 
+/// Parses `git status --porcelain` output into changed workspace-relative
+/// paths. Do NOT trim the whole output first: the two status columns may
+/// legitimately START with a space (' M path'), and a global trim corrupts the
+/// first line's path - found by the first real smoke run, which scored a
+/// correct rename as an unrelated edit to 'ib/payments/checkout.dart'.
+List<String> changedFromPorcelain(String porcelain) => [
+      for (final line in porcelain.split('\n'))
+        if (line.length > 3 && line.trim().isNotEmpty) line.substring(3).trim(),
+    ];
+
 /// Applies an edit task's scripted reference edit (self-test only).
 void applyReferenceEdit(Directory root, BenchTask task) {
   for (final entry in task.referenceEdit.entries) {

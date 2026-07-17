@@ -100,6 +100,20 @@ void main() {
     }
   });
 
+  test('porcelain parsing survives a leading-space status column', () {
+    // ' M' (worktree-modified) starts with a space; a whole-output trim used
+    // to corrupt the FIRST line's path ('ib/...'), falsely failing a correct
+    // rename in the first real smoke run. Guard the exact case.
+    const porcelain = ' M lib/payments/checkout.dart\n'
+        'M  lib/payments/gateway.dart\n'
+        '?? notes.txt\n';
+    expect(changedFromPorcelain(porcelain), [
+      'lib/payments/checkout.dart',
+      'lib/payments/gateway.dart',
+      'notes.txt',
+    ]);
+  });
+
   test('task ids are unique and prompts end with the shared footer', () {
     final ids = benchTasks.map((t) => t.id).toSet();
     expect(ids.length, benchTasks.length);

@@ -204,12 +204,8 @@ Future<Map<String, dynamic>> _runAttempt({
 
   // ---- score ----
   final failReasons = <String>[];
-  final porcelain =
-      (inWs('git', ['status', '--porcelain']).stdout as String).trim();
-  final changed = [
-    for (final line in porcelain.split('\n'))
-      if (line.trim().isNotEmpty) line.substring(3).trim()
-  ];
+  final changed = changedFromPorcelain(
+      inWs('git', ['status', '--porcelain']).stdout as String);
 
   final analyze = inWs('dart', ['analyze']);
   final tests = inWs('dart', ['run', 'test/all_tests.dart']);

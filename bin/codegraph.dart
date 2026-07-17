@@ -89,7 +89,7 @@ low-level verbs (intent verbs compose these):
 Query flags: --budget N (cap output lines, default 80; brief/diff/health default to 150).
              --json    (find/readers/wiring/route/impls/sym/skeleton/untested/impact/diff/blueprint: machine-readable output)
              --no-rebuild  (query verbs rebuild a stale/missing graph automatically; this answers from the graph as-is)
-Exit codes: 0 answered (incl. typed empties), 2 ambiguous file arg (candidates listed), 64 usage, 66 no graph.
+Exit codes: 0 answered (incl. typed empties), 2 ambiguous file arg (candidates listed), 3 actuator refused, 64 usage, 66 no graph, 130 cancelled (ctrl-C at a safe point).
 Run from the package root of the host project.''');
 }
 

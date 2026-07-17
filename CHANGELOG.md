@@ -3,6 +3,30 @@
 Design history — including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## Unreleased
+
+- **Agent-impact benchmark (Stage A) ships as the north-star harness.** A
+  two-arm agent A/B - identical prompts, environment-only treatment (baseline
+  gets a PATH shim blocking codegraph; treatment gets `codegraph init` plus a
+  resolved build compiled from the current checkout) - over four edit and four
+  must-refuse tasks in a disposable production-shaped workspace with offline
+  path dependencies. Scoring is code-computed: frozen oracle regexes, git diff
+  confinement, analysis/tests green, tree-unchanged refusals. CI gates the
+  harness itself (untouched workspace fails every edit oracle; scripted
+  reference edits pass and stay green; every refusal premise is verified).
+  Agent runs stay local/on-demand. The pre-registered gate from plans/3.2:
+  no actuator expansion without 100% treatment-arm safety plus >=20pp success
+  or >=30% cost reduction.
+- **Rename apply gains an explicit cancellation contract.** Ctrl-C requests
+  cooperative cancellation honored at safe checkpoints (between files during
+  resolution), exiting 130 with the tree untouched. The staged
+  install/rollback section is structurally uninterruptible: a cancel arriving
+  there is remembered, the section completes (or rolls back) as one unit, and
+  the too-late cancel is disclosed in text and JSON (`lateCancel`) - the
+  disk-state claim is always exact. While the SIGINT subscription is active
+  the default kill is disabled, so no signal can sever a half-installed edit
+  set.
+
 ## 3.1.0 - 2026-07-17 - v3 trust follow-through
 
 - **Typed GoRouter topology is now a first-class resolved contract.** Graph

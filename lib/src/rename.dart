@@ -18,6 +18,7 @@ import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/source/line_info.dart';
 
 import 'atomic_text_edits.dart';
+import 'cancellation.dart';
 import 'freshness.dart';
 import 'progress.dart';
 import 'refactor_index.dart';
@@ -42,6 +43,7 @@ int _emitRename({
   required List<String> members,
   required bool asJson,
   required bool apply,
+  required CancelGuard guard,
 }) {
   final byFile = <String, List<_Edit>>{};
   var retainedBackups = <String>[];
@@ -50,6 +52,9 @@ int _emitRename({
   }
 
   try {
+    // Last safe point: nothing staged yet. From here staging + install run as
+    // ONE uninterruptible unit (a cancel during it is disclosed afterwards).
+    guard.checkpoint('apply');
     final prepared = prepareTextEdits([
       for (final edit in edits)
         AtomicTextEdit(
@@ -60,7 +65,9 @@ int _emitRename({
           replacement: newName,
         ),
     ]);
-    if (apply) retainedBackups = applyPreparedTextEdits(prepared);
+    if (apply) {
+      retainedBackups = guard.critical(() => applyPreparedTextEdits(prepared));
+    }
   } on AtomicEditException catch (error) {
     final code = error.ioFailure ? 74 : 3;
     if (asJson) {
@@ -99,6 +106,11 @@ int _emitRename({
     return 74;
   }
 
+  final lateCancel = apply && guard.cancelRequested;
+  if (lateCancel) {
+    stderr.writeln('note: cancel arrived during the install - the rename WAS '
+        'applied (the install/rollback section cannot be interrupted safely)');
+  }
   if (asJson) {
     stdout.writeln(jsonEncode({
       'action': 'rename',
@@ -107,6 +119,7 @@ int _emitRename({
       'declarations': members,
       'sites': edits.length,
       'applied': apply,
+      if (lateCancel) 'lateCancel': true,
       if (retainedBackups.isNotEmpty) 'retainedBackups': retainedBackups,
       'edits': [
         for (final e in edits)
@@ -151,6 +164,7 @@ int _runIndexed({
   required bool asJson,
   required bool apply,
   required _Refuse refuse,
+  required CancelGuard guard,
 }) {
   if (index.unresolvedNames.contains(wantName)) {
     return refuse(
@@ -246,6 +260,7 @@ int _runIndexed({
     members: members,
     asJson: asJson,
     apply: apply,
+    guard: guard,
   );
 }
 
@@ -361,6 +376,26 @@ Set<Element> _overrideComponent(Element start, Iterable<Element> decls) {
 }
 
 Future<int> run(List<String> args) async {
+  try {
+    return await CancelGuard.run((guard) => _run(args, guard));
+  } on OperationCancelled catch (cancelled) {
+    // Only reachable from checkpoints OUTSIDE the critical section, where
+    // nothing is staged - so this claim about disk state is exact.
+    if (args.contains('--json')) {
+      stdout.writeln(jsonEncode({
+        'action': 'rename',
+        'cancelled': cancelled.phase,
+        'applied': false,
+      }));
+    } else {
+      stderr.writeln(
+          'cancelled during ${cancelled.phase}; no changes were applied');
+    }
+    return 130;
+  }
+}
+
+Future<int> _run(List<String> args, CancelGuard guard) async {
   final positional = args.where((a) => !a.startsWith('--')).toList();
   final asJson = args.contains('--json');
   final apply = args.contains('--apply');
@@ -421,6 +456,7 @@ Future<int> run(List<String> args) async {
       asJson: asJson,
       apply: apply,
       refuse: refuse,
+      guard: guard,
     );
   }
 
@@ -444,6 +480,9 @@ Future<int> run(List<String> args) async {
   final progress = ProgressReporter('resolve rename', files.length)..start();
   var completed = 0;
   for (final f in files) {
+    // Safe point: nothing is staged during analysis, so a ctrl-C here aborts
+    // with the tree untouched.
+    guard.checkpoint('resolve');
     final String content;
     try {
       content = f.readAsStringSync();
@@ -561,5 +600,6 @@ Future<int> run(List<String> args) async {
     members: members,
     asJson: asJson,
     apply: apply,
+    guard: guard,
   );
 }
