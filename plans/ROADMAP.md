@@ -11,7 +11,7 @@ without breaking it. [`BRD-actuator.md`](BRD-actuator.md) is the north star;
 |---|---|---|---|
 | 3.0 **Resolved core** | Shipped in v3.0.0 | [3.0-resolved-core.md](3.0-resolved-core.md) | Resolved builds by default, confidence provenance, element-precise callers/refs |
 | 3.1 **Rename actuator MVP** | Shipped in v3.0.0 | [3.1-actuator-rename.md](3.1-actuator-rename.md) | Dry-run/apply renames with whole-hierarchy support and strict refusal gates |
-| 3.2 **Persistent semantic index** | Implemented, cancellation remains | [3.2-agent-impact-and-resolved-session.md](3.2-agent-impact-and-resolved-session.md) | Graph-speed semantic operations plus prevalidated, rollback-backed rename apply |
+| 3.2 **Persistent semantic index** | Implemented (incl. cancellation + Stage A harness) | [3.2-agent-impact-and-resolved-session.md](3.2-agent-impact-and-resolved-session.md) | Graph-speed semantic operations; prevalidated, rollback-backed, cancellable rename apply; the agent-impact benchmark harness |
 | 3.3 **Typed route topology** | Implemented | this roadmap + changelog | Resolved annotation trees, reusable placements, paths, shells/branches, navigators, redirects, route query, and impact edges |
 
 The old retrieval usefulness and performance suites remain regression gates.
@@ -52,10 +52,10 @@ The execution sequence continues the safety work started in
    agent can ask which implementation executes in each subtree. Preserve a
    resolved-only refusal boundary for dynamic override lists and runtime scope
    construction.
-4. **Finish operation cancellation.** Rename apply now prevalidates all source,
-   stages all output, and rolls attempted files back on install failure. Add an
-   explicit cancellation path that cannot interrupt the install/rollback
-   critical section and leaves no unreported recovery artifact.
+4. **[Done 2026-07-17] Operation cancellation.** Ctrl-C is honored at safe
+   checkpoints only (exit 130, tree untouched); the install/rollback critical
+   section is structurally uninterruptible and a too-late cancel is disclosed
+   (`lateCancel`). lib/src/cancellation.dart + test/cancellation_test.dart.
 5. **Deepen P1 conformance.** Turn `lint` into persistent CI value with
    repository-specific layering, pairing, and must-stay-in-sync invariants.
    Prefer rules proven by reproducible failures over a large generic catalog.
