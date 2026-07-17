@@ -59,7 +59,13 @@ The execution sequence continues the safety work started in
 5. **Deepen P1 conformance.** Turn `lint` into persistent CI value with
    repository-specific layering, pairing, and must-stay-in-sync invariants.
    Prefer rules proven by reproducible failures over a large generic catalog.
-6. **Expand P2 only after the benchmark proves the thesis.** Signature-change edit
+   First mined rule (from the Stage A campaign, failed by both arms 6/6):
+   a `publishedPackages` boundary - packages declared externally consumed must
+   refuse public-API renames and flag exported-symbol changes.
+6. **Expand P2 only after the benchmark proves the thesis.** First campaign
+   (2026-07-18, small-scale workspace): gate NOT passed - no expansion; see
+   plans/3.2 verdict. The mined follow-ups are the production-scale arm and
+   the publishedPackages conformance gate below. Signature-change edit
    sets and cross-package public-API safety are the next actuator frontier.
    Every edit remains apply-ready, reversible, and refusal-gated.
 7. **Consider P3 data flow later.** Lifecycle and value-flow analysis begins
