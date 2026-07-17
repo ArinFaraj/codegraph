@@ -23,6 +23,7 @@ import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/source/line_info.dart';
 
+import 'analysis_env.dart';
 import 'cli_util.dart';
 import 'freshness.dart';
 import 'model.dart';
@@ -493,9 +494,15 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
     ...dartFilesUnderTestRoots(workspaceTestRoots(paths)),
   ];
 
-  final collection = AnalysisContextCollection(
-    includedPaths: [for (final f in files) f.absolute.path],
-  );
+  final AnalysisContextCollection collection;
+  try {
+    collection =
+        newAnalysisCollection([for (final f in files) f.absolute.path]);
+  } on ResolvedAnalysisUnavailable catch (unavailable) {
+    stderr.writeln('$unavailable');
+    stderr.writeln('Drop --resolved for the name-match path.');
+    return 66;
+  }
   final hits = <_RHit>[];
   final overrides = <String, List<String>>{};
   var unresolvedFiles = 0;

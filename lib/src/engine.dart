@@ -58,6 +58,7 @@ import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/error/error.dart' show DiagnosticType;
 import 'package:analyzer/source/line_info.dart';
 
+import 'analysis_env.dart';
 import 'attention.dart' as attention;
 import 'markdown.dart' as markdown;
 import 'model.dart';
@@ -1730,7 +1731,20 @@ Future<void> buildResolved(
     );
     exit(66);
   }
-  final result = await _resolveFiles(['lib', ...pkgs.packages.values], pkgs);
+  final ({List<FileInfo> files, RefactorIndex index}) result;
+  try {
+    result = await _resolveFiles(['lib', ...pkgs.packages.values], pkgs);
+  } on ResolvedAnalysisUnavailable catch (unavailable) {
+    if (analysisPolicy == 'resolved') {
+      // The user asked for resolved by name - refuse, never degrade silently.
+      stderr.writeln('$unavailable');
+      exit(66);
+    }
+    stderr.writeln('note: $unavailable');
+    stderr.writeln('note: building syntax-only instead.');
+    build(args, analysisPolicy: 'auto');
+    return;
+  }
   _emitBuild(
     result.files,
     positional,
@@ -1770,9 +1784,8 @@ Future<({List<FileInfo> files, RefactorIndex index})> _resolveFiles(
       if (Directory(root).existsSync()) ..._dartFiles(root),
   ];
   final indexedFiles = [...files, ...testFiles];
-  final collection = AnalysisContextCollection(
-    includedPaths: [for (final f in indexedFiles) f.absolute.path],
-  );
+  final collection =
+      newAnalysisCollection([for (final f in indexedFiles) f.absolute.path]);
   final all = <FileInfo>[];
   final index = RefactorIndexBuilder();
   var fellBack = 0;

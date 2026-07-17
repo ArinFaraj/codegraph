@@ -17,6 +17,7 @@ import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/source/line_info.dart';
 
+import 'analysis_env.dart';
 import 'atomic_text_edits.dart';
 import 'cancellation.dart';
 import 'freshness.dart';
@@ -470,9 +471,13 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
     ...dartFilesUnderTestRoots(workspaceTestRoots(paths)),
   ];
 
-  final collection = AnalysisContextCollection(
-    includedPaths: [for (final f in files) f.absolute.path],
-  );
+  final AnalysisContextCollection collection;
+  try {
+    collection =
+        newAnalysisCollection([for (final f in files) f.absolute.path]);
+  } on ResolvedAnalysisUnavailable catch (unavailable) {
+    return refuse('$unavailable');
+  }
   final allDecls = <Element, _Edit>{};
   final allRefs = <(Element, _Edit)>[];
   final newNameDecls = <Element>[];

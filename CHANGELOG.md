@@ -5,6 +5,17 @@ changes so you don't re-propose a deliberate dead end.
 
 ## Unreleased
 
+- **Native executables can now run resolved analysis.** A `dart compile exe`
+  codegraph used to die in an unhandled PathNotFoundException before analyzing
+  anything (the analyzer resolves the SDK relative to the running executable).
+  Collection construction now goes through one wrapper: under the dart VM
+  nothing changes; in a native binary the SDK is discovered by asking the PATH
+  `dart` for its VM location (correct across fvm/Flutter wrapper scripts) and
+  passed as `sdkPath`. Without any `dart` on PATH the failure is typed -
+  default builds fall back to syntax-only with a note, and explicit
+  `--resolved`, rename, and resolved callers refuse with the reason and the
+  fix instead of a stack trace.
+
 - **Agent-impact benchmark (Stage A) ships as the north-star harness.** A
   two-arm agent A/B - identical prompts, environment-only treatment (baseline
   gets a PATH shim blocking codegraph; treatment gets `codegraph init` plus a
