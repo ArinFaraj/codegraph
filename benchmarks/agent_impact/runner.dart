@@ -158,20 +158,46 @@ Future<Map<String, dynamic>> _runAttempt({
   if (arm == 'codegraph') {
     // Equip the workspace with the real product surface, then snapshot it as
     // the git baseline so tool scaffolding never counts as an agent edit.
-    inWs('codegraph', ['init']);
-    inWs('codegraph', ['build']);
+    // A silent setup failure would corrupt the A/B (treatment would secretly
+    // equal baseline) - fail the whole run loudly instead.
+    for (final step in [
+      ['init'],
+      ['build'],
+    ]) {
+      final r = inWs('codegraph', step);
+      if (r.exitCode != 0) {
+        stderr.writeln('treatment setup failed (codegraph ${step.join(' ')}): '
+            '${r.stderr}');
+        exit(70);
+      }
+    }
     final claudeMd = File('${ws.path}/CLAUDE.md');
-    if (claudeMd.existsSync()) {
-      File('${ws.path}/AGENTS.md')
-          .writeAsStringSync(claudeMd.readAsStringSync());
+    if (!claudeMd.existsSync()) {
+      stderr.writeln('treatment setup failed: init wrote no CLAUDE.md');
+      exit(70);
+    }
+    File('${ws.path}/AGENTS.md').writeAsStringSync(claudeMd.readAsStringSync());
+    if (!File('${ws.path}/docs/maps/code_graph.json').existsSync()) {
+      stderr.writeln('treatment setup failed: build wrote no graph');
+      exit(70);
     }
   }
-  inWs('git', ['init', '-q']);
-  inWs('git', ['add', '-A']);
-  inWs('git', [
-    '-c', 'user.email=bench@local', '-c', 'user.name=bench', //
-    'commit', '-qm', 'baseline'
-  ]);
+  // Scoring is git-diff-based; a failed baseline commit would misattribute
+  // pre-existing files as agent edits. Fail loudly.
+  for (final step in [
+    ['init', '-q'],
+    ['add', '-A'],
+    [
+      '-c', 'user.email=bench@local', '-c', 'user.name=bench', //
+      'commit', '-qm', 'baseline'
+    ],
+  ]) {
+    final r = inWs('git', step);
+    if (r.exitCode != 0) {
+      stderr.writeln('workspace git ${step.first} failed: ${r.stderr}');
+      exit(70);
+    }
+  }
 
   final sessionFile = '${ws.path}/.agent_session.json';
   final cmd =
