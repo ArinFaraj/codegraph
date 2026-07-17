@@ -3,7 +3,7 @@
 Design history — including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
-## Unreleased - v3 trust follow-through
+## 3.1.0 - 2026-07-17 - v3 trust follow-through
 
 - **Typed GoRouter topology is now a first-class resolved contract.** Graph
   format 9 adds a deterministic route index built from analyzer-evaluated
