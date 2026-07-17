@@ -3,7 +3,7 @@
 Design history — including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
-## Unreleased
+## 3.2.0 - 2026-07-18 - measured impact
 
 - **First benchmark-mined conformance gate: the published-package boundary.**
   The Stage A campaign's one universal failure was both agent arms renaming a
