@@ -20,7 +20,11 @@ dart pub global activate -sgit https://github.com/ArinFaraj/codegraph
 ```
 
 Update later with the same command (or pin a version, for example
-`--git-ref v3.0.0`).
+`--git-ref v3.1.0`).
+
+A standalone native binary also works (`dart compile exe bin/codegraph.dart`):
+it discovers the Dart SDK from the `dart` on PATH for resolved analysis, and
+falls back to syntax-only with a note when no SDK is available.
 
 **IMPORTANT:** Always invoke the installed `codegraph` binary directly.
 `dart run` or `dart pub global run` can interleave pub-resolution output into
