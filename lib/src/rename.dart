@@ -27,6 +27,27 @@ import 'workspace_files.dart';
 
 final _ident = RegExp(r'^[a-zA-Z_$][a-zA-Z0-9_$]*$');
 
+/// Package names from codegraph.json `publishedPackages`: local packages whose
+/// PUBLIC API is consumed outside this repository, so its completeness can
+/// never be proven from the graph. Mined from the first Stage A campaign,
+/// where both agent arms renamed a published package's public class despite a
+/// prose warning - the boundary must be graph data, not prose.
+Set<String> _publishedPackages() {
+  try {
+    final decoded = jsonDecode(File('codegraph.json').readAsStringSync());
+    final list = (decoded as Map<String, dynamic>)['publishedPackages'];
+    if (list is List) return {for (final e in list) e.toString()};
+  } catch (_) {}
+  return const {};
+}
+
+/// The published package owning [file] (`packages/<name>/...`), or null.
+String? _publishedPackageOf(String file, Set<String> published) {
+  final m = RegExp(r'^packages/([^/]+)/').firstMatch(file);
+  final name = m?.group(1);
+  return (name != null && published.contains(name)) ? name : null;
+}
+
 class _Edit {
   _Edit(this.file, this.offset, this.length, this.line);
   final String file;
@@ -217,6 +238,18 @@ int _runIndexed({
     );
   }
 
+  final published = _publishedPackages();
+  for (final declaration in named.where((d) => component.contains(d.symbol))) {
+    final pkg = _publishedPackageOf(declaration.file, published);
+    if (pkg != null && !wantName.startsWith('_')) {
+      return refuse(
+        '"$targetArg" is public API of published package "$pkg" '
+        '(codegraph.json publishedPackages) - external consumers cannot be '
+        'seen from this repository, so a complete rename cannot be proven',
+        extra: [declaration.display],
+      );
+    }
+  }
   for (final declaration in named.where((d) => component.contains(d.symbol))) {
     final collisions = index.declarations.where((candidate) =>
         candidate.name == newName &&
@@ -546,6 +579,22 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
   // The override set: the target's declaration plus every inheritance-related
   // declaration (base, overrides, siblings) - all must rename together.
   final component = _overrideComponent(candidates.first, allDecls.keys);
+
+  // Gate: published-package boundary (same rule as the indexed path).
+  final published = _publishedPackages();
+  if (!wantName.startsWith('_')) {
+    for (final m in component) {
+      final pkg = _publishedPackageOf(allDecls[m]!.file, published);
+      if (pkg != null) {
+        return refuse(
+          '"$targetArg" is public API of published package "$pkg" '
+          '(codegraph.json publishedPackages) - external consumers cannot be '
+          'seen from this repository, so a complete rename cannot be proven',
+          extra: ['${m.enclosingElement?.name ?? '(top-level)'}.${m.name}'],
+        );
+      }
+    }
+  }
 
   // A bare name whose declarations span MORE than the target's component names
   // unrelated methods (different hierarchies / a top-level fn plus a method) -

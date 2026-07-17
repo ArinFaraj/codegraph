@@ -5,6 +5,16 @@ changes so you don't re-propose a deliberate dead end.
 
 ## Unreleased
 
+- **First benchmark-mined conformance gate: the published-package boundary.**
+  The Stage A campaign's one universal failure was both agent arms renaming a
+  published package's public API despite a prose warning - the boundary fact
+  has to be graph-consumable data, not prose. `codegraph.json` gains
+  `publishedPackages`; `rename` (indexed and cold paths alike) now refuses a
+  public-API rename whose declaration lives in a declared published package,
+  naming the package and why completeness cannot be proven. Private symbols
+  and undeclared packages are unaffected. Tests cover refusal, the
+  without-config contrast, and the indexed path.
+
 - **Native executables can now run resolved analysis.** A `dart compile exe`
   codegraph used to die in an unhandled PathNotFoundException before analyzing
   anything (the analyzer resolves the SDK relative to the running executable).

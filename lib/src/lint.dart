@@ -123,6 +123,7 @@ class LintConfig {
     'layersForbid',
     'banned_provider_kinds',
     'provider_homes',
+    'publishedPackages',
   };
 
   /// Loads [_configPath] from the host root. Absent → defaults. Unknown keys →
