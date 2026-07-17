@@ -10,6 +10,7 @@ reproduced without access to any external codebase.
 | **Performance** | here | `dart run benchmarks/perf.dart --compare benchmarks/perf_baseline.json` | syntax/resolved build, graph queries, indexed vs analyzer rename and callers | CI, fails on >15% regression outside the noise floor |
 | **Affected tests** | here | `dart run benchmarks/affected_tests.dart` | exact file/symbol-selected entrypoints and fail-open expansion vs frozen handwritten truth | CI, zero omissions or set mismatches allowed |
 | **Route mutations** | here | `dart run benchmarks/route_mutations.dart` | applies a real typed-route page mutation, executes the full test universe, and compares discovered failures with the selected plan | CI, zero omitted failing tests and zero exact-set mismatches |
+| **Agent impact** | here, `agent_impact/` | `dart run benchmarks/agent_impact/runner.dart --agent devin` | the NORTH-STAR metric (doctrine 8): with-vs-without codegraph agent A/B on 4 edit + 4 must-refuse tasks, scored by frozen code-computed oracles | harness self-checks in CI (`test/agent_impact_test.dart`); agent runs are local/on-demand |
 
 ## Which to trust for which decision
 
