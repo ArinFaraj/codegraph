@@ -191,7 +191,7 @@ bool _isRefType(DartType? t) {
   final element = type.element;
   final name = element.name;
   if (name == null) return null;
-  final library = element.library.uri.toString();
+  final library = portableLibraryUri(element.library.uri);
   return (symbol: '$library::$name', name: name, kind: kind);
 }
 
@@ -205,7 +205,8 @@ bool _isRefType(DartType? t) {
 
 String? _elementSymbol(Element? element) {
   if (element == null) return null;
-  final library = element.library?.uri.toString();
+  final libraryUri = element.library?.uri;
+  final library = libraryUri == null ? null : portableLibraryUri(libraryUri);
   final name = element.name;
   if (library == null || name == null) return null;
   final owner = element.enclosingElement;

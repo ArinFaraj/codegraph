@@ -3,6 +3,26 @@
 Design history — including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## 3.3.0 - 2026-07-18 - the scaffolding catches up with the actuator
+
+- **`init`'s installed skills and rules now teach v3, not v0.8.** The Stage A
+  campaign showed equipped agents never reaching for codegraph at the decisive
+  moments - because the CLAUDE.md block and code-map skill still said "query
+  before you grep" and never mentioned the actuator. Both are rewritten: they
+  lead with the two rules (navigate with the graph; before renaming any method
+  or function, run `codegraph rename` as a dry run and treat a REFUSAL as the
+  answer - never route around it by hand), surface the intent verbs
+  (`uses`/`change`/`review`/`route`), `callers --resolved` with override
+  chains, `affected-tests`, the `[unconfirmed]` reader marker, and the
+  `publishedPackages` boundary. The skill description now also triggers on
+  rename/refactor/is-this-safe phrasing, and is honest about the current
+  limit: class renames are not actuator-supported yet (use `refs` first).
+- **Every generated artifact is plain ASCII.** The templates carried legacy
+  em-dashes and arrows; all scaffolding output (CLAUDE block, skill, hook,
+  cursor rule, LIMITATIONS seed) is now US-keyboard-only.
+- Scaffolding version bump: hosts get the refresh via `codegraph upgrade`
+  (the session-start skew nag fires on minor releases by design).
+
 ## 3.2.0 - 2026-07-18 - measured impact
 
 - **First benchmark-mined conformance gate: the published-package boundary.**

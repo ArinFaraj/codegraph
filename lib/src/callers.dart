@@ -239,7 +239,8 @@ class _ResolvedFinder extends RecursiveAstVisitor<void> {
     final out = <String>[];
     for (final sup in enc.thisType.allSupertypes) {
       if (sup.getMethod(name) != null) {
-        out.add('${sup.element.name}.$name [${sup.element.library.uri}]');
+        out.add('${sup.element.name}.$name '
+            '[${portableLibraryUri(sup.element.library.uri)}]');
       }
     }
     return out;

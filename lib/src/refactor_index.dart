@@ -7,7 +7,31 @@ import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/source/line_info.dart';
 
 const refactorIndexPath = 'docs/maps/refactor_index.json';
-const refactorIndexFormat = 4;
+const refactorIndexFormat = 5;
+
+/// Machine-portable form of a library URI. Files under lib/ already resolve
+/// to package: URIs, but anything outside it (test/, integration_test/,
+/// tools/) comes out of the analyzer as file:///absolute/machine/path. Those
+/// become root-relative (file:test/foo_test.dart) so the emitted artifacts
+/// carry no machine paths and stay comparable across machines.
+String portableLibraryUri(Uri uri) {
+  if (uri.scheme != 'file') return uri.toString();
+  final path = uri.path;
+  for (final root in _rootPaths) {
+    if (path.startsWith(root)) return 'file:${path.substring(root.length)}';
+  }
+  return uri.toString();
+}
+
+final List<String> _rootPaths = () {
+  final cwd = Directory.current;
+  // Both spellings: the analyzer may hand back resolved paths while the
+  // process cwd goes through a symlink (or vice versa).
+  return {
+    cwd.uri.path,
+    Directory(cwd.resolveSymbolicLinksSync()).uri.path,
+  }.toList();
+}();
 
 const refactorSiteCall = 'call';
 const refactorSiteReference = 'ref';
@@ -319,7 +343,7 @@ class _IndexVisitor extends RecursiveAstVisitor<void> {
       symbol: symbol,
       name: name,
       display: executableElementDisplay(element),
-      library: element.library.uri.toString(),
+      library: portableLibraryUri(element.library.uri),
       overrides: [
         for (final parent in parents)
           if (executableSymbol(parent) case final key?) key,
@@ -342,7 +366,8 @@ class _IndexVisitor extends RecursiveAstVisitor<void> {
   ) {
     final symbol = executableSymbol(element);
     final name = element?.name;
-    final library = element?.library?.uri.toString();
+    final libraryUri = element?.library?.uri;
+    final library = libraryUri == null ? null : portableLibraryUri(libraryUri);
     if (symbol == null || name == null || library == null) return null;
     final executable = element! as ExecutableElement;
     _recordTarget(executable);
@@ -496,7 +521,7 @@ bool isRefactorReferenceUse(SimpleIdentifier node) {
 String? executableSymbol(Element? element) {
   if (element is! ExecutableElement) return null;
   final name = element.name;
-  final library = element.library.uri.toString();
+  final library = portableLibraryUri(element.library.uri);
   if (name == null) return null;
   final ownerName = _executableOwner(element);
   final owner = ownerName == null ? '' : '$ownerName.';

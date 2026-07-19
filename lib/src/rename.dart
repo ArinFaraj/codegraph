@@ -365,7 +365,7 @@ List<Element> _overriddenSupers(Element el) {
 /// `Class.name [library-uri]` for a method element (refusal messages).
 String _describe(Element el) =>
     '${el.enclosingElement?.name ?? '(top-level)'}.${el.name} '
-    '[${el.library?.uri}]';
+    '[${el.library == null ? null : portableLibraryUri(el.library!.uri)}]';
 
 bool _sameDeclarationScope(Element a, Element b) {
   final aOwner = a.enclosingElement;
