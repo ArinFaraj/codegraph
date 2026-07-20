@@ -386,6 +386,11 @@ void main() {
 }
 ''');
 
+  // Workspace v2 (2026-07-21): the published-package boundary is graph-
+  // consumable config, matching a real codegraph-equipped host. Inert for the
+  // baseline arm (no codegraph binary). Results before v2 are not directly
+  // comparable on the refuse-public-boundary task.
+  write('codegraph.json', '{"publishedPackages": ["ui_kit"]}\n');
   write('.gitignore', '.dart_tool/\n.agent_session.json\ndocs/maps/\n');
   write('analysis_options.yaml', '''
 analyzer:
