@@ -3,7 +3,24 @@
 Design history — including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
-## 3.3.0 - 2026-07-18 - the scaffolding catches up with the actuator
+## 3.4.0 - 2026-07-19 - the scaffolding refresh, actually shipped
+
+- **Correction: v3.3.0 did not contain the scaffolding refresh its notes
+  describe.** The rewritten templates were lost from the working tree to a
+  concurrent-session overwrite before the release commit, so the 3.3.0 tag
+  shipped the old v0.8-era CLAUDE block and skill under release notes claiming
+  otherwise. 3.4.0 restores the full rewrite (actuator rule, v3 verb surface,
+  change-task skill triggers, ASCII-only artifacts), keeps the concurrent
+  session's improvement (init skip messages now direct to `codegraph upgrade`
+  for codegraph-owned files and mark LIMITATIONS.md host-owned), and adds a CI
+  tripwire: init's generated CLAUDE block and skill must carry the actuator
+  rule and be plain ASCII, so a template regression can never ship silently
+  again. Minor bump on purpose - hosts stamped v3.3.0 get the upgrade nag.
+- The 2026-07-19 scaffolding re-run verdict is quarantined: the working tree
+  state at measurement time is uncertain, so it may have measured the OLD
+  scaffolding. It will be re-run against 3.4.0.
+
+## 3.3.0 - 2026-07-18 - the scaffolding catches up with the actuator (NOTE: this tag does NOT contain the scaffolding changes below - see 3.4.0)
 
 - **`init`'s installed skills and rules now teach v3, not v0.8.** The Stage A
   campaign showed equipped agents never reaching for codegraph at the decisive

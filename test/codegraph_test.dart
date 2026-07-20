@@ -3426,6 +3426,30 @@ class HomePage {
   );
 
   test(
+    'scaffolding teaches the v3 actuator (regression: the 3.3.0 rewrite was '
+    'lost to a concurrent working-tree overwrite and shipped without it)',
+    () {
+      scaffold.init(const [], version: '0.0.0-test', repoUrl: 'https://x');
+      final claudeMd = File('CLAUDE.md').readAsStringSync();
+      final skill = File('.claude/skills/code-map/SKILL.md').readAsStringSync();
+      // The one load-bearing rule: dry-run rename first, refusal is the answer.
+      expect(claudeMd, contains('edit actuator'));
+      expect(claudeMd, contains('codegraph rename'));
+      expect(claudeMd, contains('REFUSES'));
+      expect(skill, contains('codegraph rename'));
+      expect(skill, contains('publishedPackages'));
+      expect(skill.split('---')[1], contains('actuator'),
+          reason: 'the skill DESCRIPTION must trigger on change tasks, '
+              'not only search tasks');
+      // Style rule: generated artifacts are plain ASCII.
+      for (final text in {'CLAUDE.md': claudeMd, 'SKILL.md': skill}.entries) {
+        expect(RegExp(r'[^\x00-\x7F]').hasMatch(text.value), isFalse,
+            reason: '\${text.key} must be US-keyboard ASCII only');
+      }
+    },
+  );
+
+  test(
     '_commandBlock (CLAUDE.md + skill) includes the lint command line '
     '(0.7.0 Stage 3)',
     () {
