@@ -295,7 +295,7 @@ name a specific product, vendor SDK, or private project.''';
 /// brief-first command list + guidance paragraph. One copy so the two
 /// templates cannot drift.
 String _commandBlock(String repoUrl) => '''
-**This repo has a resolved code graph and an edit actuator. Two rules: (1) NAVIGATE with one ~1s `codegraph` query instead of grepping; (2) before renaming any method or function, run `codegraph rename` as a dry run and follow it - if it REFUSES, do not do the rename by hand; the refusal reason is the answer.**
+**This repo has a resolved code graph and an edit actuator. Two rules: (1) NAVIGATE with one ~1s `codegraph` query instead of grepping; (2) before renaming ANY symbol (method, function, class, enum, mixin), run `codegraph rename` as a dry run and follow it - if it REFUSES, do not do the rename by hand; the refusal reason is the answer.**
 
 Navigate (covers `lib/` + `packages/`; read what it points at before relying on a load-bearing claim):
 
@@ -328,12 +328,14 @@ codegraph rename <Class.method|function> <newName>   # dry run: every real refer
 codegraph rename <target> <newName> --apply          # write it (staged, rollback-backed)
 ```
 
-A rename REFUSES when it cannot be proven complete and safe: ambiguous bare
-names (qualify as `Class.method`), framework overrides, public API of packages
-listed in `codegraph.json` `publishedPackages`, unresolved/dynamic uses. Treat
-a refusal as the correct answer and report it - never route around it by
-editing manually. Class renames are not supported by the actuator yet; for
-those run `codegraph refs <Class>` to see every reference first, then edit.
+Covers methods, functions, classes, enums, and mixins - a class rename moves
+every constructor, type annotation, is/as check, type argument, tear-off, and
+static access together. A rename REFUSES when it cannot be proven complete and
+safe: ambiguous bare names (qualify as `Class.member` or
+`path/to/file.dart:name`), framework overrides,
+public API of packages listed in `codegraph.json` `publishedPackages`,
+unresolved/dynamic uses. Treat a refusal as the correct answer and report it -
+never route around it by editing manually.
 
 Feature overview in one read: `docs/maps/<area>.md` (index: `docs/maps/INDEX.md`). Graph stale after your edits? `codegraph build`. After `codegraph upgrade` or a CLI update: review `docs/maps/LIMITATIONS.md` and merge any new known gaps from the release notes (upgrade never overwrites that file). Engine wrong/incomplete? Fix it at the source repo ($repoUrl), changelog it there, re-activate, and log the gap in `docs/maps/LIMITATIONS.md` (generic wording only - see docs hygiene below). Learned something non-obvious about an area? Append it to `docs/maps/notes/<area>.md` - brief surfaces it automatically.
 
@@ -475,7 +477,7 @@ exit 0
 String _skill(String repoUrl, String version) => '''
 ---
 name: code-map
-description: Query this repo's resolved code graph AND change code through its actuator. One ~1s command answers "where is X", "what uses/watches provider X", "what depends on this file", "who implements this type", "who calls this exact method", "what breaks if I change this", "which tests must run". Renaming a method or function? Use `codegraph rename` FIRST - it edits every real reference or refuses when unsafe. Use at the start of ANY code task here: fixing a bug, investigating behavior, tracing a flow, refactoring, renaming, checking whether a change is safe, planning or reviewing a feature, or finding the file/provider/class/screen for something. Covers lib/ AND packages/*/lib. Reach for it before Grep/Glob/broad file reads and BEFORE hand-editing a rename.
+description: Query this repo's resolved code graph AND change code through its actuator. One ~1s command answers "where is X", "what uses/watches provider X", "what depends on this file", "who implements this type", "who calls this exact method", "what breaks if I change this", "which tests must run". Renaming anything (method, function, class, enum, mixin)? Use `codegraph rename` FIRST - it edits every real reference or refuses when unsafe. Use at the start of ANY code task here: fixing a bug, investigating behavior, tracing a flow, refactoring, renaming, checking whether a change is safe, planning or reviewing a feature, or finding the file/provider/class/screen for something. Covers lib/ AND packages/*/lib. Reach for it before Grep/Glob/broad file reads and BEFORE hand-editing a rename.
 ---
 <!-- ${_scaffoldStamp(version)} -->
 
@@ -528,26 +530,28 @@ Learned something non-obvious about an area? Append it to `docs/maps/notes/<area
 
 ## Changing code - the actuator rule
 
-Before renaming ANY method or function, run the actuator as a dry run:
+Before renaming ANY symbol (method, function, class, enum, or mixin), run the actuator as a dry run:
 
 ```
 codegraph rename <Class.method|function> <newName>          # dry run
 codegraph rename <Class.method|function> <newName> --apply  # write it
 ```
 
-It edits every real (element-resolved) reference - whole override sets move
-together, test fakes included - or it REFUSES with a reason: ambiguous bare
-name (qualify as `Class.method`), framework override, public API of a package
-listed in `codegraph.json` `publishedPackages`, or unresolved/dynamic uses.
-A refusal IS the answer: report it; never do the same rename by hand around
-it. Class renames are not supported yet - run `codegraph refs <Class>` to see
-every reference, then edit manually. For exact per-target call sites before a
+It covers methods, functions, classes, enums, and mixins, and edits every
+real (element-resolved) reference - whole override sets move together, test
+fakes included; a class rename carries constructors, type annotations, is/as
+checks, type arguments, tear-offs, and static access. Or it REFUSES with a
+reason: ambiguous bare name (qualify as `Class.member` or
+`path/to/file.dart:name`), framework override,
+public API of a package listed in `codegraph.json` `publishedPackages`, or
+unresolved/dynamic uses. A refusal IS the answer: report it; never do the
+same rename by hand around it. For exact per-target call sites before a
 signature change, `codegraph callers <Symbol> --resolved` attributes each site
 to its real declaring class and prints the override chain.
 
 ## When to use which
 
-- "Rename method/function X" -> `rename X newName` (dry run), then `--apply`.
+- "Rename X (any symbol)" -> `rename X newName` (dry run), then `--apply`.
 - "Is it safe to change this method?" -> `callers X --resolved` + `change X`.
 - "What does this feature do / how is it wired?" -> read `docs/maps/<area>.md`.
 - "If I change provider X, what breaks?" -> `readers X`.

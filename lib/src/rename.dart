@@ -181,6 +181,7 @@ int _runIndexed({
   required RefactorIndex index,
   required String targetArg,
   required String? wantClass,
+  required String? wantFile,
   required String wantName,
   required String newName,
   required bool asJson,
@@ -197,10 +198,17 @@ int _runIndexed({
   final named = index.declarations.where((d) => d.name == wantName).toList();
   var candidates = named;
   if (wantClass != null) {
-    candidates = named.where((d) => d.owner == wantClass).toList();
+    candidates = candidates.where((d) => d.owner == wantClass).toList();
+  }
+  if (wantFile != null) {
+    candidates = candidates.where((d) => d.file == wantFile).toList();
   }
   if (candidates.isEmpty) {
-    return refuse('no declaration of "$targetArg" found in the resolved graph');
+    // Not in the EXECUTABLE index - the target may still be a class, enum, or
+    // mixin (or genuinely absent). Sentinel -1 tells run() to fall through to
+    // the cold analyzer path, which handles non-executable symbols and issues
+    // the honest not-found refusal itself.
+    return -1;
   }
 
   final namedSymbols = {for (final d in named) d.symbol};
@@ -224,16 +232,20 @@ int _runIndexed({
   }
 
   final selectedCandidates = candidates.map((d) => d.symbol).toSet();
-  if (wantClass == null && component.length != namedSymbols.length) {
+  if (wantClass == null &&
+      wantFile == null &&
+      component.length != namedSymbols.length) {
     return refuse(
-      'ambiguous: "$wantName" names methods in unrelated hierarchies - qualify '
-      'as Class.method',
+      'ambiguous: "$wantName" names declarations in unrelated places - '
+      'qualify as Class.member or path/to/file.dart:name',
       extra: [for (final d in named) d.display],
     );
   }
-  if (wantClass != null && !component.containsAll(selectedCandidates)) {
+  if ((wantClass != null || wantFile != null) &&
+      !component.containsAll(selectedCandidates)) {
     return refuse(
-      'ambiguous: "$targetArg" exists in unrelated libraries',
+      'ambiguous: "$targetArg" matches multiple unrelated declarations - '
+      'qualify as Class.member',
       extra: [for (final d in candidates) d.display],
     );
   }
@@ -332,6 +344,53 @@ class _Collector extends RecursiveAstVisitor<void> {
       _decl(node.declaredFragment?.element, node.name.offset, node.name.length);
     }
     super.visitFunctionDeclaration(node);
+  }
+
+  @override
+  void visitClassDeclaration(ClassDeclaration node) {
+    final t = node.namePart.typeName;
+    if (t.lexeme == name) {
+      _decl(node.declaredFragment?.element, t.offset, t.length);
+    }
+    super.visitClassDeclaration(node);
+  }
+
+  @override
+  void visitEnumDeclaration(EnumDeclaration node) {
+    final t = node.namePart.typeName;
+    if (t.lexeme == name) {
+      _decl(node.declaredFragment?.element, t.offset, t.length);
+    }
+    super.visitEnumDeclaration(node);
+  }
+
+  @override
+  void visitMixinDeclaration(MixinDeclaration node) {
+    if (node.name.lexeme == name) {
+      _decl(node.declaredFragment?.element, node.name.offset, node.name.length);
+    }
+    super.visitMixinDeclaration(node);
+  }
+
+  // Every type mention flows through NamedType on a resolved unit: type
+  // annotations, extends/implements/with clauses, is/as, type arguments, and
+  // the ConstructorName inside Foo()/Foo.named()/Foo.new (probe-verified -
+  // the same resolver rewrite that bit GoRoute). The name is a Token here, so
+  // visitSimpleIdentifier never sees these; without this visitor a class
+  // rename would silently miss every type reference.
+  @override
+  void visitNamedType(NamedType node) {
+    if (node.name.lexeme == name) {
+      final el = node.element;
+      if (el != null) {
+        refs.add((
+          el,
+          _Edit(file, node.name.offset, node.name.length,
+              _line(node.name.offset)),
+        ));
+      }
+    }
+    super.visitNamedType(node);
   }
 
   @override
@@ -471,9 +530,25 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
   final graph = loadFresh();
   if (graph == null) return 66;
 
-  final dot = targetArg.lastIndexOf('.');
-  final wantClass = dot > 0 ? targetArg.substring(0, dot) : null;
-  final wantName = dot > 0 ? targetArg.substring(dot + 1) : targetArg;
+  // Three target spellings: bare `name`, `Class.member`, and the file-scoped
+  // `path/to/file.dart:name` (benchmark-mined: two files may declare the same
+  // private top-level helper, which Class.member cannot disambiguate - the
+  // Stage A private-helper task became un-completable through the actuator
+  // until this existed).
+  String? wantFile;
+  String? wantClass;
+  final String wantName;
+  final colon = targetArg.lastIndexOf(':');
+  if (colon > 0 && targetArg.substring(0, colon).endsWith('.dart')) {
+    var f = targetArg.substring(0, colon);
+    if (f.startsWith('./')) f = f.substring(2);
+    wantFile = f;
+    wantName = targetArg.substring(colon + 1);
+  } else {
+    final dot = targetArg.lastIndexOf('.');
+    wantClass = dot > 0 ? targetArg.substring(0, dot) : null;
+    wantName = dot > 0 ? targetArg.substring(dot + 1) : targetArg;
+  }
   if (wantName == newName) return refuse('new name equals the old name');
 
   final index = RefactorIndex.load();
@@ -481,10 +556,11 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
       index != null &&
       index.complete &&
       index.sourceDigest == graph.stats['sourceDigest']) {
-    return _runIndexed(
+    final indexed = _runIndexed(
       index: index,
       targetArg: targetArg,
       wantClass: wantClass,
+      wantFile: wantFile,
       wantName: wantName,
       newName: newName,
       asJson: asJson,
@@ -492,6 +568,7 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
       refuse: refuse,
       guard: guard,
     );
+    if (indexed != -1) return indexed;
   }
 
   final paths = <String>{
@@ -572,6 +649,10 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
     candidates =
         candidates.where((e) => e.enclosingElement?.name == wantClass).toList();
   }
+  if (wantFile != null) {
+    candidates =
+        candidates.where((e) => allDecls[e]!.file == wantFile).toList();
+  }
   if (candidates.isEmpty) {
     return refuse('no declaration of "$targetArg" found in the resolved graph');
   }
@@ -600,10 +681,19 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
   // unrelated methods (different hierarchies / a top-level fn plus a method) -
   // genuinely ambiguous. A qualified Class.method scopes to one component, so
   // other unrelated same-named methods are correctly ignored.
-  if (wantClass == null && component.length != allDecls.length) {
+  if (wantFile != null && !candidates.every((e) => component.contains(e))) {
     return refuse(
-      'ambiguous: "$wantName" names methods in unrelated hierarchies - qualify '
-      'as Class.method',
+      'ambiguous: "$targetArg" matches multiple unrelated declarations in '
+      'that file - qualify as Class.member',
+      extra: [for (final e in candidates) _describe(e)],
+    );
+  }
+  if (wantClass == null &&
+      wantFile == null &&
+      component.length != allDecls.length) {
+    return refuse(
+      'ambiguous: "$wantName" names declarations in unrelated places - '
+      'qualify as Class.member or path/to/file.dart:name',
       extra: [for (final e in allDecls.keys) _describe(e)],
     );
   }
