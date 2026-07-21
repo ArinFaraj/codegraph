@@ -3,6 +3,20 @@
 Design history - including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## 3.6.0 - 2026-07-21 - provider (top-level variable) renames
+
+- **The actuator renames final top-level variables - the Riverpod provider
+  shape.** Mined live from campaign v2: the one treatment edit miss was a
+  provider pair where `SessionNotifier` renamed fine but `sessionProvider`
+  (a top-level variable) had no covering declaration. Reads of a variable
+  bind to its implicit getter, so references are canonicalized through the
+  accessor to the variable identity. Assignable (non-final) variables REFUSE:
+  write sites bind element-null on the identifier and resolve via the
+  assignment node, so completeness cannot be proven - final/const variables
+  (no setter) are exactly the provable set, and exactly the provider shape.
+  Fields stay unsupported (initializing formals and named arguments need
+  their own edit forms first).
+
 ## 3.5.0 - 2026-07-21 - class renames
 
 - **The actuator now renames classes, enums, and mixins.** A class rename

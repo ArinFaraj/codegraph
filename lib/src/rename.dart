@@ -372,6 +372,21 @@ class _Collector extends RecursiveAstVisitor<void> {
     super.visitMixinDeclaration(node);
   }
 
+  // Top-level variables (Riverpod providers are exactly this shape - mined
+  // from campaign v2, where the provider half of a pair rename had no covering
+  // declaration). Fields are deliberately NOT captured: initializing formals
+  // (`this.x`) and named arguments need their own edit forms first.
+  @override
+  void visitVariableDeclaration(VariableDeclaration node) {
+    if (node.name.lexeme == name) {
+      final el = node.declaredFragment?.element;
+      if (el is TopLevelVariableElement) {
+        _decl(el, node.name.offset, node.name.length);
+      }
+    }
+    super.visitVariableDeclaration(node);
+  }
+
   // Every type mention flows through NamedType on a resolved unit: type
   // annotations, extends/implements/with clauses, is/as, type arguments, and
   // the ConstructorName inside Foo()/Foo.named()/Foo.new (probe-verified -
@@ -400,8 +415,16 @@ class _Collector extends RecursiveAstVisitor<void> {
       // here is a use. Record with its bound element for identity matching.
       final el = node.element;
       if (el != null) {
-        refs.add(
-            (el, _Edit(file, node.offset, node.length, _line(node.offset))));
+        final edit = _Edit(file, node.offset, node.length, _line(node.offset));
+        refs.add((el, edit));
+        // Reads of a variable bind to its implicit GETTER, not the variable -
+        // record the canonical variable identity too so variable renames match.
+        // (Write sites bind element: null on the identifier and resolve via
+        // writeElement on the assignment - which is why only setter-less
+        // variables are renameable; see the selection gate.)
+        if (el is PropertyAccessorElement) {
+          refs.add((el.variable, edit));
+        }
       }
     }
     super.visitSimpleIdentifier(node);
@@ -655,6 +678,20 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
   }
   if (candidates.isEmpty) {
     return refuse('no declaration of "$targetArg" found in the resolved graph');
+  }
+
+  // Gate: an ASSIGNABLE top-level variable has write sites that bind to its
+  // setter via the assignment node, not the identifier - the collector cannot
+  // prove it saw them all, so refuse rather than break every write. Final and
+  // const variables (no setter) - the Riverpod provider shape - are complete.
+  for (final e in candidates) {
+    if (e is TopLevelVariableElement && e.setter != null) {
+      return refuse(
+        '"$targetArg" is an assignable (non-final) top-level variable - '
+        'write sites cannot be proven complete yet; make it final or rename '
+        'manually with codegraph refs',
+      );
+    }
   }
 
   // The override set: the target's declaration plus every inheritance-related

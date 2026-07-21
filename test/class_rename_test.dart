@@ -165,4 +165,43 @@ String _normalize(String s) => s.replaceAll('-', '').toUpperCase();
       expect(code, 0, reason: 'indexed path must honor the file scope');
     });
   });
+
+  group(
+      'top-level variable renames (campaign v2 mined: Riverpod providers '
+      'ARE top-level variables)', () {
+    test('a final provider variable renames with every read site', () async {
+      final code = await rename
+          .run(['rename', 'homeProvider', 'mainProvider', '--apply']);
+      expect(code, 0);
+      final decl = File('${tempDir.path}/lib/home/home_provider.dart')
+          .readAsStringSync();
+      expect(decl, contains('final mainProvider'));
+      expect(decl, isNot(contains('homeProvider')));
+      final reader =
+          File('${tempDir.path}/lib/home/home_page.dart').readAsStringSync();
+      expect(reader, isNot(contains('homeProvider')),
+          reason: 'every read site must move with the declaration');
+    });
+
+    test('an assignable (non-final) top-level variable refuses', () async {
+      File('${tempDir.path}/lib/counter_state.dart').writeAsStringSync('''
+int tapCount = 0;
+
+int bump() {
+  tapCount = tapCount + 1;
+  return tapCount;
+}
+''');
+      engine.build(const []);
+      final before =
+          File('${tempDir.path}/lib/counter_state.dart').readAsStringSync();
+      final code =
+          await rename.run(['rename', 'tapCount', 'pressCount', '--apply']);
+      expect(code, 3,
+          reason: 'write sites bind via the assignment node, not the '
+              'identifier - an assignable variable cannot be proven complete');
+      expect(File('${tempDir.path}/lib/counter_state.dart').readAsStringSync(),
+          before);
+    });
+  });
 }
