@@ -70,6 +70,8 @@ the expensive baseline. `rename_indexed_ms` and `rename_analyzer_ms` execute
 the same qualified rename as a dry run; only where the semantic work happens
 differs. The harness also requires indexed rename to remain at least 5x faster
 than fresh query-time analysis. The same paired measurement and 5x floor apply
-to `callers --resolved`.
+to `callers --resolved`. The analyzer timings are ratio references and are not
+compared as absolute cross-run baselines; making the deliberately slow side
+slower is not a regression in the shipped indexed path.
 Baseline: [perf_baseline.json](perf_baseline.json);
 `--write-baseline` to refresh after a deliberate perf change.

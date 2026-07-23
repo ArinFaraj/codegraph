@@ -22,6 +22,13 @@ import '../test/fixture.dart';
 const _iterations = 5;
 const _regressionPct = 15.0;
 const _regressionAbsMs = 25.0;
+const _ratioReferenceMetrics = {
+  'rename_analyzer_ms',
+  'callers_analyzer_ms',
+};
+
+bool usesAbsoluteBaseline(String metric) =>
+    !_ratioReferenceMetrics.contains(metric);
 
 typedef _BenchFn = void Function();
 typedef _AsyncBenchFn = Future<void> Function();
@@ -246,6 +253,10 @@ Future<int> main(List<String> args) async {
         (jsonDecode(compareFile.readAsStringSync()) as Map)['metrics'] as Map;
     final regressions = <String>[];
     for (final e in results.entries) {
+      // Query-time analyzer timings are the deliberately slow side of the
+      // paired speedup measurements above. Shared-runner variance there must
+      // not fail a release when the indexed path remains at least 5x faster.
+      if (!usesAbsoluteBaseline(e.key)) continue;
       final base = (baseline[e.key] as num?)?.toInt();
       if (base == null) continue;
       if (_regressed(base, e.value)) {

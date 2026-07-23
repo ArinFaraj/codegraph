@@ -3,6 +3,15 @@
 Design history - including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## 3.7.1 - 2026-07-23 - stable performance gate
+
+- The cross-run baseline no longer fails when the intentionally slow,
+  query-time analyzer references get slower on a shared CI runner. Those
+  measurements are denominators, not shipped hot paths: a larger value makes
+  the indexed speedup stronger. Their paired indexed-to-analyzer ratios remain
+  hard-gated at 5x, while build, query, resolved-build, and indexed timings
+  retain the absolute regression check.
+
 ## 3.7.0 - 2026-07-23 - native hot path and one event worker
 
 - **The supported install now has a real native executable.** Pub's generated
