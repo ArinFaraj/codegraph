@@ -9,6 +9,7 @@ import 'package:codegraph/src/brief.dart' as brief;
 import 'package:codegraph/src/callchain.dart' as callchain;
 import 'package:codegraph/src/callers.dart' as callers;
 import 'package:codegraph/src/diff.dart' as diff;
+import 'package:codegraph/src/daemon.dart' as daemon;
 import 'package:codegraph/src/doctor.dart' as doctor;
 import 'package:codegraph/src/engine.dart' as engine;
 import 'package:codegraph/src/freshness.dart' as freshness;
@@ -16,6 +17,7 @@ import 'package:codegraph/src/impact.dart' as impact;
 import 'package:codegraph/src/init.dart' as scaffold;
 import 'package:codegraph/src/intent.dart' as intent;
 import 'package:codegraph/src/lint.dart' as lint;
+import 'package:codegraph/src/native_install.dart' as native_install;
 import 'package:codegraph/src/query.dart' as query;
 import 'package:codegraph/src/rename.dart' as rename;
 import 'package:codegraph/src/skeleton.dart' as skeleton;
@@ -68,8 +70,11 @@ start here (intent verbs):
   codegraph plan <feature-dir>        build-order plan from an exemplar feature (layers, wiring, naming)
 
 operator verbs:
-  codegraph build [lib/<area>]        regenerate docs/maps/ (graph + area maps)
+  codegraph build [--syntax|--resolved] [lib/<area>]
+                                      regenerate docs/maps/ (graph + area maps)
   codegraph check                     regen + fail if committed docs/maps/ is stale (CI gate)
+  codegraph daemon [status|stop]      one workspace graph worker (run without args to serve)
+  codegraph install-native            compile a fast executable to ~/.local/bin
   codegraph init [--ci]               install agent scaffolding into this project
   codegraph upgrade                   refresh codegraph-owned scaffolding to this version
   codegraph doctor                    verify the install (hook, gitignore, CLAUDE.md, CI gate)
@@ -107,9 +112,22 @@ Future<void> main(List<String> rawArgs) async {
     return;
   }
   if (_graphQueryVerbs.contains(args.first)) {
-    await freshness.ensureFreshDefault();
+    // Most navigation questions only need a complete source graph. Rebuilding
+    // that with the syntax extractor keeps edit -> next query responsive on
+    // large Flutter hosts. The few operations that make element-identity
+    // claims keep the resolved path and its stronger refusal guarantees.
+    final needsResolved = args.first == 'rename' ||
+        args.first == 'route' ||
+        args.first == 'affected-tests' ||
+        ((args.first == 'callers' || args.first == 'refs') &&
+            args.contains('--resolved'));
+    await freshness.ensureFreshDefault(requireResolved: needsResolved);
   }
   switch (args.first) {
+    case 'daemon':
+      exit(await daemon.run(args.skip(1).toList()));
+    case 'install-native':
+      exit(await native_install.run(args.skip(1).toList()));
     case 'build':
       await engine.buildDefault(args.skip(1).toList());
     case 'check':

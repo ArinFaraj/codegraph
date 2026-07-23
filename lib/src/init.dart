@@ -45,9 +45,11 @@ void init(List<String> args,
   stdout.writeln('''
 
 Done. Next steps:
-  1. codegraph build          # generate docs/maps/ for this project
-  2. codegraph doctor         # verify the install
-  3. commit CLAUDE.md, .claude/, docs/maps/*.md (NOT generated JSON indexes)
+  1. ~/.pub-cache/bin/codegraph install-native # remove pub launcher overhead
+  2. codegraph build --syntax # generate fast navigation maps for this project
+  3. codegraph daemon         # optional single workspace graph worker
+  4. codegraph doctor         # verify the install
+  5. commit CLAUDE.md, .claude/, docs/maps/*.md (NOT generated JSON indexes)
 Re-running init on an existing install? Scaffolding already here is skipped -
 run `codegraph upgrade` to refresh it to this version instead.
 Engine wrong or missing a relation? Fix it at $repoUrl, changelog it there,
@@ -122,7 +124,8 @@ int upgrade(List<String> args,
       onlyIfExists: true);
   _upgradeClaudeBlock(repoUrl, version);
 
-  stdout.writeln('\nrun: codegraph build   # regenerate docs/maps/ if stale');
+  stdout.writeln(
+      '\nrun: codegraph build --syntax   # regenerate fast maps if stale');
   stdout.writeln(
       'review docs/maps/LIMITATIONS.md - merge any new known gaps from the release notes (upgrade never overwrites this file)');
   return 0;
@@ -295,7 +298,7 @@ name a specific product, vendor SDK, or private project.''';
 /// brief-first command list + guidance paragraph. One copy so the two
 /// templates cannot drift.
 String _commandBlock(String repoUrl) => '''
-**This repo has a resolved code graph and an edit actuator. Two rules: (1) NAVIGATE with one ~1s `codegraph` query instead of grepping; (2) before renaming ANY symbol (method, function, class, enum, mixin), run `codegraph rename` as a dry run and follow it - if it REFUSES, do not do the rename by hand; the refusal reason is the answer.**
+**This repo has a resolved code graph and an edit actuator. Two rules: (1) NAVIGATE with one subsecond native `codegraph` query instead of grepping; (2) before renaming ANY symbol (method, function, class, enum, mixin), run `codegraph rename` as a dry run and follow it - if it REFUSES, do not do the rename by hand; the refusal reason is the answer.**
 
 Navigate (covers `lib/` + `packages/`; read what it points at before relying on a load-bearing claim):
 
@@ -337,7 +340,7 @@ public API of packages listed in `codegraph.json` `publishedPackages`,
 unresolved/dynamic uses. Treat a refusal as the correct answer and report it -
 never route around it by editing manually.
 
-Feature overview in one read: `docs/maps/<area>.md` (index: `docs/maps/INDEX.md`). Graph stale after your edits? `codegraph build`. After `codegraph upgrade` or a CLI update: review `docs/maps/LIMITATIONS.md` and merge any new known gaps from the release notes (upgrade never overwrites that file). Engine wrong/incomplete? Fix it at the source repo ($repoUrl), changelog it there, re-activate, and log the gap in `docs/maps/LIMITATIONS.md` (generic wording only - see docs hygiene below). Learned something non-obvious about an area? Append it to `docs/maps/notes/<area>.md` - brief surfaces it automatically.
+Feature overview in one read: `docs/maps/<area>.md` (index: `docs/maps/INDEX.md`). Graph stale after your edits? `codegraph build --syntax` for fast navigation; use `codegraph build --resolved` only before element-precise route/refactor work. After `codegraph upgrade` or a CLI update: review `docs/maps/LIMITATIONS.md` and merge any new known gaps from the release notes (upgrade never overwrites that file). Engine wrong/incomplete? Fix it at the source repo ($repoUrl), changelog it there, re-activate, and log the gap in `docs/maps/LIMITATIONS.md` (generic wording only - see docs hygiene below). Learned something non-obvious about an area? Append it to `docs/maps/notes/<area>.md` - brief surfaces it automatically.
 
 $_docsHygieneRule''';
 
@@ -451,7 +454,11 @@ if [ ! -f pubspec.yaml ]; then
   [ -n "\$pkg" ] && cd "\$pkg" 2>/dev/null || exit 0
 fi
 GRAPH=docs/maps/code_graph.json
-CG="\$(command -v codegraph || echo "\$HOME/.pub-cache/bin/codegraph")"
+if [ -x "\$HOME/.local/bin/codegraph" ]; then
+  CG="\$HOME/.local/bin/codegraph"
+else
+  CG="\$(command -v codegraph || echo "\$HOME/.pub-cache/bin/codegraph")"
+fi
 if [ ! -x "\$CG" ]; then
   echo "codegraph not installed - dart pub global activate -sgit $repoUrl --git-ref v$version"
   exit 0
@@ -465,19 +472,22 @@ elif [ -n "\$(find lib packages/*/lib -name '*.dart' -newer "\$GRAPH" -print -qu
 fi
 
 if [ -n "\$stale" ]; then
-  "\$CG" build >/dev/null 2>&1 \\
-    || { echo "code graph: STALE (regen failed - run: codegraph build)"; exit 0; }
+  "\$CG" build --syntax >/dev/null 2>&1 \\
+    || { echo "code graph: STALE (regen failed - run: codegraph build --syntax)"; exit 0; }
 fi
 
 "\$CG" passport 2>/dev/null || echo "code graph fresh (\$GRAPH)."
 echo "relationship questions -> codegraph brief|find|sym|skeleton|wiring|readers (see CLAUDE.md)"
+# Keep one event-driven syntax-graph worker available between commands. Its
+# workspace reservation is exclusive, so concurrent hooks never duplicate it.
+nohup "\$CG" daemon >/dev/null 2>&1 &
 exit 0
 ''';
 
 String _skill(String repoUrl, String version) => '''
 ---
 name: code-map
-description: Query this repo's resolved code graph AND change code through its actuator. One ~1s command answers "where is X", "what uses/watches provider X", "what depends on this file", "who implements this type", "who calls this exact method", "what breaks if I change this", "which tests must run". Renaming anything (method, function, class, enum, mixin)? Use `codegraph rename` FIRST - it edits every real reference or refuses when unsafe. Use at the start of ANY code task here: fixing a bug, investigating behavior, tracing a flow, refactoring, renaming, checking whether a change is safe, planning or reviewing a feature, or finding the file/provider/class/screen for something. Covers lib/ AND packages/*/lib. Reach for it before Grep/Glob/broad file reads and BEFORE hand-editing a rename.
+description: Query this repo's resolved code graph AND change code through its actuator. One subsecond native command answers "where is X", "what uses/watches provider X", "what depends on this file", "who implements this type", "who calls this exact method", "what breaks if I change this", "which tests must run". Renaming anything (method, function, class, enum, mixin)? Use `codegraph rename` FIRST - it edits every real reference or refuses when unsafe. Use at the start of ANY code task here: fixing a bug, investigating behavior, tracing a flow, refactoring, renaming, checking whether a change is safe, planning or reviewing a feature, or finding the file/provider/class/screen for something. Covers lib/ AND packages/*/lib. Reach for it before Grep/Glob/broad file reads and BEFORE hand-editing a rename.
 ---
 <!-- ${_scaffoldStamp(version)} -->
 
@@ -575,15 +585,19 @@ renames) cross-check the graph's answer with grep.
 ## Keep it fresh
 
 A SessionStart hook (`.claude/hooks/code-graph-refresh.sh`) auto-regenerates
-the graph when stale. After adding/moving providers, routes, or files
-mid-session: `codegraph build`.
+the graph when stale and starts one event-driven workspace worker. Check it
+with `codegraph daemon status`; stop it with `codegraph daemon stop`. The
+worker refreshes only the untracked syntax graph and never rewrites committed
+Markdown maps. Use `codegraph build --resolved` when an element-precise
+route/refactor needs it.
 
 ## After upgrading the CLI
 
 When `codegraph upgrade` or `dart pub global activate` brings a newer binary:
 
-1. Run `codegraph build` to regenerate the graph.
-2. Review `docs/maps/LIMITATIONS.md` - merge any new known gaps from the engine
+1. Run `codegraph build --syntax` to regenerate the fast graph.
+2. Run `~/.pub-cache/bin/codegraph install-native` to replace the fast binary.
+3. Review `docs/maps/LIMITATIONS.md` - merge any new known gaps from the engine
    release notes. Upgrade refreshes the skill and hook but never overwrites
    LIMITATIONS.md (it is host-owned).
 
@@ -598,8 +612,9 @@ returns something wrong or incomplete:
    generic wording - no product or vendor SDK names).
 2. Fix the engine in a clone of $repoUrl (`lib/src/engine.dart` extraction,
    `lib/src/query.dart` queries), add a CHANGELOG.md line, commit/tag.
-3. Update the installed CLI: `dart pub global activate -sgit $repoUrl --git-ref v$version`
-4. `codegraph build` here to regenerate with the fix.
+3. Update the source package: `dart pub global activate -sgit $repoUrl --git-ref v$version`
+4. Install its native executable: `~/.pub-cache/bin/codegraph install-native`
+5. `codegraph build --syntax` here to regenerate with the fix.
 
 If instead you learn a reusable *codebase* pattern (not an engine bug), capture
 it as a skill or memory so future sessions inherit it.

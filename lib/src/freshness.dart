@@ -7,15 +7,18 @@
 // (engine.sourceDigest, stats.sourceDigest) plus a stat-only digest
 // (engine.statDigest, stats.statDigest). loadFresh checks the cheap stat
 // digest first; only on mismatch does it pay the full content walk, and on
-// content mismatch or missing graph it rebuilds in place (build is ~2s on a
-// 1.5k-file host) with one stderr line - stdout stays clean, so --json
-// parsing is safe.
+// content mismatch or missing graph it rebuilds in place with the fast syntax
+// extractor. Element-resolution is reserved for the few verbs that need it;
+// paying a whole-workspace analyzer pass to answer `find` after every edit
+// makes normal navigation unusable in large Flutter apps. stdout stays clean,
+// so --json parsing is safe.
 // Opt out with the global `--no-rebuild` flag: it skips the digest walk
 // ENTIRELY (the walk costs more than most queries), so freshness is unknown
 // and every output says "freshness unchecked" instead of claiming fresh.
 
 import 'dart:io';
 
+import 'daemon.dart' as daemon;
 import 'engine.dart' as engine;
 import 'model.dart';
 
@@ -34,36 +37,72 @@ bool lastLoadFresh = true;
 /// UNKNOWN, not asserted - output must say "unchecked", never "fresh".
 bool freshnessChecked = true;
 
-/// CLI preflight that preserves v3's resolved-by-default build policy.
+// The CLI's async preflight and the synchronous verb execute in the same
+// process. Once preflight has proved or rebuilt freshness, let the verb consume
+// that proof instead of walking every source file a second time.
+bool _preflightFresh = false;
+String? _preflightWorkspace;
+
+void _markPreflightFresh() {
+  _preflightFresh = true;
+  _preflightWorkspace = Directory.current.absolute.path;
+}
+
+/// CLI freshness preflight: fast syntax refreshes for navigation, resolved
+/// refreshes only for element-precise operations.
 ///
 /// The query implementations stay synchronous, so their library-level
 /// [loadFresh] fallback remains syntax-only. The async CLI entry point calls
-/// this first: when a rebuild is needed, it can await [engine.buildDefault]
-/// and then the query's normal [loadFresh] call takes the fresh stat-digest
-/// fast path. This avoids converting every query API to Future while ensuring
-/// real CLI use never silently downgrades a resolved graph after an edit.
-Future<void> ensureFreshDefault() async {
+/// this first, then the query's normal [loadFresh] call takes the fresh
+/// stat-digest fast path. This avoids converting every query API to Future
+/// while ensuring
+/// ordinary CLI navigation stays fast after an edit. Element-precise verbs
+/// opt into the resolved path through [requireResolved].
+Future<void> ensureFreshDefault({bool requireResolved = false}) async {
+  _preflightFresh = false;
+  _preflightWorkspace = null;
   if (!autoRebuild) return;
+  // A healthy worker already tracks filesystem events and serializes refreshes
+  // with manual/resolved builds. Ask it first so hot queries avoid walking
+  // every source file merely to rediscover that nothing changed.
+  if (!requireResolved && await daemon.syncIfRunning()) {
+    _markPreflightFresh();
+    return;
+  }
   if (File('docs/maps/code_graph.json').existsSync()) {
     final graph = Graph.load();
     if (graph == null) return;
     final canResolve = File('.dart_tool/package_config.json').existsSync();
-    final wasExplicitSyntax = graph.stats['analysisPolicy'] == 1;
-    if (canResolve && graph.stats['resolvedBuild'] != 1 && !wasExplicitSyntax) {
+    if (requireResolved && canResolve && graph.stats['resolvedBuild'] != 1) {
       stderr.writeln(
         'graph is syntax-only but resolved dependencies are available - '
         'rebuilding',
       );
-      await engine.buildDefault(const []);
+      await engine.buildResolvedRuntime();
+      _markPreflightFresh();
       return;
     }
-    if (graph.stats['statDigest'] == engine.statDigest()) return;
-    if (graph.stats['sourceDigest'] == engine.sourceDigest()) return;
-    stderr.writeln('graph was stale (source changed since build) - rebuilding');
+    if (graph.stats['statDigest'] == engine.statDigest()) {
+      _markPreflightFresh();
+      return;
+    }
+    if (graph.stats['sourceDigest'] == engine.sourceDigest()) {
+      _markPreflightFresh();
+      return;
+    }
+    stderr.writeln(
+      'graph was stale (source changed since build) - '
+      'fast rebuilding${requireResolved ? ' with resolution' : ''}',
+    );
   } else {
-    stderr.writeln('no graph yet - building');
+    stderr.writeln('no graph yet - fast building');
   }
-  await engine.buildDefault(const []);
+  if (requireResolved) {
+    await engine.buildResolvedRuntime();
+  } else {
+    engine.buildRuntime();
+  }
+  _markPreflightFresh();
 }
 
 /// [Graph.load] plus the staleness contract above. Returns null only when
@@ -71,6 +110,15 @@ Future<void> ensureFreshDefault() async {
 Graph? loadFresh() {
   lastLoadFresh = true;
   freshnessChecked = true;
+  if (_preflightFresh &&
+      _preflightWorkspace == Directory.current.absolute.path &&
+      File('docs/maps/code_graph.json').existsSync()) {
+    _preflightFresh = false;
+    _preflightWorkspace = null;
+    return Graph.load();
+  }
+  _preflightFresh = false;
+  _preflightWorkspace = null;
   if (File('docs/maps/code_graph.json').existsSync()) {
     if (!autoRebuild) {
       // The flag's contract: answer from the graph as-is, paying ZERO
@@ -94,6 +142,6 @@ Graph? loadFresh() {
     if (!autoRebuild) return Graph.load(); // prints the standard missing note
     stderr.writeln('no graph yet - building');
   }
-  engine.build(const []);
+  engine.buildRuntime();
   return Graph.load();
 }

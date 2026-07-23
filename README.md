@@ -9,27 +9,27 @@ freshness hook, and a `code-map` skill) into any project.
 
 Answers the questions that otherwise cost an agent many greps and file reads —
 "where is class X", "who watches this provider", "what does this file depend
-on", "who implements this interface", "how do A and B connect" — in about a
-second, with output budgeted to fit an agent's context window.
+on", "who implements this interface", "how do A and B connect" — in a
+subsecond native command, with output budgeted to fit an agent's context window.
 
 ## Install
 
 ```bash
 dart pub global activate -sgit https://github.com/ArinFaraj/codegraph
-# make sure ~/.pub-cache/bin is on PATH
+~/.pub-cache/bin/codegraph install-native
+# make sure ~/.local/bin is on PATH before ~/.pub-cache/bin
 ```
 
 Update later with the same command (or pin a version, for example
-`--git-ref v3.1.0`).
+`--git-ref v3.7.0`), then rerun `~/.pub-cache/bin/codegraph install-native`.
 
-A standalone native binary also works (`dart compile exe bin/codegraph.dart`):
-it discovers the Dart SDK from the `dart` on PATH for resolved analysis, and
-falls back to syntax-only with a note when no SDK is available.
-
-**IMPORTANT:** Always invoke the installed `codegraph` binary directly.
-`dart run` or `dart pub global run` can interleave pub-resolution output into
-stdout (~2s overhead per call), corrupting piped or `--json` usage. Use the
-binary from your PATH.
+Pub's generated launcher invokes `dart pub global run` on every command. On the
+1,578-file KRDPass benchmark that launcher took 1.22-1.33s and peaked near
+294MB for an already-cached query; the installed native executable took
+0.13-0.16s without a daemon. It still discovers the Dart SDK from `dart` on
+PATH for resolved analysis and falls back to syntax-only when no SDK is
+available. Always invoke the native `codegraph` from `~/.local/bin`; reserve
+the pub launcher for installing or updating that executable.
 
 ## Set up a project (once)
 
@@ -37,7 +37,8 @@ binary from your PATH.
 cd my_flutter_project
 codegraph init          # CLAUDE.md block + hook + skill + LIMITATIONS seed
 codegraph init --ci     # also writes a GitHub Actions freshness gate
-codegraph build         # generate docs/maps/
+codegraph build --syntax # generate fast navigation maps
+codegraph daemon         # optional event-driven workspace worker
 codegraph doctor        # verify the install
 # commit CLAUDE.md, .claude/, docs/maps/*.md (code_graph.json is gitignored)
 ```
@@ -87,8 +88,31 @@ codegraph rename <Symbol|Class.method> <new> # element-precise rename incl. a wh
 
 Every answer ends with its scope caveat (what the graph cannot see), every
 not-found states the graph's freshness, and a stale or missing graph rebuilds
-itself automatically (~2s; `--no-rebuild` opts out). Exit codes: 0 answered,
+itself automatically. Normal navigation uses the fast syntax graph; only
+`route`, `rename`, `affected-tests`, and `callers|refs --resolved` pay for
+whole-workspace element resolution (`--no-rebuild` opts out). Exit codes: 0 answered,
 2 ambiguous argument (candidates listed), 64 usage, 66 no graph.
+
+## Optional workspace daemon
+
+`codegraph daemon` is a singleton background worker for the current workspace.
+It watches source changes, debounces save bursts, and refreshes the untracked
+syntax graph before the next query. Fresh commands reuse its state through a
+local loopback socket instead of walking every source file; an exclusive
+workspace reservation and build lock prevent duplicate workers and build
+races. Use `codegraph daemon status` or `codegraph daemon stop` to inspect it.
+
+It intentionally does **not** start another long-lived resolved analyzer beside
+your IDE's Dart language server. Element-precise `route`, `rename`,
+`callers|refs --resolved`, and the safety-critical `affected-tests` plan retain
+their existing one-shot, refusal-safe analysis.
+
+This is event-driven background refresh, not a retained whole-project analyzer
+or a claim of per-file incremental parsing. On the KRDPass benchmark it used
+0.0% CPU while idle, roughly 55-64MB RSS with a 91MB observed peak, and reduced
+a hot native query from 130-160ms to about 80ms. The larger win is
+moving the 1.7s syntax refresh off the first query after an edit. Stop it when
+you prefer zero resident cost; correctness falls back to the one-shot path.
 
 For an **interface/method signature change**, the typical workflow is:
 
@@ -225,14 +249,14 @@ receive the generic graph plus only the deep facts Codegraph can prove.
   matching for providers remains candidate data.
 
 - **SessionStart hook** (installed by `init`): mtime check, regenerates only
-  if stale, then emits a ~450-token project passport at session start, fail-safe
-  `exit 0` on every path. Once per session, zero per-edit cost. Also surfaces
-  any notes files found.
+  if stale with the fast syntax extractor, emits a ~450-token project
+  passport, then starts the singleton event-driven worker. It is fail-safe
+  (`exit 0` on every path) and also surfaces notes files.
 - **CI gate** (`init --ci`): `codegraph check` regenerates and fails the build
   if committed `docs/maps/` drifted (excludes notes/ and JSON).
-- **Rejected: per-edit (PostToolUse) regen** — seconds of latency on every
-  edit for marginal freshness benefit. Don't re-propose it; see
-  `CHANGELOG.md`.
+- **Rejected: synchronous per-edit (PostToolUse) regen** — seconds added to the
+  edit path for marginal freshness benefit. The daemon is different: filesystem
+  events are debounced and refresh the untracked index asynchronously.
 
 ## Roadmap
 

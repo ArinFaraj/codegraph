@@ -3,7 +3,7 @@ description: >-
   Analyzer-built code graph + query CLI so AI agents can navigate a
   Flutter/Riverpod codebase without grepping. Ships an `init` command that
   installs the agent trigger layer (CLAUDE.md block, session hook, skill).
-version: 3.6.0
+version: 3.7.0
 homepage: https://github.com/ArinFaraj/codegraph
 repository: https://github.com/ArinFaraj/codegraph
 issue_tracker: https://github.com/ArinFaraj/codegraph/issues

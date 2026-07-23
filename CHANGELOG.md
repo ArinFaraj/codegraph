@@ -3,6 +3,39 @@
 Design history - including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## 3.7.0 - 2026-07-23 - native hot path and one event worker
+
+- **The supported install now has a real native executable.** Pub's generated
+  launcher calls `dart pub global run` on every invocation. On the 1,578-file
+  KRDPass host that took 1.22-1.33s and peaked near 294MB for a hot query,
+  while `codegraph install-native` produced a 0.13-0.16s one-shot executable.
+  The global package remains the source/update channel; the executable is
+  installed atomically to `~/.local/bin/codegraph`.
+- **Normal navigation no longer triggers whole-workspace resolved analysis
+  after every edit.** Syntax refresh is sufficient for retrieval verbs.
+  Exact operations (`route`, `rename`, `affected-tests`, and explicit resolved
+  callers/refs) retain the analyzer-backed path and all refusal guarantees.
+- **One event-driven worker may refresh the untracked syntax index between
+  commands.** It uses filesystem events, save-burst debounce, a loopback sync
+  protocol, periodic reconciliation, stale-PID/token checks, and one exclusive
+  workspace reservation. It does not keep another resolved analyzer beside
+  the IDE and does not claim per-file incremental parsing. Measured KRDPass
+  idle cost is 0.0% CPU and roughly 55-64MB RSS (91MB observed peak); hot native
+  queries fall from 130-160ms to about 80ms, with the larger benefit being that
+  the 1.7s syntax refresh happens before the next query.
+- **Background refreshes cannot corrupt deliberate builds.** A cross-process
+  build lock serializes syntax, resolved, and daemon builds; a queued runtime
+  refresh rechecks the graph after acquiring the lock so it cannot downgrade a
+  newer resolved graph or delete its refactor index. Machine-graph publication
+  is atomic. Runtime refreshes never rewrite committed Markdown maps.
+- **Rejected implementation:** a first polling prototype walked the full
+  workspace every 400ms, used about 14% CPU while idle, rebuilt on fresh
+  startup, and dirtied committed maps. The shipped worker uses events plus a
+  low-frequency safety reconciliation, skips fresh startup builds, and writes
+  only the ignored JSON graph.
+- The still-planned transactional change engine moves from the reserved 3.7
+  plan number to 3.8; no transaction-engine behavior is claimed by this release.
+
 ## 3.6.0 - 2026-07-21 - provider (top-level variable) renames
 
 - **The actuator renames final top-level variables - the Riverpod provider

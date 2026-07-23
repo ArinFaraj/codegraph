@@ -13,6 +13,7 @@ without breaking it. [`BRD-actuator.md`](BRD-actuator.md) is the north star;
 | 3.1 **Rename actuator MVP** | Shipped in v3.0.0 | [3.1-actuator-rename.md](3.1-actuator-rename.md) | Dry-run/apply renames with whole-hierarchy support and strict refusal gates |
 | 3.2 **Persistent semantic index** | Implemented (incl. cancellation + Stage A harness) | [3.2-agent-impact-and-resolved-session.md](3.2-agent-impact-and-resolved-session.md) | Graph-speed semantic operations; prevalidated, rollback-backed, cancellable rename apply; the agent-impact benchmark harness |
 | 3.3 **Typed route topology** | Implemented | this roadmap + changelog | Resolved annotation trees, reusable placements, paths, shells/branches, navigators, redirects, route query, and impact edges |
+| 3.7 **Native hot path + event worker** | Implemented | changelog | Native install removes pub startup; singleton event worker refreshes only the untracked syntax index |
 
 The old retrieval usefulness and performance suites remain regression gates.
 They are no longer the definition of product success.
@@ -71,10 +72,12 @@ The execution sequence continues the safety work started in
 7. **Consider P3 data flow later.** Lifecycle and value-flow analysis begins
    only after the actuator shows a large, repeatable agent-quality delta.
 
-A warm worker is no longer the first optimization. Persistent identities reuse
-the expensive resolved work without process lifecycle, memory, or invalidation
-complexity. Reconsider a daemon only for operations that cannot be represented
-as a deterministic build artifact.
+The production benchmark kept resolved analysis out of the resident worker:
+its measured floor remains too expensive and the persistent semantic index
+already reuses exact identities. A small event worker now handles only the
+untracked syntax graph. It does not retain analyzer contexts or claim per-file
+incrementality; its purpose is to move the 1.7s syntax refresh out of the first
+post-edit query while preserving one-shot resolved refusal gates.
 
 ## Shipped and superseded plans
 

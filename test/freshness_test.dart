@@ -102,7 +102,7 @@ void main() {
     expect(graph!.stats['sourceDigest'], engine.sourceDigest());
   });
 
-  test('CLI freshness preflight keeps resolved analysis after a stale rebuild',
+  test('CLI freshness preflight uses the fast syntax rebuild after an edit',
       () async {
     writeFixturePackageConfig(tempDir);
     await engine.buildDefault(const []);
@@ -113,20 +113,14 @@ void main() {
     final g = jsonDecode(
       File('docs/maps/code_graph.json').readAsStringSync(),
     ) as Map<String, dynamic>;
-    final resolvedSubtypeEdges = (g['edges'] as List)
-        .cast<Map<String, dynamic>>()
-        .where((e) =>
-            e['rel'] == 'implements/extends' && e['confidence'] == 'resolved')
-        .length;
-    expect(resolvedSubtypeEdges, greaterThan(0),
-        reason: 'an automatic rebuild in a configured host must not silently '
-            'replace its resolved graph with a syntax-only graph');
+    expect((g['stats'] as Map)['resolvedBuild'], 0,
+        reason: 'ordinary navigation must not pay for a whole resolved pass');
     expect(graphHasSymbol('FreshnessCanary'), isTrue);
   });
 
-  test('CLI freshness upgrades an automatic syntax fallback after pub get',
+  test('CLI freshness upgrades to resolved only when a verb requires it',
       () async {
-    await engine.buildDefault(const []);
+    engine.build(const [], analysisPolicy: 'auto');
     var g = jsonDecode(
       File('docs/maps/code_graph.json').readAsStringSync(),
     ) as Map<String, dynamic>;
@@ -139,8 +133,66 @@ void main() {
     g = jsonDecode(
       File('docs/maps/code_graph.json').readAsStringSync(),
     ) as Map<String, dynamic>;
+    expect((g['stats'] as Map)['resolvedBuild'], 0,
+        reason: 'a normal query keeps the fast graph even after pub get');
+
+    final markdownBefore = {
+      for (final file in Directory('docs/maps')
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.md')))
+        file.path: file.readAsBytesSync(),
+    };
+    await freshness.ensureFreshDefault(requireResolved: true);
+
+    g = jsonDecode(
+      File('docs/maps/code_graph.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
     expect((g['stats'] as Map)['resolvedBuild'], 1);
     expect((g['stats'] as Map)['resolvedFiles'], greaterThan(0));
+    for (final entry in markdownBefore.entries) {
+      expect(File(entry.key).readAsBytesSync(), entry.value,
+          reason: 'query-time resolution must not churn ${entry.key}');
+    }
+
+    engine.buildRuntime();
+    g = jsonDecode(
+      File('docs/maps/code_graph.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
+    expect((g['stats'] as Map)['resolvedBuild'], 1,
+        reason: 'a queued runtime refresh must not downgrade a fresh '
+            'resolved graph');
+    expect(File('docs/maps/refactor_index.json').existsSync(), isTrue,
+        reason: 'preserving the resolved graph also preserves its exact '
+            'refactor identities');
+  });
+
+  test('runtime refresh updates only the machine graph', () {
+    engine.build(const []);
+    final markdownBefore = {
+      for (final file in Directory('docs/maps')
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.md')))
+        file.path: file.readAsBytesSync(),
+    };
+
+    addCanaryClass();
+    engine.buildRuntime();
+
+    expect(graphHasSymbol('FreshnessCanary'), isTrue);
+    for (final entry in markdownBefore.entries) {
+      expect(File(entry.key).readAsBytesSync(), entry.value,
+          reason: '${entry.key} must not churn during an edit-time refresh');
+    }
+    expect(
+      Directory('docs/maps')
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.tmp')),
+      isEmpty,
+      reason: 'atomic graph publication must not leave temporary files',
+    );
   });
 
   test('loadFresh builds when no graph exists yet', () {

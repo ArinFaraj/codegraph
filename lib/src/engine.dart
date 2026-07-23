@@ -1662,7 +1662,24 @@ class _TestFileRecord {
 
 /// `codegraph build [lib/<area>]` — regenerate graph + all area maps
 /// (+ a scoped map when a directory is given).
-void build(List<String> args, {String analysisPolicy = 'syntax'}) {
+void build(
+  List<String> args, {
+  String analysisPolicy = 'syntax',
+  bool writeHumanMaps = true,
+}) =>
+    _withBuildLock(
+      () => _buildSyntax(
+        args,
+        analysisPolicy: analysisPolicy,
+        writeHumanMaps: writeHumanMaps,
+      ),
+    );
+
+void _buildSyntax(
+  List<String> args, {
+  required String analysisPolicy,
+  bool writeHumanMaps = true,
+}) {
   final positional = args.where((a) => !a.startsWith('--')).toList();
   final pkgs = _buildSetup();
   // A syntax build cannot prove element identity. Never leave an older
@@ -1683,16 +1700,51 @@ void build(List<String> args, {String analysisPolicy = 'syntax'}) {
     pkgs,
     analysisMode: 'syntax',
     analysisPolicy: analysisPolicy,
+    writeHumanMaps: writeHumanMaps,
+  );
+}
+
+/// Refreshes only the untracked machine index used by interactive queries.
+/// The daemon must never churn committed area maps while a developer edits.
+void buildRuntime() => _withBuildLock(() {
+      // Another command may have completed while this refresh waited for the
+      // lock. Preserve that newer graph (especially a resolved graph and its
+      // refactor index) instead of blindly downgrading it back to syntax.
+      final graph =
+          File('docs/maps/code_graph.json').existsSync() ? Graph.load() : null;
+      if (graph?.stats['statDigest'] == statDigest()) return;
+      final preserveExplicitSyntax = graph?.stats['analysisPolicy'] == 1;
+      _buildSyntax(
+        const [],
+        analysisPolicy: preserveExplicitSyntax ? 'syntax' : 'auto',
+        writeHumanMaps: false,
+      );
+    });
+
+/// Refreshes the ignored graph and refactor index for an exact operation
+/// without rewriting committed Markdown maps.
+Future<void> buildResolvedRuntime() async {
+  if (!File('.dart_tool/package_config.json').existsSync()) {
+    buildRuntime();
+    return;
+  }
+  await _withBuildLockAsync(
+    () => _buildResolved(
+      const [],
+      analysisPolicy: 'auto',
+      writeHumanMaps: false,
+    ),
   );
 }
 
 /// Builds with the best analysis mode available to the host.
 ///
 /// This is the single v3 policy entry point used by the explicit `build`
-/// command, query freshness preflight, and CI `check`: resolved analysis when
-/// package configuration exists, syntax-only when it does not, or syntax-only
-/// when the caller explicitly passes `--syntax`. Keeping the choice here
-/// prevents background rebuilds from silently downgrading a resolved graph.
+/// command, exact-operation freshness preflight, and CI `check`: resolved
+/// analysis when package configuration exists, syntax-only when it does not,
+/// or syntax-only when the caller explicitly passes `--syntax`. Normal
+/// navigation freshness intentionally uses [buildRuntime] so post-edit
+/// queries do not pay the whole-workspace resolution cost.
 Future<void> buildDefault(List<String> args) async {
   final wantSyntax = args.contains('--syntax');
   final hasPkgConfig = File('.dart_tool/package_config.json').existsSync();
@@ -1721,6 +1773,15 @@ Future<void> buildDefault(List<String> args) async {
 Future<void> buildResolved(
   List<String> args, {
   String analysisPolicy = 'resolved',
+}) =>
+    _withBuildLockAsync(
+      () => _buildResolved(args, analysisPolicy: analysisPolicy),
+    );
+
+Future<void> _buildResolved(
+  List<String> args, {
+  required String analysisPolicy,
+  bool writeHumanMaps = true,
 }) async {
   final positional = args.where((a) => !a.startsWith('--')).toList();
   final pkgs = _buildSetup();
@@ -1743,7 +1804,7 @@ Future<void> buildResolved(
     }
     stderr.writeln('note: $unavailable');
     stderr.writeln('note: building syntax-only instead.');
-    build(args, analysisPolicy: 'auto');
+    _buildSyntax(args, analysisPolicy: 'auto');
     return;
   }
   _emitBuild(
@@ -1752,6 +1813,7 @@ Future<void> buildResolved(
     pkgs,
     analysisMode: 'resolved',
     analysisPolicy: analysisPolicy,
+    writeHumanMaps: writeHumanMaps,
   );
   result.index.write();
   stderr.writeln(
@@ -1759,6 +1821,38 @@ Future<void> buildResolved(
     '(${result.index.declarations.length} declarations, '
     '${result.index.references.length} references)',
   );
+}
+
+const _buildLockPath = '.dart_tool/codegraph/build.lock';
+
+T _withBuildLock<T>(T Function() work) {
+  final lockFile = File(_buildLockPath)..parent.createSync(recursive: true);
+  final handle = lockFile.openSync(mode: FileMode.append);
+  try {
+    handle.lockSync(FileLock.exclusive);
+    return work();
+  } finally {
+    try {
+      handle.unlockSync();
+    } finally {
+      handle.closeSync();
+    }
+  }
+}
+
+Future<T> _withBuildLockAsync<T>(Future<T> Function() work) async {
+  final lockFile = File(_buildLockPath)..parent.createSync(recursive: true);
+  final handle = lockFile.openSync(mode: FileMode.append);
+  try {
+    handle.lockSync(FileLock.exclusive);
+    return await work();
+  } finally {
+    try {
+      handle.unlockSync();
+    } finally {
+      handle.closeSync();
+    }
+  }
 }
 
 /// Shared build preamble: guard the package root and reset the per-run
@@ -1871,6 +1965,7 @@ void _emitBuild(
   _PkgContext pkgs, {
   required String analysisMode,
   required String analysisPolicy,
+  bool writeHumanMaps = true,
 }) {
   // Group by name (not last-write-wins) so shared names survive to the
   // resolver below; see CHANGELOG: duplicate provider name misattribution.
@@ -1944,6 +2039,10 @@ void _emitBuild(
     'nav resolution: ${written.navResolved}/${written.navTotal} '
     'navigate edges resolved',
   );
+  if (!writeHumanMaps) {
+    _reportParseErrors();
+    return;
+  }
   attention.writeAttentionMd(graph);
   stderr.writeln('wrote docs/maps/ATTENTION.md');
 
@@ -1987,13 +2086,16 @@ void _emitBuild(
   // may be incomplete or wrong without any other signal - this is the one
   // place that gets surfaced. Deterministic (sorted), stderr only, no effect
   // on the graph itself.
-  if (_parseErrorFiles.isNotEmpty) {
-    final sorted = _parseErrorFiles.toSet().toList()..sort();
-    stderr.writeln(
-      'note: ${sorted.length} files had parse errors - their extraction may '
-      'be incomplete (worst: ${sorted.first})',
-    );
-  }
+  _reportParseErrors();
+}
+
+void _reportParseErrors() {
+  if (_parseErrorFiles.isEmpty) return;
+  final sorted = _parseErrorFiles.toSet().toList()..sort();
+  stderr.writeln(
+    'note: ${sorted.length} files had parse errors - their extraction may '
+    'be incomplete (worst: ${sorted.first})',
+  );
 }
 
 // Scope for both check() git diff calls: docs/maps/ excluding docs/maps/notes/
@@ -2335,8 +2437,8 @@ int check({bool rebuild = true}) {
     edges: edges,
   );
   final out = File('docs/maps/code_graph.json');
-  out.parent.createSync(recursive: true);
-  out.writeAsStringSync(
+  _atomicWrite(
+    out,
     const JsonEncoder.withIndent('  ').convert(graph.toJson()),
   );
   stderr.writeln(
@@ -2361,4 +2463,17 @@ int check({bool rebuild = true}) {
     navResolved: navResolvedCount,
     navTotal: navResolvedTotal,
   );
+}
+
+void _atomicWrite(File target, String content) {
+  target.parent.createSync(recursive: true);
+  final temporary = File(
+    '${target.path}.$pid-${DateTime.now().microsecondsSinceEpoch}.tmp',
+  );
+  try {
+    temporary.writeAsStringSync(content, flush: true);
+    temporary.renameSync(target.path);
+  } finally {
+    if (temporary.existsSync()) temporary.deleteSync();
+  }
 }
