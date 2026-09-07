@@ -5,7 +5,6 @@
 // that affected closure with each test entrypoint's local import/helper closure.
 // Any evidence gap expands to workspace-wide test commands; uncertainty can
 // add work, never remove it.
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/utilities.dart';
@@ -1247,7 +1246,7 @@ int run(List<String> args) {
 
   if (changes.isEmpty) {
     if (asJson) {
-      stdout.writeln(jsonEncode({
+      emitJson({
         ...envelope('affected-tests', base ?? 'explicit paths'),
         'scope': 'none',
         'mode': 'none',
@@ -1260,7 +1259,7 @@ int run(List<String> args) {
         'totalTestCount': 0,
         'commands': const [],
         'uncertainties': const [],
-      }));
+      });
     } else {
       stdout.writeln('no changes; no affected test command needed');
     }
@@ -1274,7 +1273,7 @@ int run(List<String> args) {
     mergeBase: mergeBase,
   );
   if (asJson) {
-    stdout.writeln(jsonEncode(plan.toJson(budget: budget)));
+    emitJson(plan.toJson(budget: budget));
     return 0;
   }
 

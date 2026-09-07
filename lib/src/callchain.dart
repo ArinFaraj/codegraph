@@ -12,7 +12,6 @@
 // traversal (cycle-guarded, depth-capped). Syntax-only, so callees resolve by
 // NAME: a callee with one repo declaration is followed; an ambiguous name is
 // shown but not guessed into; an unresolved name (SDK/external) is a leaf.
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/utilities.dart';
@@ -261,7 +260,7 @@ int run(List<String> args) {
   }
 
   if (asJson) {
-    stdout.writeln(jsonEncode({
+    emitJson({
       ...envelope('callchain', symbol),
       'depth': depth,
       'resolution': 'name-based (approximate; not type-resolved)',
@@ -273,7 +272,7 @@ int run(List<String> args) {
       },
       'roots': jsonRoots,
       if (truncated) 'truncated': true,
-    }));
+    });
     return 0;
   }
 

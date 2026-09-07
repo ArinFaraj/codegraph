@@ -5,7 +5,10 @@
 //   - every edit task's oracle FAILS on the untouched workspace (non-vacuous)
 //     and PASSES after the scripted reference edit, which also stays green
 //     (completable);
-//   - every refusal task's premise actually holds in the fixture.
+//   - every refusal task's premise actually holds in the fixture;
+//   - the analyzer's paired-discordance statistic (honesty rule 7) counts the
+//     pairs it claims to, since a wrong power number would license exactly the
+//     campaign it exists to stop.
 import 'dart:io';
 
 import 'package:test/test.dart';
@@ -126,5 +129,37 @@ void main() {
         expect(t.referenceEdit, isNotEmpty, reason: t.id);
       }
     }
+  });
+
+  test('paired discordance counts pairs, not attempts', () {
+    // 4 paired outcomes: two agree, two differ. An arm delta larger than 50pp
+    // is arithmetically impossible on this shape whatever the rates say, and
+    // that is the number the analyzer has to print.
+    final dir = Directory.systemTemp.createTempSync('cg_discordance_');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/r.jsonl')
+      ..writeAsStringSync([
+        '{"task":"a","kind":"edit","arm":"baseline","run":0,"success":true,"wallMs":1000}',
+        '{"task":"a","kind":"edit","arm":"codegraph","run":0,"success":true,"wallMs":1000}',
+        '{"task":"a","kind":"edit","arm":"baseline","run":1,"success":false,"wallMs":1000}',
+        '{"task":"a","kind":"edit","arm":"codegraph","run":1,"success":true,"wallMs":1000}',
+        '{"task":"b","kind":"refusal","arm":"baseline","run":0,"success":true,"wallMs":1000}',
+        '{"task":"b","kind":"refusal","arm":"codegraph","run":0,"success":true,"wallMs":1000}',
+        '{"task":"b","kind":"refusal","arm":"baseline","run":1,"success":true,"wallMs":1000}',
+        '{"task":"b","kind":"refusal","arm":"codegraph","run":1,"success":false,"wallMs":1000}',
+        // An unpaired attempt must not inflate the denominator.
+        '{"task":"c","kind":"edit","arm":"codegraph","run":0,"success":true,"wallMs":1000}',
+      ].join('\n'));
+
+    final result = Process.runSync(
+      'dart',
+      ['run', 'benchmarks/agent_impact/analyze.dart', file.path],
+    );
+    expect(result.exitCode, 0, reason: result.stderr as String);
+    final out = result.stdout as String;
+    expect(out, contains('4 paired outcomes, 2 discordant (50.0%)'));
+    expect(out, contains('max expressible effect 50.0pp'));
+    expect(out, contains('edit tasks  : 2 paired outcomes, 1 discordant'));
+    expect(out, contains('refusal task: 2 paired outcomes, 1 discordant'));
   });
 }

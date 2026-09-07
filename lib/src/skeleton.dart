@@ -5,14 +5,13 @@
 // query.dart itself stays dart:core/convert/io only — it must run fast and
 // without a fresh parse for every other verb, which only reads the
 // pre-built graph JSON.
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 
 import 'cli_util.dart'
-    show emit, envelope, freshnessClause, intFlag, positionalArgs;
+    show emit, emitJson, envelope, freshnessClause, intFlag, positionalArgs;
 import 'freshness.dart';
 import 'model.dart';
 import 'resolve.dart';
@@ -131,15 +130,13 @@ int run(List<String> args) {
 
   if (asJson) {
     final capped = lines.take(budget).toList();
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('skeleton', arg),
-        'file': path,
-        'lines': lineCount,
-        'declarations': capped,
-        if (lines.length > budget) 'truncated': lines.length - budget,
-      }),
-    );
+    emitJson({
+      ...envelope('skeleton', arg),
+      'file': path,
+      'lines': lineCount,
+      'declarations': capped,
+      if (lines.length > budget) 'truncated': lines.length - budget,
+    });
     return 0;
   }
 

@@ -59,6 +59,7 @@ codegraph change <thing>       # what must change if I touch X - dependents + su
                                #   + state-type follow-ups + untested-in-blast-radius
 codegraph review [--base ref]  # is my branch safe - blast radius, untested, lint violations
 codegraph affected-tests       # explain targeted tests; uncertainty expands to full suites
+codegraph trace <file|->       # a stack trace's frames -> declarations, external frames marked
 codegraph health               # where to start - triage, dead-code and coverage candidates
 codegraph plan <feature-dir>   # build-order plan from an exemplar feature
 codegraph route <RouteData>    # full typed route card: placements/paths,
@@ -70,6 +71,7 @@ Low-level verbs (the intent verbs compose these; all still work directly):
 ```bash
 codegraph brief|sym|skeleton|readers|callers|refs|callchain|wiring|route|impls|path
 codegraph unused|untested|impact|diff|affected-tests|passport|attention|doctor
+codegraph trace <file|->        # resolve a stack trace's frames to declarations, one call
 ```
 
 Resolved analysis (v3): `build` uses the analyzer's element model by default
@@ -124,7 +126,28 @@ codegraph find <field/token>   # lifecycle helpers if a field moved
 ```
 
 ~1s per query. Output is line-budgeted (`--budget N`, default 80) so it fits an
-agent's context. The graph spans `lib/` **and** every local package under
+agent's context.
+
+Every answer states what it cost and how much to trust it:
+
+- **`cost: ~N tok`** closes each text answer, and `--json` carries `estTokens`
+  in the record (chars/4, the same estimate `INDEX.md`'s token column uses, and
+  it counts its own digits). An agent that has to spend a call to learn what a
+  call costs cannot budget; this is the number it needs, in the answer.
+- **`confidence:`** on `find` grades the RANKING, not the answer: `high` means
+  the top hit stands clear of the next under the in-degree sort, and a flat
+  result reports `low` with the size of the tie (`3 hits tied at the top, order
+  past them is arbitrary`) so a starting point is not read as a verdict. An
+  exact unique name match is decisive by construction. `--json` carries
+  `confidence`, `marginPct` and `tiedAtTop`.
+- **`~N`** beside `·N⇐` on `impact`, `change` and `review` lines is commits
+  touching that file in the last 90 days. Widely imported and frequently edited
+  are different kinds of risk and the file carrying both is the one to review
+  first. Verb output only - churn never enters committed artifacts, where a
+  sliding window would break `check()`'s byte-identical gate (doctrine 2).
+
+Footers (cost, confidence, caveat) sit outside `--budget`: disclosure a small
+budget could silence would fail exactly when the caller can least afford it. The graph spans `lib/` **and** every local package under
 `packages/*/lib` (resolved via the host pubspec's `path:` dependencies, so
 stray backup copies of a package are excluded); the host package name is read
 from `pubspec.yaml`, so no per-project config is needed. Imports, types,
@@ -177,9 +200,9 @@ argv arrays are executable contracts. Other verbs use the standard envelope:
 ```
 
 Budgets cap the TOTAL results across all sections, so `--budget N` limits the
-combined output. Verbs supporting `--json`: `find`, `readers`, `wiring`,
-`route`, `impls`, `sym`, `skeleton`, `untested`, `impact`, `diff`,
-`affected-tests`.
+combined output. Every `--json` record carries `estTokens`. Verbs supporting
+`--json`: `find`, `readers`, `wiring`, `route`, `impls`, `sym`, `skeleton`,
+`untested`, `impact`, `diff`, `trace`, `affected-tests`.
 
 ## What the graph captures
 

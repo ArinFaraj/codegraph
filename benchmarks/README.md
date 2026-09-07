@@ -47,6 +47,13 @@ external contracts or ambiguous targets are refused.
    starts passing, it is promoted in the engine-fix commit.
 6. A selection benchmark may claim zero unsafe misses only when it executes
    the mutated program's complete test universe; set-only oracles must say so.
+7. **Publish paired discordance before reading any arm delta.** An A/B
+   endpoint where the arms agree on nearly every paired outcome cannot express
+   a large effect, whatever the aggregate rates look like: if 8.3% of pairs
+   differ, no arm effect above 8.3pp exists to be found. `analyze.dart` prints
+   it per kind, first, above the summary. Read it before the delta, and do not
+   fund another round of an endpoint whose ceiling is already below the gate
+   it has to clear.
 
 ## Comparability note
 

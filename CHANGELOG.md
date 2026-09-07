@@ -3,6 +3,73 @@
 Design history - including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## 3.8.0 - 2026-09-07 - every answer states its cost, and the benchmark states its power
+
+Ideas taken from a review of redhat-et/ripwire (`ripwire-review.md`); its
+engine is tree-sitter and name-based, which this repo rejected for good
+reasons, but its output contract and its measurement discipline were ahead of
+ours in four specific places.
+
+- **Every answer reports what it cost.** Text answers close with
+  `cost: ~N tok`; every `--json` record carries `estTokens`, counting its own
+  digits so the number describes the string actually printed. chars/4, the
+  same estimate `INDEX.md` already used. An agent that must spend a call to
+  learn what a call costs cannot budget.
+- **`find` reports how separated its top hit is.** `confidence` grades the
+  RANKING, not the answer: a flat result says `low` and names the tie
+  (`3 hits tied at the top, order past them is arbitrary`) rather than letting
+  an alphabetical list past rank 1 read as a ranking. An exact unique name
+  match is decisive by construction, since in-degree separation says nothing
+  about it. `--json` carries `confidence`, `marginPct`, `tiedAtTop`.
+- **Footers sit outside `--budget`.** Cost, confidence and caveat are
+  disclosure; a small budget must not be able to silence them. `--budget`
+  caps the answer.
+- **Churn beside in-degree on `impact`, `change` and `review`.** `~N` is
+  commits touching that file in 90 days. Widely imported and frequently edited
+  are different risks and the file with both is the one to review first. Verb
+  output only - doctrine 2 keeps a sliding window out of committed artifacts,
+  where it would break `check()`'s byte-identical gate. Degrades to no suffix
+  with no git, no repo, or no history: churn annotates, never gates.
+  `--no-renames` is deliberate and costed: rename detection tripled the call
+  on a 2,829-commit host (0.16s against 0.05s) and git abandons it there
+  anyway ("exhaustive rename detection was skipped"), so the accurate-looking
+  option is both slower and inconsistent between repositories. The stated
+  consequence is that a file's churn restarts when it moves.
+- **New verb `trace <file|->`.** Resolves a Dart/Flutter stack trace's frames
+  to declarations in one call - package and file URIs mapped to workspace
+  paths through the graph, closure suffixes collapsed to their enclosing
+  declaration, declaration line, in-degree and churn per frame, and the
+  innermost frame that is actually this project's. Frames outside the indexed
+  tree are marked `external`, never dropped: a frame the graph cannot place is
+  one the reader must not assume is irrelevant.
+- **Benchmarks honesty rule 7: publish paired discordance before any arm
+  delta.** `analyze.dart` prints it per kind, above the summary, with the
+  ceiling it implies. On the campaigns already recorded this changes what the
+  evidence says: edit-task discordance is 8.3% in `campaign-v2-v35` (ceiling
+  8.3pp against a >= 20pp gate) and 0.0% in `campaign-devin-swe17` - both arms
+  produced identical outcomes on all 24 paired instance-seeds, so that run
+  could not have detected any effect at all. Refusals discriminate (25.0%
+  discordance, every discordant pair to the treatment). Re-running edit
+  success at this scale measures a number that cannot pass its own gate.
+- **The value endpoint is cost per successful task**, now printed:
+  `campaign-v2-v35` cost 358,800 prompt tokens and 76.7s per solved task in
+  the codegraph arm against 248,704 and 57.9s in the baseline. The claim this
+  evidence supports is safety at a cost premium, not speed and not success
+  rate. ROADMAP doctrine 8 and item 6 restated accordingly.
+
+### Not taken (do not re-propose without a new trigger)
+
+- **Tree-sitter extraction** - already rejected here; ripwire's own honesty
+  contract (name-based resolution cannot see dynamic dispatch, escalate to a
+  compiler index via `--scip`) is the argument for the rejection. This tool
+  starts from the compiler index.
+- **MCP server mode** - ripwire ships one and argues against registering it by
+  default, on the resident-schema-cost grounds this CHANGELOG already gives.
+  Independent agreement with a rejection is not a trigger to revisit it.
+- **PageRank / BM25 `locate` / embedding search** - ripwire measures PageRank
+  at 3.8% recall@5 for co-change against 40.3% for plain lexical, and reports
+  that fusing them made it worse. Evidence to keep these deferred.
+
 ## 3.7.1 - 2026-07-23 - stable performance gate
 
 - The cross-run baseline no longer fails when the intentionally slow,

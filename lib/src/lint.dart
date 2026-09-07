@@ -365,7 +365,7 @@ int run(List<String> args) {
   if (asJson) {
     final remaining = Budget(budget);
     final shown = remaining.take(violations);
-    stdout.writeln(jsonEncode({
+    emitJson({
       'verb': 'lint',
       'violations': shown
           .map((v) => {
@@ -380,7 +380,7 @@ int run(List<String> args) {
       'stale': stale.length,
       'ok': violations.isEmpty,
       if (remaining.truncated) 'truncated': true,
-    }));
+    });
     return violations.isEmpty ? 0 : 1;
   }
 

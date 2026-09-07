@@ -20,7 +20,6 @@
 // Never-guess: every line is structure the graph STATES (files, roles,
 // symbols, declares/watches/reads/listens/navigates edges). No file the new
 // feature "should" have beyond the exemplar's own roles is invented.
-import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
@@ -614,7 +613,7 @@ int _json(Graph graph, String prefix, List<GraphNode> files, int cap) {
       .toList()
     ..sort();
 
-  stdout.writeln(jsonEncode({
+  emitJson({
     'verb': 'blueprint',
     'feature': feature,
     'files': files.length,
@@ -637,6 +636,6 @@ int _json(Graph graph, String prefix, List<GraphNode> files, int cap) {
     'studyThese': _studyThese(files),
     'decisions': _openQuestions(files),
     if (budget.truncated) 'truncated': true,
-  }));
+  });
   return 0;
 }

@@ -2,7 +2,6 @@
 // breaks if `<thing>` changes. Same resolve UX as `wiring`/`skeleton`/`path`
 // (exact provider name, else unique file substring), then BFS outward over
 // the reverse of imports/provider interactions/declares.
-import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
@@ -69,10 +68,11 @@ Set<String> dependentsOf(Graph g, Set<String> nodeIds) {
   return out;
 }
 
-String _renderFile(Graph g, GraphNode n) {
+String _renderFile(Graph g, GraphNode n, Map<String, int> churn) {
   final bare = n.id.replaceFirst('file:', '');
   final role = n.role == 'view' ? ' [view]' : '';
-  return '  $bare$role${inDegSuffix(g.inDeg[n.id] ?? 0)}';
+  return '  $bare$role${inDegSuffix(g.inDeg[n.id] ?? 0)}'
+      '${churnSuffix(churn, bare)}';
 }
 
 /// Level-by-level dependents BFS from [seed] (providers participate only at
@@ -114,14 +114,18 @@ List<String> renderImpactLines(
 }) {
   final allFiles = sortedLevels.expand((ns) => ns).toList();
   final pages = allFiles.where((n) => n.role == 'view').length;
+  final churn = churnByPath();
   final out = <String>['impact of $arg  (depth $depth)'];
   if (depthWarning != null) out.add(depthWarning);
   out.add('affected: ${allFiles.length} files ($pages pages) at depth<=$depth');
+  if (churn.isNotEmpty) {
+    out.add('(·N⇐ = files importing it; ~N = commits touching it in 90d)');
+  }
   for (var i = 0; i < sortedLevels.length; i++) {
     final ns = sortedLevels[i];
     out.add('');
     out.add('depth ${i + 1} (${ns.length}):');
-    out.addAll(ns.take(15).map((n) => _renderFile(graph, n)));
+    out.addAll(ns.take(15).map((n) => _renderFile(graph, n, churn)));
     if (ns.length > 15) out.add('  … ${ns.length - 15} more');
   }
   return out;
@@ -188,29 +192,29 @@ int run(List<String> args) {
     // used it up (so `summary.files` said 306 while `levels` listed ~80; found
     // by an A/B eval). `truncated` set if any level exceeded its cap.
     var truncatedAny = false;
+    final churn = churnByPath();
     final jsonLevels = sortedLevels.map(
       (ns) {
         if (ns.length > budget) truncatedAny = true;
-        return ns
-            .take(budget)
-            .map((n) => {
-                  'file': n.id.replaceFirst('file:', ''),
-                  'role': n.role,
-                  'inDeg': graph.inDeg[n.id] ?? 0,
-                })
-            .toList();
+        return ns.take(budget).map((n) {
+          final path = n.id.replaceFirst('file:', '');
+          return {
+            'file': path,
+            'role': n.role,
+            'inDeg': graph.inDeg[n.id] ?? 0,
+            if (churn[path] != null) 'churn90d': churn[path],
+          };
+        }).toList();
       },
     ).toList();
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('impact', arg),
-        'depth': depth,
-        if (depthWarning != null) 'requestedDepth': requestedDepth,
-        'summary': {'files': allFiles.length, 'pages': pages},
-        'levels': jsonLevels,
-        if (truncatedAny) 'truncated': true,
-      }),
-    );
+    emitJson({
+      ...envelope('impact', arg),
+      'depth': depth,
+      if (depthWarning != null) 'requestedDepth': requestedDepth,
+      'summary': {'files': allFiles.length, 'pages': pages},
+      'levels': jsonLevels,
+      if (truncatedAny) 'truncated': true,
+    });
     return 0;
   }
 

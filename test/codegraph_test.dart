@@ -13,6 +13,7 @@ import 'package:codegraph/src/init.dart' as scaffold;
 import 'package:codegraph/src/lint.dart' as lint;
 import 'package:codegraph/src/model.dart';
 import 'package:codegraph/src/query.dart' as query;
+import 'package:codegraph/src/trace.dart' as trace;
 import 'package:codegraph/src/progress.dart';
 import 'package:codegraph/src/version_skew.dart';
 import 'package:test/test.dart';
@@ -430,6 +431,102 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
     expect(decoded['query'], 'homepage');
     expect(decoded['results'], isNotEmpty,
         reason: '--budget 20 must not turn the query into `HomePage 20`');
+
+    // estTokens describes the line it is printed in, digits included - a cost
+    // field that excluded itself would understate every answer it annotates.
+    final line = (result.stdout as String).trimRight();
+    expect(decoded['estTokens'], (line.length / 4).ceil());
+
+    expect(decoded['confidence'], isIn(['high', 'medium', 'low']));
+    expect(decoded['tiedAtTop'], greaterThan(0));
+  });
+
+  test('trace resolves frames, and marks the ones it cannot place', () {
+    engine.build(const []);
+    final graph = Graph.load()!;
+    final frames = trace.parseTrace(graph, '''
+#0      List.[] (dart:core-patch/growable_array.dart:264:36)
+#1      FancyButton.press (package:fixture_ui/fancy_button.dart:5:8)
+#2      HomePage.build.<anonymous closure> (package:fixture/home/home_page.dart:7:5)
+#3      formatHomeTitle (package:fixture/home/home_helper.dart:2:31)
+<asynchronous suspension>
+#4      main (package:some_dependency/runner.dart:11:3)
+not a frame at all
+''');
+
+    // The suspension marker and the prose line carry no location; inventing
+    // frames for them would put rows in the answer the trace never had.
+    expect(frames, hasLength(5));
+
+    // dart: and a pub dependency are outside the indexed tree. They stay in
+    // the list as external - a frame the graph cannot place is one the reader
+    // must not assume is irrelevant.
+    expect(frames[0].path, isNull);
+    expect(frames[4].path, isNull);
+
+    // A local package resolves to its packages/<name>/lib path, the host
+    // package to lib/.
+    expect(frames[1].path, 'packages/fixture_ui/lib/fancy_button.dart');
+    expect(frames[1].declLine, 5);
+    expect(frames[2].path, 'lib/home/home_page.dart');
+    expect(frames[3].path, 'lib/home/home_helper.dart');
+    expect(frames[3].declLine, 2);
+
+    // The VM names the closure, the graph knows the enclosing declaration.
+    expect(trace.declaredName('HomePage.build.<anonymous closure>'),
+        'HomePage.build');
+    expect(trace.declaredName('new FancyButton.icon'), 'FancyButton.icon');
+    expect(frames[2].declLine, isNotNull,
+        reason: 'a closure frame must still land on its enclosing member');
+
+    // An absolute path outside the workspace is external, not a false match.
+    expect(
+      trace.workspacePathFor(
+          graph, 'file:///elsewhere/lib/home/home_page.dart'),
+      isNull,
+    );
+  });
+
+  test('churn annotates and never gates', () {
+    // cwd here is a scratch dir with no repository. Churn is an annotation on
+    // a risk line, so no-git and no-repo must degrade to no suffix rather than
+    // failing the verb that asked for it.
+    expect(cli_util.churnByPath(), isEmpty);
+
+    expect(
+        cli_util.churnSuffix(const {'lib/a.dart': 12}, 'lib/a.dart'), ' ~12');
+    expect(cli_util.churnSuffix(const {'lib/a.dart': 0}, 'lib/a.dart'), '');
+    expect(cli_util.churnSuffix(const {}, 'lib/a.dart'), '');
+  });
+
+  test('rankConfidence grades the ranking, and says so when it is flat', () {
+    // One hit clear of the next: the only shape that earns high.
+    expect(cli_util.rankConfidence([10, 2]).confidence, 'high');
+    expect(cli_util.rankConfidence([10, 2]).marginPct, 80);
+    expect(cli_util.rankConfidence([10, 8]).confidence, 'medium');
+    expect(cli_util.rankConfidence([10, 9]).confidence, 'low');
+
+    // A tie at the top is the case worth naming: the order past it is
+    // alphabetical, and reporting anything but low would launder that.
+    final flat = cli_util.rankConfidence([0, 0, 0, 0]);
+    expect(flat.confidence, 'low');
+    expect(flat.marginPct, 0);
+    expect(flat.tiedAtTop, 4);
+    expect(cli_util.confidenceFooter(flat), contains('4 hits tied at the top'));
+
+    // Scores can tie high and still be a tie - a top score with no separation
+    // must not read as decisive just because the number is large.
+    expect(cli_util.rankConfidence([7, 7, 1]).confidence, 'low');
+    expect(cli_util.rankConfidence([7, 7, 1]).tiedAtTop, 2);
+
+    // A single hit, and an exact unique name match, are separated by
+    // construction rather than by score.
+    expect(cli_util.rankConfidence([0]).confidence, 'high');
+    expect(
+      cli_util.rankConfidence([0, 0, 0], decisiveTop: true).confidence,
+      'high',
+    );
+    expect(cli_util.rankConfidence(const []).tiedAtTop, 0);
   });
 
   test('query readers() reports the consumer of a provider', () {
@@ -527,6 +624,12 @@ int Function() tearOffA(A a) => a.foo;
           jsonDecode(cold.stdout as String) as Map<String, dynamic>;
       final warmJson = jsonDecode(warm.stdout as String) as Map<String, dynamic>
         ..remove('indexed');
+      expect(coldJson['estTokens'], greaterThan(0));
+      expect(warmJson['estTokens'], greaterThan(0));
+      // estTokens measures the bytes actually printed, so the additive
+      // `indexed` proof moves it; strip it with `indexed` to compare answers.
+      coldJson.remove('estTokens');
+      warmJson.remove('estTokens');
       expect(warmJson, coldJson);
       expect((coldJson['hits'] as List).where((h) => h['kind'] == 'call'),
           hasLength(3));
@@ -2148,8 +2251,11 @@ void exercise() => Target().oldName();
       expect(capped.exitCode, 0);
       final cappedLines =
           (capped.stdout as String).split('\n').where((l) => l.isNotEmpty);
-      // 3 body lines + the "… N more (raise --budget N)" + hint trailer.
-      expect(cappedLines.length, lessThanOrEqualTo(5));
+      // 3 body lines + the "… N more (raise --budget N)" + hint trailer, then
+      // the cost footer. --budget caps the answer; footers (cost, caveat) sit
+      // outside it so disclosure can never be budgeted away.
+      expect(cappedLines.length, lessThanOrEqualTo(6));
+      expect(cappedLines.last, matches(RegExp(r'^cost: ~\d+ tok$')));
     },
   );
 

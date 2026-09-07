@@ -19,7 +19,6 @@
 // Reads docs/maps/code_graph.json. Syntax-tree only — no analyzer import here
 // (see lib/src/skeleton.dart for the one verb that needs a fresh parse).
 
-import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
@@ -165,9 +164,7 @@ void readers(Graph graph, List<String> rest, int budget, bool asJson) {
 
   if (decls.isEmpty) {
     if (asJson) {
-      stdout.writeln(
-        jsonEncode({...envelope('readers', name), 'results': []}),
-      );
+      emitJson({...envelope('readers', name), 'results': []});
       return;
     }
     // Not a provider — but if it's a real symbol (widget/class/fn/…), the
@@ -203,13 +200,11 @@ void readers(Graph graph, List<String> rest, int budget, bool asJson) {
     final remaining = Budget(budget);
     final results =
         decls.map((d) => _readersRecord(graph, d, remaining)).toList();
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('readers', name),
-        'results': results,
-        if (remaining.truncated) 'truncated': true,
-      }),
-    );
+    emitJson({
+      ...envelope('readers', name),
+      'results': results,
+      if (remaining.truncated) 'truncated': true,
+    });
     return;
   }
 
@@ -373,21 +368,17 @@ int _wiring(Graph graph, List<String> rest, int budget, bool asJson) {
   switch (resolveFileArg(graph, sub)) {
     case NotFoundFile():
       if (asJson) {
-        stdout.writeln(
-          jsonEncode({...envelope('wiring', sub), 'results': []}),
-        );
+        emitJson({...envelope('wiring', sub), 'results': []});
         return 0;
       }
       stdout.writeln('no file matches "$sub" — try `find $sub`');
       return 0;
     case AmbiguousFile(:final candidates):
       if (asJson) {
-        stdout.writeln(
-          jsonEncode({
-            ...envelope('wiring', sub),
-            'ambiguous': [for (final c in candidates) 'file:$c'],
-          }),
-        );
+        emitJson({
+          ...envelope('wiring', sub),
+          'ambiguous': [for (final c in candidates) 'file:$c'],
+        });
       } else {
         printAmbiguous(sub, candidates, cap: budget);
       }
@@ -417,15 +408,13 @@ int _wiring(Graph graph, List<String> rest, int budget, bool asJson) {
       ])
         key: remaining.take(record[key] ?? const []),
     };
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('wiring', sub),
-        'file': id.replaceFirst('file:', ''),
-        'role': graph.byId[id]?.role,
-        ...capped,
-        if (remaining.truncated) 'truncated': true,
-      }),
-    );
+    emitJson({
+      ...envelope('wiring', sub),
+      'file': id.replaceFirst('file:', ''),
+      'role': graph.byId[id]?.role,
+      ...capped,
+      if (remaining.truncated) 'truncated': true,
+    });
     return 0;
   }
 
@@ -462,12 +451,12 @@ int _route(Graph graph, List<String> rest, int budget, bool asJson) {
   final index = graph.routeIndex;
   if (index == null || !index.available) {
     if (asJson) {
-      stdout.writeln(jsonEncode({
+      emitJson({
         ...envelope('route', query),
         'available': false,
         'complete': false,
         'results': const [],
-      }));
+      });
     } else {
       stdout.writeln(
         'typed route topology unavailable — rebuild with resolved analysis: '
@@ -493,12 +482,12 @@ int _route(Graph graph, List<String> rest, int budget, bool asJson) {
     ..sort();
   if (symbols.length > 1) {
     if (asJson) {
-      stdout.writeln(jsonEncode({
+      emitJson({
         ...envelope('route', query),
         'available': true,
         'complete': index.complete,
         'ambiguous': symbols,
-      }));
+      });
     } else {
       stdout.writeln('$query is ambiguous (${symbols.length} route classes):');
       for (final symbol in symbols.take(budget)) {
@@ -509,13 +498,13 @@ int _route(Graph graph, List<String> rest, int budget, bool asJson) {
   }
   if (symbols.isEmpty) {
     if (asJson) {
-      stdout.writeln(jsonEncode({
+      emitJson({
         ...envelope('route', query),
         'available': true,
         'complete': index.complete,
         'results': const [],
         if (!index.complete) 'unresolvedFiles': index.unresolvedFiles,
-      }));
+      });
     } else if (index.complete) {
       stdout.writeln('no typed route named $query (complete resolved index)');
     } else {
@@ -627,7 +616,7 @@ int _route(Graph graph, List<String> rest, int budget, bool asJson) {
         remaining.take(placements.map(placementRecord).toList());
     final targetRecords = remaining.take(redirectTargets);
     final callers = remaining.take(callerRows);
-    stdout.writeln(jsonEncode({
+    emitJson({
       ...envelope('route', query),
       'available': true,
       'complete': index.complete,
@@ -656,7 +645,7 @@ int _route(Graph graph, List<String> rest, int budget, bool asJson) {
         },
       ],
       if (remaining.truncated) 'truncated': true,
-    }));
+    });
     return 0;
   }
 
@@ -787,33 +776,30 @@ void impls(Graph graph, List<String> rest, int budget, bool asJson) {
   final testFakes = testSubtypesOf(seen);
 
   if (asJson) {
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('impls', type),
-        'results': rows
-            .take(budget)
-            .map((r) => {
-                  'subtype': r.child,
-                  'supertype': r.parent,
-                  'depth': r.depth,
-                  'file': r.file,
-                  if (r.ambiguous) 'ambiguous': true,
-                })
-            .toList(),
-        'testSubtypes': testFakes
-            .take(budget)
-            .map((t) => {
-                  'subtype': t.child,
-                  'supertype': t.parent,
-                  'relation': t.relation,
-                  'file': t.file,
-                  'line': t.line,
-                })
-            .toList(),
-        if (rows.length > budget || testFakes.length > budget)
-          'truncated': true,
-      }),
-    );
+    emitJson({
+      ...envelope('impls', type),
+      'results': rows
+          .take(budget)
+          .map((r) => {
+                'subtype': r.child,
+                'supertype': r.parent,
+                'depth': r.depth,
+                'file': r.file,
+                if (r.ambiguous) 'ambiguous': true,
+              })
+          .toList(),
+      'testSubtypes': testFakes
+          .take(budget)
+          .map((t) => {
+                'subtype': t.child,
+                'supertype': t.parent,
+                'relation': t.relation,
+                'file': t.file,
+                'line': t.line,
+              })
+          .toList(),
+      if (rows.length > budget || testFakes.length > budget) 'truncated': true,
+    });
     return;
   }
 
@@ -964,16 +950,27 @@ void _find(Graph graph, List<String> rest, int budget, bool asJson) {
     return a.id.compareTo(b.id);
   });
 
+  // `find` ranks by in-degree alone, so a page of hits that all sit at zero is
+  // an alphabetical list wearing a ranking's clothes. An exact, unique name
+  // match is the one case where that ranking is beside the point.
+  final exact = hits.where((h) => _findName(h).toLowerCase() == sub).toList();
+  final rank = rankConfidence(
+    hits.map((h) => h.inDeg).toList(),
+    decisiveTop:
+        exact.length == 1 && _findName(hits.first).toLowerCase() == sub,
+  );
+
   if (asJson) {
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('find', sub),
-        'results': hits.take(budget).map((h) => h.toJson()).toList(),
-        // Non-silent truncation, matching the other --json verbs (callers,
-        // impls, …) — a consumer capping at --budget must know results dropped.
-        if (hits.length > budget) 'truncated': hits.length - budget,
-      }),
-    );
+    emitJson({
+      ...envelope('find', sub),
+      'confidence': rank.confidence,
+      'marginPct': rank.marginPct,
+      'tiedAtTop': rank.tiedAtTop,
+      'results': hits.take(budget).map((h) => h.toJson()).toList(),
+      // Non-silent truncation, matching the other --json verbs (callers,
+      // impls, …) — a consumer capping at --budget must know results dropped.
+      if (hits.length > budget) 'truncated': hits.length - budget,
+    });
     return;
   }
 
@@ -991,7 +988,16 @@ void _find(Graph graph, List<String> rest, int budget, bool asJson) {
         : out,
     budget,
     hint: 'narrow the substring, or: sym <Name> for one symbol',
+    footers: out.isEmpty ? const [] : [confidenceFooter(rank)],
   );
+}
+
+/// The declared name a `find` hit matched on, stripped of the
+/// `"<name> — <file>"` and `"<owner>.<name> — <file>"` display forms the
+/// symbol and member hits are rendered with.
+String _findName(_FindHit h) {
+  final display = h.id.split(' — ').first;
+  return h.kind == 'member' ? display.split('.').last : display;
 }
 
 /// One class/mixin/extension MEMBER whose declared name matched a `sym`/
@@ -1081,21 +1087,19 @@ void _sym(Graph graph, List<String> rest, int budget, bool asJson) {
     final memberHits = findMemberHits(graph, lower);
     if (memberHits.isNotEmpty) {
       if (asJson) {
-        stdout.writeln(
-          jsonEncode({
-            ...envelope('sym', query),
-            'results': memberHits
-                .map((h) => {
-                      'kind': 'member',
-                      'owner': h.owner,
-                      'name': h.name,
-                      'file': h.file,
-                      'line': h.line,
-                      'sig': h.sig,
-                    })
-                .toList(),
-          }),
-        );
+        emitJson({
+          ...envelope('sym', query),
+          'results': memberHits
+              .map((h) => {
+                    'kind': 'member',
+                    'owner': h.owner,
+                    'name': h.name,
+                    'file': h.file,
+                    'line': h.line,
+                    'sig': h.sig,
+                  })
+              .toList(),
+        });
         return;
       }
       const cap = 10;
@@ -1114,9 +1118,7 @@ void _sym(Graph graph, List<String> rest, int budget, bool asJson) {
       return;
     }
     if (asJson) {
-      stdout.writeln(
-        jsonEncode({...envelope('sym', query), 'results': []}),
-      );
+      emitJson({...envelope('sym', query), 'results': []});
       return;
     }
     stdout.writeln('no symbol matches "$query" '
@@ -1146,23 +1148,21 @@ void _sym(Graph graph, List<String> rest, int budget, bool asJson) {
   }).toList();
 
   if (asJson) {
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('sym', query),
-        'results': records
-            .map(
-              (r) => {
-                ...r,
-                'importedBy': (r['importedBy']! as List).take(budget).toList(),
-                // Full importer count, so the per-record `importedBy` cap at
-                // --budget isn't silent.
-                'importedByTotal': (r['importedBy']! as List).length,
-              },
-            )
-            .toList(),
-        if (substrTruncated > 0) 'truncated': substrTruncated,
-      }),
-    );
+    emitJson({
+      ...envelope('sym', query),
+      'results': records
+          .map(
+            (r) => {
+              ...r,
+              'importedBy': (r['importedBy']! as List).take(budget).toList(),
+              // Full importer count, so the per-record `importedBy` cap at
+              // --budget isn't silent.
+              'importedByTotal': (r['importedBy']! as List).length,
+            },
+          )
+          .toList(),
+      if (substrTruncated > 0) 'truncated': substrTruncated,
+    });
     return;
   }
 
@@ -1255,34 +1255,32 @@ void _untested(Graph graph, int budget, bool asJson) {
 
   if (asJson) {
     final remaining = Budget(budget);
-    stdout.writeln(
-      jsonEncode({
-        ...envelope('untested', ''),
-        'providers': remaining.take(
-          providers
-              .map(
-                (n) => {
-                  'name': n.name,
-                  'declaredIn': n.declaredIn,
-                  'inDeg': inDeg(n),
-                },
-              )
-              .toList(),
-        ),
-        'files': remaining.take(
-          files
-              .map(
-                (n) => {
-                  'file': n.id.replaceFirst('file:', ''),
-                  'role': n.role,
-                  'inDeg': inDeg(n),
-                },
-              )
-              .toList(),
-        ),
-        if (remaining.truncated) 'truncated': true,
-      }),
-    );
+    emitJson({
+      ...envelope('untested', ''),
+      'providers': remaining.take(
+        providers
+            .map(
+              (n) => {
+                'name': n.name,
+                'declaredIn': n.declaredIn,
+                'inDeg': inDeg(n),
+              },
+            )
+            .toList(),
+      ),
+      'files': remaining.take(
+        files
+            .map(
+              (n) => {
+                'file': n.id.replaceFirst('file:', ''),
+                'role': n.role,
+                'inDeg': inDeg(n),
+              },
+            )
+            .toList(),
+      ),
+      if (remaining.truncated) 'truncated': true,
+    });
     return;
   }
 

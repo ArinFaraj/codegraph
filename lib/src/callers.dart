@@ -12,7 +12,6 @@
 // CALL (`x()`) from a REFERENCE (tear-off / type / switch case). Syntax-only, so
 // matching is by name — for an ambiguous name it reports how many declarations
 // exist so the agent knows the list spans them.
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
@@ -142,7 +141,7 @@ int run(List<String> args, {bool caveat = true}) {
   });
 
   if (asJson) {
-    stdout.writeln(jsonEncode({
+    emitJson({
       ...envelope(verb, symbol),
       'declarations': decls,
       // Additive: flags the merged-by-name case (text mode prints a note).
@@ -153,7 +152,7 @@ int run(List<String> args, {bool caveat = true}) {
           {'file': h.file, 'line': h.line, 'kind': h.kind, 'text': h.text},
       ],
       if (hits.length > budget) 'truncated': hits.length - budget,
-    }));
+    });
     return 0;
   }
 
@@ -320,7 +319,7 @@ int _emitResolvedResults({
   });
 
   if (asJson) {
-    stdout.writeln(jsonEncode({
+    emitJson({
       ...envelope(verb, symbol),
       'resolved': true,
       if (indexed) 'indexed': true,
@@ -339,7 +338,7 @@ int _emitResolvedResults({
           },
       ],
       if (hits.length > budget) 'truncated': hits.length - budget,
-    }));
+    });
     return 0;
   }
 

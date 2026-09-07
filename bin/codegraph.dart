@@ -21,6 +21,7 @@ import 'package:codegraph/src/native_install.dart' as native_install;
 import 'package:codegraph/src/query.dart' as query;
 import 'package:codegraph/src/rename.dart' as rename;
 import 'package:codegraph/src/skeleton.dart' as skeleton;
+import 'package:codegraph/src/trace.dart' as trace;
 import 'package:codegraph/src/version_skew.dart' show binaryVersion;
 
 const version = binaryVersion;
@@ -55,6 +56,7 @@ const _graphQueryVerbs = {
   'attention',
   'lint',
   'affected-tests',
+  'trace',
 };
 
 void _usage() {
@@ -88,6 +90,7 @@ low-level verbs (intent verbs compose these):
   callchain <Symbol> [--depth N] | wiring <file> | route <RouteData>
   impls <Type> | path <A> <B>
   impact <thing> [--depth N] | diff [--base main] | affected-tests [--base main]
+  trace <file|-> (resolve a stack trace's frames to declarations)
   blueprint <feature-dir>
   unused [providers|files|all] | untested | attention
 
@@ -181,6 +184,8 @@ Future<void> main(List<String> rawArgs) async {
       exit(diff.run(args));
     case 'affected-tests':
       exit(affected_tests.run(args));
+    case 'trace':
+      exit(trace.run(args));
     case 'attention':
       exit(attention.run(args));
     case 'lint':

@@ -65,7 +65,10 @@ The execution sequence continues the safety work started in
    refuse public-API renames and flag exported-symbol changes.
 6. **Expand P2 only after the benchmark proves the thesis.** First campaign
    (2026-07-18, small-scale workspace): gate NOT passed - no expansion; see
-   plans/3.2 verdict. The mined follow-ups are the production-scale arm and
+   plans/3.2 verdict. The production-scale arm must be aimed at cost per
+   successful task and at the refusal endpoint: edit-success discordance is
+   already below the gate's threshold, so re-running it larger measures a
+   number that cannot pass. The mined follow-ups are the production-scale arm and
    the publishedPackages conformance gate below. Signature-change edit
    sets and cross-package public-API safety are the next actuator frontier.
    Every edit remains apply-ready, reversible, and refusal-gated.
@@ -122,7 +125,14 @@ roadmap and should not override the v3 BRD or doctrine.
    plan demands it.
 8. The headline benchmark is the with-vs-without agent delta on task success
    and build-stays-green. Retrieval and performance benchmarks remain
-   regression gates.
+   regression gates. Read paired discordance before any arm delta
+   (benchmarks honesty rule 7): on the campaigns run so far the edit endpoint
+   caps the expressible effect at 8.3pp against a >= 20pp gate, and one
+   campaign was perfectly concordant, so edit success cannot settle the
+   question at this scale. Safety (refusals) is the endpoint that
+   discriminates, and cost per SUCCESSFUL task is the value endpoint - the
+   treatment currently solves slightly more for materially more tokens and
+   wall time, so the supported claim is safety at a cost premium.
 9. Actuator output is apply-ready and reversible, and refuses whenever target
    resolution or edit-set completeness cannot be proven.
 

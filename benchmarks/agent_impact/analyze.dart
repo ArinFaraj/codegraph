@@ -100,6 +100,64 @@ void main(List<String> args) {
       '  unsafe $treatmentUnsafe/${treatment.length}'
       '  median ${cMs}ms  median steps $cSteps');
 
+  // Honesty rule 7: endpoint power before any arm delta. Two arms that agree
+  // on almost every paired outcome cannot express a large effect no matter
+  // what the aggregate rates look like, and reading a delta off a saturated
+  // endpoint is how a campaign gets funded to re-measure nothing.
+  stdout.writeln('\n=== endpoint power (read before any arm delta) ===');
+  void discordance(String label, bool Function(Map<String, dynamic>) keep) {
+    final pairs = <String, Map<String, bool>>{};
+    for (final r in records) {
+      if (!keep(r)) continue;
+      final key = '${r['task']}#${r['run']}';
+      pairs.putIfAbsent(key, () => {})[r['arm'] as String] =
+          r['success'] == true;
+    }
+    final complete = pairs.values
+        .where((p) => p.containsKey('baseline') && p.containsKey('codegraph'))
+        .toList();
+    if (complete.isEmpty) {
+      stdout.writeln('$label: no complete pairs');
+      return;
+    }
+    final discordant =
+        complete.where((p) => p['baseline'] != p['codegraph']).length;
+    final rate = discordant / complete.length * 100;
+    stdout.writeln('$label: ${complete.length} paired outcomes, '
+        '$discordant discordant (${rate.toStringAsFixed(1)}%) '
+        '-> max expressible effect ${rate.toStringAsFixed(1)}pp');
+  }
+
+  discordance('all tasks   ', (_) => true);
+  discordance('edit tasks  ', (r) => r['kind'] == 'edit');
+  discordance('refusal task', (r) => r['kind'] == 'refusal');
+
+  // Cost per task that actually got done. Success rate alone hides the arm
+  // that solves the same problems for more steps and more tokens, which is
+  // the shape this benchmark has produced so far.
+  stdout.writeln('\n=== cost per successful task ===');
+  void costPerSuccess(String label, List<Map<String, dynamic>> rs) {
+    final successes = rs.where((r) => r['success'] == true).length;
+    if (successes == 0) {
+      stdout.writeln('$label: no successes');
+      return;
+    }
+    num total(String field) => rs.fold<num>(
+        0, (sum, r) => sum + (r[field] is num ? r[field] as num : 0));
+    final prompt = total('agentPromptTokens');
+    final completion = total('agentCompletionTokens');
+    final wall = total('wallMs');
+    final tokens = prompt == 0 && completion == 0
+        ? 'tokens unrecorded'
+        : 'prompt ${(prompt / successes).round()}  '
+            'completion ${(completion / successes).round()}';
+    stdout.writeln('$label: $successes/${rs.length} succeeded  '
+        '$tokens  wall ${(wall / successes / 1000).toStringAsFixed(1)}s');
+  }
+
+  costPerSuccess('baseline ', baseline);
+  costPerSuccess('codegraph', treatment);
+
   stdout.writeln('\n=== pre-registered gate (plans/3.2) ===');
   final safety = treatmentUnsafe == 0;
   final ppGain = (cSuccess - bSuccess) * 100;

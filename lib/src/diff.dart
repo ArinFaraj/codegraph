@@ -3,7 +3,6 @@
 // committed) — every git call here goes through `cli_util.dart`'s `runGit`,
 // which is guarded against `ProcessException` (missing git), so a broken
 // toolchain prints a one-line error instead of crashing.
-import 'dart:convert';
 import 'dart:io';
 
 import 'cli_util.dart';
@@ -229,10 +228,15 @@ int run(List<String> args) {
       final byDeg = inDeg(b).compareTo(inDeg(a));
       return byDeg != 0 ? byDeg : a.id.compareTo(b.id);
     });
-  final highInDegLines = highInDeg
-      .map((n) =>
-          '  ${n.id.replaceFirst('file:', '')} [${n.role}]${inDegSuffix(graph.inDeg[n.id] ?? 0)}')
-      .toList();
+  // Churn beside in-degree: "widely imported" and "keeps being edited" are
+  // different kinds of risk, and the file carrying both is the one to review
+  // first. Verb output only (doctrine 2).
+  final churn = churnByPath();
+  final highInDegLines = highInDeg.map((n) {
+    final path = n.id.replaceFirst('file:', '');
+    return '  $path [${n.role}]${inDegSuffix(graph.inDeg[n.id] ?? 0)}'
+        '${churnSuffix(churn, path)}';
+  }).toList();
 
   // 4. providers in changed files — declared in a changed lib file; mark
   // ' (new)' when the declaring file's status is A.
@@ -312,10 +316,11 @@ int run(List<String> args) {
       final byDeg = inDeg(b).compareTo(inDeg(a));
       return byDeg != 0 ? byDeg : a.id.compareTo(b.id);
     });
-  final blastLines = blast
-      .map((n) =>
-          '  ${n.id.replaceFirst('file:', '')}${inDegSuffix(graph.inDeg[n.id] ?? 0)}')
-      .toList();
+  final blastLines = blast.map((n) {
+    final path = n.id.replaceFirst('file:', '');
+    return '  $path${inDegSuffix(graph.inDeg[n.id] ?? 0)}'
+        '${churnSuffix(churn, path)}';
+  }).toList();
 
   // Lint reuse: never let a config/baseline hiccup crash the diff card — this
   // verb's job is the blast-radius summary, lint is a bonus line on top.
@@ -404,17 +409,19 @@ int run(List<String> args) {
             .toList(),
       ),
       'blastRadius': capSec(
-        blast
-            .map((n) => {
-                  'file': n.id.replaceFirst('file:', ''),
-                  'inDeg': inDeg(n),
-                })
-            .toList(),
+        blast.map((n) {
+          final path = n.id.replaceFirst('file:', '');
+          return {
+            'file': path,
+            'inDeg': inDeg(n),
+            if (churn[path] != null) 'churn90d': churn[path],
+          };
+        }).toList(),
       ),
       if (lintNew > 0) 'lintNewViolations': lintNew,
       if (truncatedAny) 'truncated': true,
     };
-    stdout.writeln(jsonEncode(json));
+    emitJson(json);
     return 0;
   }
 
@@ -423,6 +430,8 @@ int run(List<String> args) {
     '${libChanges.length + testChanges.length} dart files changed '
         '(${libChanges.length} lib · ${testChanges.length} test)',
     if (broadComparison != null) 'warning: $broadComparison',
+    if (churn.isNotEmpty)
+      '(·N⇐ = files importing it; ~N = commits touching it in 90d)',
     '',
     'areas touched:',
     ...(areaLines.isEmpty ? ['  (none)'] : _cappedList(areaLines, sectionCap)),

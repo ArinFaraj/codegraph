@@ -3,6 +3,7 @@
 // contract, the shared-remaining-count JSON budget, the capped-join list
 // renderer, and the in-degree "reader count" suffix — every verb printed
 // these identically; this is the single copy.
+import 'dart:convert';
 import 'dart:io';
 
 import 'freshness.dart' show freshnessChecked, lastLoadFresh;
@@ -37,16 +38,105 @@ List<String> positionalArgs(
   return out;
 }
 
-void emit(List<String> lines, int budget, {String? hint}) {
+/// Approximate token count for [s], the same chars/4 estimate `INDEX.md`'s
+/// token column already uses. Deliberately the cheap estimate: a real BPE
+/// count would need a vendored tokenizer per model and would still be wrong
+/// for the next one.
+int estTokens(String s) => (s.length / 4).ceil();
+
+void emit(
+  List<String> lines,
+  int budget, {
+  String? hint,
+  bool cost = true,
+  List<String> footers = const [],
+}) {
+  final written = <String>[];
   for (final l in lines.take(budget)) {
-    stdout.writeln(l);
+    written.add(l);
   }
   if (lines.length > budget) {
-    stdout.writeln(
-      '… ${lines.length - budget} more (raise --budget to see all)',
-    );
-    if (hint != null) stdout.writeln('  ($hint)');
+    written.add('… ${lines.length - budget} more (raise --budget to see all)');
+    if (hint != null) written.add('  ($hint)');
   }
+  // Footers sit outside --budget for the same reason the caveat does:
+  // disclosure that a small budget can silence is disclosure that fails
+  // exactly when the caller is least able to afford being misled.
+  written.addAll(footers);
+  for (final l in written) {
+    stdout.writeln(l);
+  }
+  // Counts what emit wrote, not the caveat line that follows it: the caveat
+  // is fixed per verb and an agent budgeting a call cares about the answer.
+  if (cost && written.isNotEmpty) {
+    stdout.writeln('cost: ~${estTokens(written.join('\n'))} tok');
+  }
+}
+
+/// Prints [record] as the `--json` answer with `estTokens` attached: what this
+/// record costs the caller to read, in the record itself, so an agent can
+/// budget the next call instead of discovering the size after paying for it.
+///
+/// The count includes its own digits ([_settleEstTokens] iterates to a fixed
+/// point), so it describes the string actually printed rather than a
+/// pre-insertion payload that no one receives.
+void emitJson(Map<String, dynamic> record) {
+  stdout
+      .writeln(jsonEncode({...record, 'estTokens': _settleEstTokens(record)}));
+}
+
+int _settleEstTokens(Map<String, dynamic> record) {
+  var tokens = 0;
+  for (var i = 0; i < 5; i++) {
+    final next = estTokens(jsonEncode({...record, 'estTokens': tokens}));
+    if (next == tokens) break;
+    tokens = next;
+  }
+  return tokens;
+}
+
+/// How separated the top of a ranked answer is from the rest, under the
+/// ranking that was actually used.
+///
+/// This grades the RANKING, never the answer: `high` means one hit stands
+/// clear of the next, not that it is the right one. The case worth naming is
+/// the flat one - when N hits tie at the top the list is arbitrary past that
+/// point, and an answer that reports `low` gets read as a starting point
+/// instead of a verdict. [decisiveTop] is for a different lane entirely (an
+/// exact, unique name match), where in-degree separation says nothing.
+({String confidence, int marginPct, int tiedAtTop}) rankConfidence(
+  List<int> scoresDesc, {
+  bool decisiveTop = false,
+}) {
+  if (scoresDesc.isEmpty) {
+    return (confidence: 'low', marginPct: 0, tiedAtTop: 0);
+  }
+  if (decisiveTop || scoresDesc.length == 1) {
+    return (confidence: 'high', marginPct: 100, tiedAtTop: 1);
+  }
+  final top = scoresDesc.first;
+  var tied = 1;
+  while (tied < scoresDesc.length && scoresDesc[tied] == top) {
+    tied++;
+  }
+  if (tied > 1) return (confidence: 'low', marginPct: 0, tiedAtTop: tied);
+  final margin = ((top - scoresDesc[1]) / top * 100).round();
+  final confidence = margin >= 50
+      ? 'high'
+      : margin >= 20
+          ? 'medium'
+          : 'low';
+  return (confidence: confidence, marginPct: margin, tiedAtTop: 1);
+}
+
+/// The text-mode footer for [rankConfidence], naming the tie when there is
+/// one so the number is readable without the JSON.
+String confidenceFooter(({String confidence, int marginPct, int tiedAtTop}) r) {
+  if (r.tiedAtTop > 1) {
+    return 'confidence: ${r.confidence} - ${r.tiedAtTop} hits tied at the '
+        'top, order past them is arbitrary';
+  }
+  return 'confidence: ${r.confidence} (margin ${r.marginPct}%)';
 }
 
 /// Joins [items] capped at 10 + a `", … N more"` trailer — every file/provider
@@ -76,6 +166,54 @@ ProcessResult? runGit(List<String> args, {String? workingDirectory}) {
   } on ProcessException {
     return null;
   }
+}
+
+/// Recent-edit count per path, over the last [days] of history, keyed the way
+/// the graph keys files (relative to the working directory, via `--relative`,
+/// so a package nested inside a larger repo still matches).
+///
+/// Verb output only. Doctrine 2 keeps churn out of anything `build` writes
+/// because the number moves as its window slides, which would break the
+/// byte-identical `check()` gate; a verb has no such contract and this is
+/// where the signal is worth having - it is the difference between "47 files
+/// depend on this" and "47 files depend on this, and it was edited 128 times
+/// this quarter."
+///
+/// Empty when git is missing, this is not a repository, or nothing was
+/// touched. Churn annotates, never gates, so absence must degrade the line
+/// instead of failing the verb.
+///
+/// `--no-renames` is a cost decision with a stated consequence: a file's
+/// churn starts over when it moves. Rename detection tripled this call on a
+/// 2,829-commit host (0.16s vs 0.05s) and git abandons it there anyway
+/// ("exhaustive rename detection was skipped"), so the accurate-looking option
+/// is the one that is both slower and inconsistent between repositories.
+/// Counting commits that named this exact path is cheap, deterministic, and
+/// says what it means.
+Map<String, int> churnByPath({int days = 90}) {
+  final result = runGit([
+    'log',
+    '--since=$days.days',
+    '--name-only',
+    '--relative',
+    '--no-renames',
+    '--pretty=format:',
+  ]);
+  if (result == null || result.exitCode != 0) return const {};
+  final counts = <String, int>{};
+  for (final line in (result.stdout as String).split('\n')) {
+    final path = line.trim();
+    if (path.isEmpty) continue;
+    counts[path] = (counts[path] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/// `' ~N'` for a path with recent edits, empty otherwise - the churn suffix
+/// on a file line across impact/change/review.
+String churnSuffix(Map<String, int> churn, String path) {
+  final n = churn[path];
+  return n == null || n == 0 ? '' : ' ~$n';
 }
 
 /// The freshness clause every typed empty result carries, so an agent can
@@ -144,6 +282,13 @@ const verbCaveats = <String, List<String>>{
         'failing suites; uncertainty expands to package/workspace commands',
     'static imports, provider interactions, test helpers, and parts cannot see '
         'every runtime, platform, service-locator, or generated edge',
+  ],
+  'trace': [
+    'frames resolve by URI and declared name; a closure, a generated shim or '
+        'an inlined frame can name a symbol with no declaration in the graph, '
+        'and shows without a decl line rather than being dropped',
+    'external frames (SDK, pub dependencies) are marked, not resolved - the '
+        'graph indexes lib + local packages only',
   ],
   'unused': [
     'CANDIDATES, not verdicts - confirm with exact-path grep across lib test '
