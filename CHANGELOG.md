@@ -70,6 +70,21 @@ ours in four specific places.
   at 3.8% recall@5 for co-change against 40.3% for plain lexical, and reports
   that fusing them made it worse. Evidence to keep these deferred.
 
+## 3.8.1 - 2026-09-07 - tags publish themselves
+
+- **A `v*` tag now becomes a GitHub Release, once the gates pass on the
+  tagged tree.** The manual step was not happening: v0.9.7 stayed "Latest"
+  for two months while ten tags shipped past it, so the repo advertised a
+  version of itself from before v1. The release job depends on `test`, so a
+  tag whose tree fails analysis, format, the suite or any benchmark oracle
+  publishes nothing.
+- **Two refusals rather than a mislabelled release.** The tag must match
+  `pubspec.yaml`'s version (`version_lock_test` already ties that to
+  `binaryVersion`, so all three agree or nothing ships), and the notes come
+  from the CHANGELOG section for that version - no section, no release.
+  A release whose notes are empty or whose number is wrong is worse than no
+  release, because it is the artifact people trust to say what changed.
+
 ## 3.7.1 - 2026-07-23 - stable performance gate
 
 - The cross-run baseline no longer fails when the intentionally slow,
