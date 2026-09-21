@@ -3,6 +3,83 @@
 Design history - including rejected ideas. Read this before proposing engine
 changes so you don't re-propose a deliberate dead end.
 
+## 3.9.0 - 2026-09-21 - four gaps a host logged, closed
+
+All four came from a validation host's `docs/maps/LIMITATIONS.md` - the
+feedback loop `init` seeds. The first three were reproduced against this tree
+before it was touched; the fourth was read in the source. Each carries the
+regression test that proves it.
+
+- **`find <provider>` answers the question it was asked.** A provider hit
+  printed a name and an in-degree, so the next command was always `readers` or
+  a `grep -rln` - on the verb whose whole job is "what/where is X". When the
+  query lands on exactly ONE provider, `find` now inlines where it is declared,
+  its provider type, and its consumers per relation, comma-joined and capped
+  the way `sym` caps `imported-by`; `--json` carries the same lists on the hit.
+  A duplicated provider name does not inline (its per-declaration readers must
+  never be merged - `readers` is the verb that separates them) and neither does
+  a broad, non-decisive query, which stays a ranked list.
+- **`callers`/`refs --resolved <Class.method>` no longer answers a confident
+  zero.** `rename` and `find` both speak `Owner.member`, so agents type it
+  here too - and resolved mode matched it as one literal name, which no source
+  file contains, so both the indexed and the cold path returned an empty list
+  for a method with real callers. Matching now happens on the bare name and the
+  owner filters the result. When the owner is an implementation whose call
+  sites bind to the interface, the answer is honestly 0 direct plus a named
+  disclosure of the sites that dispatch there
+  (`elsewhere` in `--json`) - an empty list reads as dead code, and that is the
+  reading that gets a method deleted. A bare name is unchanged.
+- **`rename` indexes enum CONSTANTS.** Every spelling (`Enum.value`, the bare
+  name, `path/to/file.dart:name`) refused with "no declaration found" for a
+  value `sym` could already print: an enum constant is neither an executable
+  nor a top-level variable, so it reached neither index. The cold path now
+  collects it, and uses bind through the constant's implicit getter, so
+  declaration, `case` labels, switch-expression patterns, comparisons and
+  const references all move together.
+- **An enum-constant rename discloses that the name is also a value.** The
+  identifier edit set is provably complete (enum constants resolve statically
+  everywhere), but `.name`, `values.byName`, `toString()` and by-name
+  serialization read the constant as a STRING, and that string may live in
+  storage or on a wire this repository cannot see. `rename` says so on the dry
+  run and in `--json` (`warnings`) rather than checking a boundary it cannot
+  observe. String literals are data and are never rewritten.
+
+- **One shared model for "this provider's consumers".** The edge filter had
+  been rewritten by hand at six call sites across `query`, `brief` and
+  `attention`, and the seventh copy (the `find` card above) silently dropped
+  the `[unconfirmed]` marker - presenting a name-matched reader edge as
+  element-confirmed on a resolved build, in the one place a reader checks that
+  claim. `Graph.consumersOf` / `consumersByRel` / `isResolvedBuild` now own the
+  predicate, the grouping and the confidence gate, and the three renderers
+  (`readers` text, `readers --json`, the `find` card) print from them. A verb
+  can no longer forget the marker, because no verb decides it any more. Sibling
+  fix: `find --json` shares ONE budget between its hit list and the card's
+  consumer lists, and a hit whose lists were cut says `truncated` - it had been
+  dropping them silently past `--budget`.
+- **The `[unconfirmed]` marker is decided from the records, never read back
+  off a rendered line.** `_needsMarker` is the single predicate; the card caps
+  and filters `ProviderConsumer` records and renders last, so the marker's
+  SPELLING is not load-bearing. `Graph.consumersByRel`'s order (by file, then
+  unconfirmed first) is authoritative and no renderer re-sorts: a second sort
+  keyed on rendered text ordered by the marker's spelling instead of by what
+  it means, and disagreed with the order `--json` used for the same data.
+  `_consumerRecord` reports its own truncation, since it is the only place
+  holding both the full lists and the budgeted ones.
+- **A verb that escalates to a resolved build says so before paying for it.**
+  A lookup that blocks for tens of seconds is a different operation than the
+  one the caller asked for, and the old notice said only "rebuilding". It now
+  names the verb, that the build is whole-workspace, how many files that is,
+  and `--no-rebuild` as the way to decline it. stderr, as before - stdout stays
+  clean for `--json`.
+
+### Not taken (do not re-propose without a new trigger)
+
+- **Refusing an enum-constant rename when the enum's `.name` is read
+  anywhere.** The gate cannot be complete: the prefilter only opens files that
+  mention the constant, and a `.name` read can sit in a file that never spells
+  it. An incomplete gate that sometimes refuses is worse than an honest
+  disclosure, because it reads as "checked".
+
 ## 3.8.0 - 2026-09-07 - every answer states its cost, and the benchmark states its power
 
 Ideas taken from a review of redhat-et/ripwire (`ripwire-review.md`); its

@@ -57,12 +57,9 @@ AttentionSection _ambiguousProviders(Graph graph) {
   final lines = <String>[];
   for (final name in names) {
     final files = (byName[name]!.map((n) => n.declaredIn!).toList()..sort());
-    final unresolved = graph.edges.where(
-      (e) =>
-          e.dst == 'provider:$name' &&
-          e.isUnresolvedAmbiguous &&
-          providerConsumerRels.contains(e.rel),
-    );
+    final unresolved = graph
+        .consumersOf('provider:$name')
+        .where((e) => e.isUnresolvedAmbiguous);
     lines.add(
       '- `$name` — declared in ${files.map((f) => '`$f`').join(', ')} '
       '— ${unresolved.length} unresolved interaction edge(s)',

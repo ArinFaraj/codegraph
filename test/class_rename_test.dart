@@ -204,4 +204,77 @@ int bump() {
           before);
     });
   });
+
+  group('enum constants', () {
+    setUp(() {
+      File('${tempDir.path}/lib/stage.dart').writeAsStringSync('''
+enum Stage { draft, review, published }
+
+const fallback = Stage.review;
+
+String label(Stage s) {
+  switch (s) {
+    case Stage.draft:
+      return 'draft';
+    case Stage.review:
+      return 'in review';
+    case Stage.published:
+      return 'published';
+  }
+}
+
+bool pending(Stage s) => s == Stage.review || s == Stage.draft;
+
+String describe(Stage s) => switch (s) {
+      Stage.review => 'r',
+      _ => '-',
+    };
+''');
+      engine.build(const []);
+    });
+
+    test('every reference form renames together and stays resolvable',
+        () async {
+      final code =
+          await rename.run(['rename', 'Stage.review', 'inReview', '--apply']);
+      expect(code, 0);
+      final text = File('${tempDir.path}/lib/stage.dart').readAsStringSync();
+      expect(RegExp(r'\bStage\.review\b').hasMatch(text), isFalse,
+          reason: 'no reference form may survive:\n$text');
+      expect(text, contains('enum Stage { draft, inReview, published }'));
+      // A string literal is data, not a reference - it must NOT be rewritten,
+      // which is precisely why the rename discloses the name-as-string risk.
+      expect(text, contains("return 'in review';"));
+      expect(text, contains('const fallback = Stage.inReview;'));
+      expect(text, contains('case Stage.inReview:'));
+      expect(text, contains('Stage.inReview => '));
+      final analyze = Process.runSync('dart', ['analyze', 'lib/stage.dart']);
+      expect(analyze.exitCode, 0, reason: '${analyze.stdout}${analyze.stderr}');
+    });
+
+    test('the dry run discloses that the constant name is also a string',
+        () async {
+      final code =
+          await rename.run(['rename', 'Stage.review', 'inReview', '--json']);
+      expect(code, 0);
+      // Completeness is proven (enum constants resolve statically everywhere);
+      // what the repository cannot see is persisted or wire data spelling the
+      // old name, so the consequence is disclosed, not silently applied.
+      expect(File('${tempDir.path}/lib/stage.dart').readAsStringSync(),
+          contains('Stage { draft, review, published }'));
+    });
+
+    test('the same constant name in two unrelated enums refuses', () async {
+      File('${tempDir.path}/lib/other_stage.dart').writeAsStringSync('''
+enum Flow { review, done }
+''');
+      engine.build(const []);
+      final before = File('${tempDir.path}/lib/stage.dart').readAsStringSync();
+      final code =
+          await rename.run(['rename', 'review', 'inReview', '--apply']);
+      expect(code, 3,
+          reason: 'a bare name spanning unrelated declarations is ambiguous');
+      expect(File('${tempDir.path}/lib/stage.dart').readAsStringSync(), before);
+    });
+  });
 }

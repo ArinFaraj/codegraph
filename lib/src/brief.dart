@@ -263,10 +263,8 @@ List<String> _fileBrief(
       for (final d in declares) {
         final dstId = d.dst;
         final name = d.dstDisplayName;
-        final readers = graph.edges
-            .where(
-              (e) => e.dst == dstId && providerConsumerRels.contains(e.rel),
-            )
+        final readers = graph
+            .consumersOf(dstId)
             .map((e) => e.src.replaceFirst('file:', ''))
             .toSet()
             .toList()
@@ -381,11 +379,7 @@ List<String> _areaBrief(Graph graph, String prefix) {
   final readerCount = <String, int>{};
   for (final p in providersDeclared) {
     final id = p.id;
-    final n = graph.edges
-        .where(
-          (e) => e.dst == id && providerConsumerRels.contains(e.rel),
-        )
-        .length;
+    final n = graph.consumersOf(id).length;
     readerCount[p.name!] = n;
   }
   final rankedProviders = readerCount.entries.toList()
@@ -571,11 +565,7 @@ int _passport() {
   final readerCount = <String, int>{};
   for (final p in providers) {
     final id = p.id;
-    final n = graph.edges
-        .where(
-          (e) => e.dst == id && providerConsumerRels.contains(e.rel),
-        )
-        .length;
+    final n = graph.consumersOf(id).length;
     readerCount[p.name!] = (readerCount[p.name!] ?? 0) + n;
   }
   final rankedProviders = readerCount.entries.toList()

@@ -42,6 +42,11 @@ const providerInteractionRelOrder = [
   'refreshes',
 ];
 
+/// One consumer edge of a provider: the consuming file, and whether the
+/// element model confirmed the receiver (false = name-matched only, which
+/// `readers` and `find` render as `[unconfirmed]` on a resolved build).
+typedef ProviderConsumer = ({String file, bool confirmed});
+
 /// THE set of provider-interaction relations (`GraphEdge.rel` values a
 /// provider-use edge can carry). These all matter to impact and unused-provider
 /// analysis: a provider that is only invalidated or refreshed is still used.
@@ -624,6 +629,57 @@ class Graph {
         if (routeIndex != null) 'routeIndex': routeIndex!.toJson(),
         'edges': edges.map((e) => e.toJson()).toList(),
       };
+
+  /// Every provider-interaction edge pointing at [id], unfiltered and in
+  /// graph order: no dedup, no sort, so a file that watches the same
+  /// provider twice yields two edges. THE definition of "this provider's
+  /// consumers", shared by `query.dart` (`readers`, the `find` provider card,
+  /// `unused providers`), `brief.dart`'s reader lists and counts, and
+  /// `attention.dart` - one predicate, every call site.
+  Iterable<GraphEdge> consumersOf(String id) =>
+      edges.where((e) => e.dst == id && providerConsumerRels.contains(e.rel));
+
+  /// [consumersOf] grouped by relation in [providerInteractionRelOrder], for
+  /// the three renderers that print a provider's consumers (`readers` text,
+  /// `readers --json`, the `find` provider card). Relations with no edges are
+  /// absent.
+  ///
+  /// THE display order: by file, then unconfirmed before confirmed, so the
+  /// weaker claim about a file is the one a reader sees first. Renderers
+  /// preserve it and never re-sort - a second sort keyed on rendered text
+  /// would order by the marker's spelling instead of by what it means.
+  /// [ProviderConsumer.confirmed] is what that marker reads; pair it with
+  /// [isResolvedBuild], which decides whether the distinction means
+  /// anything.
+  Map<String, List<ProviderConsumer>> consumersByRel(String id) {
+    final byRel = <String, List<ProviderConsumer>>{};
+    for (final e in consumersOf(id)) {
+      byRel.putIfAbsent(e.rel, () => []).add((
+        file: e.src.replaceFirst('file:', ''),
+        confirmed: e.confidence == 'resolved',
+      ));
+    }
+    for (final list in byRel.values) {
+      list.sort((a, b) {
+        final byFile = a.file.compareTo(b.file);
+        return byFile != 0
+            ? byFile
+            : (a.confirmed == b.confirmed ? 0 : (a.confirmed ? 1 : -1));
+      });
+    }
+    return {
+      for (final rel in providerInteractionRelOrder)
+        if (byRel[rel] != null) rel: byRel[rel]!,
+    };
+  }
+
+  /// True when ANY edge carries element-resolved confidence. In a syntax
+  /// build every edge is heuristic, so an `[unconfirmed]` marker would be
+  /// noise on every line; in a resolved build its ABSENCE is a claim, which
+  /// is why every renderer of [consumersByRel] must consult this rather than
+  /// deciding for itself.
+  late final bool isResolvedBuild =
+      edges.any((e) => e.confidence == 'resolved');
 
   /// Provider nodes with zero `reads`/`watches`/`listens` edges pointing at
   /// them — the same "dead-code candidate" computation `query.dart`'s

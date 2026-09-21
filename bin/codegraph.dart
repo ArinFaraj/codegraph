@@ -124,7 +124,10 @@ Future<void> main(List<String> rawArgs) async {
         args.first == 'affected-tests' ||
         ((args.first == 'callers' || args.first == 'refs') &&
             args.contains('--resolved'));
-    await freshness.ensureFreshDefault(requireResolved: needsResolved);
+    await freshness.ensureFreshDefault(
+      requireResolved: needsResolved,
+      verb: args.first,
+    );
   }
   switch (args.first) {
     case 'daemon':

@@ -247,6 +247,7 @@ receive the generic graph plus only the deep facts Codegraph can prove.
 | `callers` tracks method *calls*, not field *reads* | `find <field>` or read the declaring class |
 | `impact` resolves providers/files, not methods | `callers <method>` + `impls <Interface>` for signature changes |
 | OpenAPI / generated DTO field removals | `git diff` on the API package |
+| String literals (log tags, feature-flag keys, analytics event names) are not indexed | grep the literal; `find` matches declarations and file names |
 | Global `GoRouter.redirect`/`onEnter`, runtime redirect outcomes, and custom navigator containers | `route` shows statically exact route-level redirects and resolved navigator ownership; inspect router construction for global policy |
 
 ## Artifacts and freshness

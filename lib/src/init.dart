@@ -629,8 +629,10 @@ Dart analyzer but uses pragmatic resolution:
 - **Provider usage is file-level**, matched by name against a global registry.
   Duplicate names are resolved per-reader by import reachability; unresolvable
   ties are flagged `ambiguous`, never guessed.
-- **Navigation targets are captured as expressions** (e.g. `AppPaths.x.path`),
-  not resolved to route definitions.
+- **Navigation targets are captured as expressions** in a syntax build (e.g.
+  `AppPaths.x.path`). A resolved build resolves the typed-route shapes it can
+  prove and answers `route <RouteData>` with the full card; what it cannot
+  resolve statically stays marked unresolved rather than guessed.
 - **The graph is lib/ + packages/*/lib only** - so `unused` output is a
   CANDIDATE list: confirm with exact-path grep across all Dart roots +
   whole-project analyze before deleting. (`callers` and `impls` do scan the test
@@ -648,12 +650,18 @@ Dart analyzer but uses pragmatic resolution:
   SUBSCRIBES to a provider, not which implementation RUNS in a given scope
   (bootstrap/test/route overrides can swap it).
 - **Syntax `callers` merges same-named declarations**. Pass `--resolved` for
-  element-precise target attribution; a current resolved build serves that
-  answer from its semantic index. Family providers still collapse to one node
-  (every instance is the same provider interaction edge).
+  element-precise target attribution (`Class.method` narrows it to one
+  declaration, and sites bound to a related one are disclosed, not dropped);
+  a current resolved build serves that answer from its semantic index. Family
+  providers still collapse to one node (every instance is the same provider
+  interaction edge).
 - **OpenAPI / generated model changes** (field removals on DTOs) are outside
   the graph - `find` locates the class but not what changed; use `git diff` on
   the API package or the regen report.
+- **String literals are not indexed** - a log tag, a feature-flag key, an
+  analytics event name or any other string passed to a call is invisible to
+  `find`, which matches declarations and file names. Going from a runtime log
+  line back to the code that emits it is a grep.
 - **Committed agent docs stay generic** - LIMITATIONS.md entries and area notes
   must not name a specific product, vendor SDK, or private project.
 

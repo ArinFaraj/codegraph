@@ -415,6 +415,74 @@ const kinds = ['AsyncNotifierProvider', 'Provider'];
     expect(exitCode, 0);
   });
 
+  test('find on one provider inlines where it lives and who consumes it', () {
+    engine.build(const []);
+    final result =
+        Process.runSync('dart', [cliSnapshot, 'find', 'homeProvider']);
+    expect(result.exitCode, 0);
+    final out = result.stdout as String;
+    expect(out, contains('provider: homeProvider'));
+    expect(out, contains('declared in lib/home/home_provider.dart'));
+    expect(out, contains('watches (1):'));
+    expect(out, contains('lib/home/home_page.dart'));
+
+    // A duplicated name has per-declaration readers that must not be merged,
+    // and a broad query is a ranked list, not a card: neither inlines.
+    for (final query in ['dupProvider', 'home']) {
+      final other = Process.runSync('dart', [cliSnapshot, 'find', query]);
+      expect(other.exitCode, 0);
+      expect(other.stdout as String, isNot(contains('declared in')),
+          reason: 'find $query must stay a plain ranked list');
+    }
+  });
+
+  test('find --json carries the provider hit\'s readers on the hit itself', () {
+    engine.build(const []);
+    final result = Process.runSync(
+        'dart', [cliSnapshot, 'find', 'homeProvider', '--json']);
+    expect(result.exitCode, 0);
+    final decoded = jsonDecode(result.stdout as String) as Map<String, dynamic>;
+    final first = (decoded['results'] as List).first as Map<String, dynamic>;
+    expect(first['kind'], 'provider');
+    expect(first['declaredIn'], 'lib/home/home_provider.dart');
+    expect(first['watches'], contains('lib/home/home_page.dart'));
+  });
+
+  test(
+      'find --json shares one budget with the provider card and reports the '
+      'cut', () {
+    engine.build(const []);
+    Map<String, dynamic> find(String budget) {
+      final result = Process.runSync('dart',
+          [cliSnapshot, 'find', 'homeProvider', '--json', '--budget', budget]);
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      return jsonDecode(result.stdout as String) as Map<String, dynamic>;
+    }
+
+    int items(Map<String, dynamic> decoded) {
+      var n = decoded['results'].length as int;
+      for (final r in decoded['results'] as List) {
+        for (final rel in const ['watches', 'reads', 'listens']) {
+          n += ((r as Map)[rel] as List? ?? const []).length;
+        }
+      }
+      return n;
+    }
+
+    // The whole point of --budget: the TOTAL item count obeys it, and a
+    // consumer that capped must be told what it did not receive.
+    final tight = find('1');
+    expect(items(tight), lessThanOrEqualTo(1));
+    expect((tight['results'] as List).first['truncated'], isTrue,
+        reason: 'the hit fits but its consumer lists were cut - silently '
+            'dropping them is the failure mode --budget must never have');
+
+    final roomy = find('20');
+    expect(items(roomy), greaterThan(1));
+    expect((roomy['results'] as List).first.containsKey('truncated'), isFalse,
+        reason: 'nothing was cut, so nothing may claim it was');
+  });
+
   test('find --budget value is not treated as an extra search term', () {
     engine.build(const []);
     final result = Process.runSync('dart', [
@@ -635,6 +703,118 @@ int Function() tearOffA(A a) => a.foo;
           hasLength(3));
       expect((coldJson['hits'] as List).where((h) => h['kind'] == 'ref'),
           hasLength(1));
+    },
+  );
+
+  test(
+    'find and readers make the same confidence claim about the same edge',
+    () async {
+      // Two renderers of one relationship. If one marks a name-matched reader
+      // `[unconfirmed]` and the other prints it bare, the quieter verb is
+      // claiming element resolution the graph never established.
+      writeFixturePackageConfig(tempDir);
+      await engine.buildResolved(const []);
+      String run(List<String> args) {
+        final result =
+            Process.runSync('dart', [cliSnapshot, ...args, '--no-rebuild']);
+        expect(result.exitCode, 0, reason: result.stderr as String);
+        return result.stdout as String;
+      }
+
+      final readers = run(['readers', 'homeProvider']);
+      final find = run(['find', 'homeProvider']);
+      const reader = 'lib/home/home_page.dart';
+      expect(readers, contains(reader));
+      expect(find, contains(reader));
+
+      // The fixture resolves no reader edge, so on a resolved build BOTH
+      // verbs owe a marker AND the legend that explains it. Asserted
+      // unconditionally: guarding this on `contains('[unconfirmed]')` would
+      // make a renamed marker pass by skipping its own check.
+      for (final out in [readers, find]) {
+        expect(out, contains('[unconfirmed]'), reason: out);
+        expect(out, contains('name-matched receiver'),
+            reason: 'a marker with no legend is not a disclosure:\n$out');
+      }
+    },
+  );
+
+  test(
+    'a verb that escalates to a resolved build says so before paying for it',
+    () async {
+      // A read-only lookup that blocks for tens of seconds is a different
+      // operation than the one the caller asked for.
+      writeFixturePackageConfig(tempDir);
+      engine.build(const []); // syntax-only graph on a resolvable workspace
+      final result =
+          Process.runSync('dart', [cliSnapshot, 'route', 'HomeRoute']);
+      final notice = result.stderr as String;
+      expect(notice, contains('route needs element resolution'));
+      expect(notice, contains('--no-rebuild'));
+      expect(result.stdout as String, isNot(contains('needs element')),
+          reason: 'stdout stays clean so --json parsing is safe');
+    },
+  );
+
+  test(
+    'callers --resolved honors a Class.method target instead of answering zero',
+    () async {
+      // `rename` and `find` both speak `Owner.member`, so agents type it here
+      // too: the owner must filter the result rather than being matched as
+      // part of one literal name that no file contains.
+      writeFixturePackageConfig(tempDir);
+      File('${tempDir.path}/lib/qualified_case.dart').writeAsStringSync('''
+abstract class Repo { Future<String> fetchToken(); }
+
+class HttpRepo implements Repo {
+  @override
+  Future<String> fetchToken() async => 'token';
+}
+
+class Controller {
+  Controller(this._repo);
+  final Repo _repo;
+  Future<String> load() => _repo.fetchToken();
+}
+''');
+      await engine.buildResolved(const []);
+      Map<String, dynamic> callers(String target, {bool indexed = true}) {
+        final result = Process.runSync(
+          'dart',
+          [
+            cliSnapshot,
+            'callers',
+            target,
+            '--resolved',
+            '--json',
+            '--no-rebuild',
+            if (!indexed) '--no-index',
+          ],
+        );
+        expect(result.exitCode, 0, reason: result.stderr as String);
+        return jsonDecode(result.stdout as String) as Map<String, dynamic>;
+      }
+
+      expect(callers('Repo.fetchToken')['count'], 1,
+          reason: 'the call binds to the interface declaration');
+
+      // The implementation's own count is honestly zero, and an empty answer
+      // reads as dead code, so the sites that dispatch here are disclosed.
+      final impl = callers('HttpRepo.fetchToken');
+      expect(impl['count'], 0);
+      expect(impl['elsewhere'], {'Repo.fetchToken': 1});
+
+      // A bare name is unchanged: no owner, no partition, no disclosure.
+      final bare = callers('fetchToken');
+      expect(bare['count'], 1);
+      expect(bare.containsKey('elsewhere'), isFalse);
+
+      // The semantic index and a fresh analyzer walk are two code paths and
+      // both were blind to the owner; they must answer identically.
+      expect(callers('Repo.fetchToken', indexed: false)['count'], 1);
+      final coldImpl = callers('HttpRepo.fetchToken', indexed: false);
+      expect(coldImpl['count'], 0);
+      expect(coldImpl['elsewhere'], {'Repo.fetchToken': 1});
     },
   );
 

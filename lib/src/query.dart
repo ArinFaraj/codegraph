@@ -89,37 +89,33 @@ int run(List<String> args) {
   return code;
 }
 
+/// Whether [c] gets the `[unconfirmed]` marker: a claim about element
+/// resolution, decided once, from the records - never by reading it back off
+/// a rendered line, which would make the marker's SPELLING load-bearing.
+bool _needsMarker(Graph graph, ProviderConsumer c) =>
+    graph.isResolvedBuild && !c.confirmed;
+
+/// One consumer file as every text renderer prints it.
+String _consumerLine(Graph graph, ProviderConsumer c) =>
+    '${c.file}${_needsMarker(graph, c) ? '  [unconfirmed]' : ''}';
+
+const _unconfirmedLegend =
+    '([unconfirmed] = name-matched receiver, not element-confirmed)';
+
 void readersInto(Graph graph, List<String> out, GraphNode decl) {
-  final id = decl.id;
   final name = decl.name!;
   out.add(
     'provider $name — ${decl.providerType}'
     '${decl.autoDispose == true ? ' (autoDispose)' : ''}'
     ' — declared in ${decl.declaredIn}',
   );
-  final consumers = graph.edges.where(
-    (e) => e.dst == id && providerConsumerRels.contains(e.rel),
-  );
-  // Only annotate confidence in a RESOLVED build (some edge is element-resolved).
-  // In a syntax build everything is heuristic, so the marker would be noise.
-  final resolvedBuild = graph.edges.any((e) => e.confidence == 'resolved');
-  final byRel = <String, List<String>>{};
-  for (final e in consumers) {
-    final f = e.src.replaceFirst('file:', '');
-    final mark =
-        (resolvedBuild && e.confidence != 'resolved') ? '  [unconfirmed]' : '';
-    byRel.putIfAbsent(e.rel, () => []).add('$f$mark');
-  }
-  for (final rel in providerInteractionRelOrder) {
-    final list = (byRel[rel] ?? [])..sort();
-    if (list.isEmpty) continue;
-    out.add('$rel (${list.length}):');
-    out.addAll(list.map((f) => '  $f'));
+  final byRel = graph.consumersByRel(decl.id);
+  for (final entry in byRel.entries) {
+    out.add('${entry.key} (${entry.value.length}):');
+    out.addAll(entry.value.map((c) => '  ${_consumerLine(graph, c)}'));
   }
   if (byRel.isEmpty) out.add('(no consumers found)');
-  if (resolvedBuild) {
-    out.add('([unconfirmed] = name-matched receiver, not element-confirmed)');
-  }
+  if (graph.isResolvedBuild) out.add(_unconfirmedLegend);
 }
 
 /// Record form of one declaration's reader lists, for `--json`. [remaining]
@@ -127,29 +123,46 @@ void readersInto(Graph graph, List<String> out, GraphNode decl) {
 /// multiple declarations, across all of them too) — decremented as items are
 /// taken so the total item count across every section never exceeds the
 /// original `--budget`, instead of each section getting its own full budget.
-Map<String, dynamic> _readersRecord(
+({Map<String, dynamic> record, bool truncated}) _consumerRecord(
   Graph graph,
   GraphNode decl,
   Budget remaining,
 ) {
-  final id = decl.id;
-  final byRel = <String, List<String>>{
-    for (final rel in providerInteractionRelOrder)
-      rel: remaining.take(
-        graph.edges
-            .where((e) => e.dst == id && e.rel == rel)
-            .map((e) => e.src.replaceFirst('file:', ''))
-            .toList()
-          ..sort(),
-      ),
-  };
-  return {
-    'provider': decl.name,
-    'declaredIn': decl.declaredIn,
-    'line': decl.line,
-    ...byRel,
-  };
+  final byRel = graph.consumersByRel(decl.id);
+  final lists = <String, List<String>>{};
+  var total = 0;
+  var shown = 0;
+  // Every relation is emitted, empty ones included: a consumer reading
+  // `listens` must not have to distinguish "none" from "key absent".
+  for (final rel in providerInteractionRelOrder) {
+    final all = [
+      for (final c in byRel[rel] ?? const <ProviderConsumer>[]) c.file,
+    ];
+    final taken = remaining.take(all);
+    total += all.length;
+    shown += taken.length;
+    lists[rel] = taken;
+  }
+  return (
+    record: {
+      'declaredIn': decl.declaredIn,
+      'line': decl.line,
+      ...lists,
+    },
+    // Counted here because this is the only place that holds both numbers.
+    truncated: shown < total,
+  );
 }
+
+Map<String, dynamic> _readersRecord(
+  Graph graph,
+  GraphNode decl,
+  Budget remaining,
+) =>
+    {
+      'provider': decl.name,
+      ..._consumerRecord(graph, decl, remaining).record,
+    };
 
 void readers(Graph graph, List<String> rest, int budget, bool asJson) {
   if (rest.isEmpty) {
@@ -222,13 +235,9 @@ void readers(Graph graph, List<String> rest, int budget, bool asJson) {
       out.add('');
       readersInto(graph, out, decl);
     }
-    final unresolved = graph.edges
-        .where(
-          (e) =>
-              e.dst == 'provider:$name' &&
-              e.isUnresolvedAmbiguous &&
-              providerConsumerRels.contains(e.rel),
-        )
+    final unresolved = graph
+        .consumersOf('provider:$name')
+        .where((e) => e.isUnresolvedAmbiguous)
         .toList();
     if (unresolved.isNotEmpty) {
       out.add('');
@@ -954,23 +963,17 @@ void _find(Graph graph, List<String> rest, int budget, bool asJson) {
   // an alphabetical list wearing a ranking's clothes. An exact, unique name
   // match is the one case where that ranking is beside the point.
   final exact = hits.where((h) => _findName(h).toLowerCase() == sub).toList();
+  final decisiveTop =
+      exact.length == 1 && _findName(hits.first).toLowerCase() == sub;
   final rank = rankConfidence(
     hits.map((h) => h.inDeg).toList(),
-    decisiveTop:
-        exact.length == 1 && _findName(hits.first).toLowerCase() == sub,
+    decisiveTop: decisiveTop,
   );
 
+  final provider = _soleProviderHit(graph, hits, decisiveTop);
+
   if (asJson) {
-    emitJson({
-      ...envelope('find', sub),
-      'confidence': rank.confidence,
-      'marginPct': rank.marginPct,
-      'tiedAtTop': rank.tiedAtTop,
-      'results': hits.take(budget).map((h) => h.toJson()).toList(),
-      // Non-silent truncation, matching the other --json verbs (callers,
-      // impls, …) — a consumer capping at --budget must know results dropped.
-      if (hits.length > budget) 'truncated': hits.length - budget,
-    });
+    _emitFindJson(graph, sub, hits, provider, rank, budget);
     return;
   }
 
@@ -982,14 +985,93 @@ void _find(Graph graph, List<String> rest, int budget, bool asJson) {
   }
 
   final out = hits.map(render).toList();
+  if (provider != null) {
+    out.insertAll(1, _providerCard(graph, provider));
+  }
   emit(
     out.isEmpty
         ? ['no matches (${freshnessClause(graph.stats['files'] ?? 0)})']
         : out,
     budget,
-    hint: 'narrow the substring, or: sym <Name> for one symbol',
+    hint: provider != null
+        ? 'readers ${provider.name} for the full consumer lists'
+        : 'narrow the substring, or: sym <Name> for one symbol',
     footers: out.isEmpty ? const [] : [confidenceFooter(rank)],
   );
+}
+
+/// The one provider a decisive `find` hit names, or null when the top hit is
+/// not a provider, the ranking is not decisive, or the name is declared more
+/// than once - a duplicated provider name has per-declaration readers that
+/// must never be merged, and `readers` is the verb that separates them.
+///
+/// On the verb whose job is "what/where is X", a provider name plus an
+/// in-degree is not an answer; a non-null result earns the inlined card.
+GraphNode? _soleProviderHit(Graph graph, List<_FindHit> hits, bool decisive) {
+  if (!decisive || hits.isEmpty || hits.first.kind != 'provider') return null;
+  final decls =
+      graph.nodes.where((n) => n.isProvider && n.name == _findName(hits.first));
+  return decls.length == 1 ? decls.single : null;
+}
+
+void _emitFindJson(
+  Graph graph,
+  String sub,
+  List<_FindHit> hits,
+  GraphNode? provider,
+  ({String confidence, int marginPct, int tiedAtTop}) rank,
+  int budget,
+) {
+  // ONE budget across the hit list and the provider card's consumer lists:
+  // --budget caps the total item count, not each section separately.
+  final remaining = Budget(budget);
+  final results = [for (final h in remaining.take(hits)) h.toJson()];
+  if (provider != null && results.isNotEmpty) {
+    final detail = _consumerRecord(graph, provider, remaining);
+    results[0] = {
+      ...results.first,
+      // `declaredIn`/`line` describe the declaration and win over the hit's
+      // own (absent) line, which is why this spread comes second.
+      ...detail.record,
+      if (detail.truncated) 'truncated': true,
+    };
+  }
+  emitJson({
+    ...envelope('find', sub),
+    'confidence': rank.confidence,
+    'marginPct': rank.marginPct,
+    'tiedAtTop': rank.tiedAtTop,
+    'results': results,
+    // Non-silent truncation, matching the other --json verbs (callers,
+    // impls, …) — a consumer capping at --budget must know results dropped.
+    if (hits.length > budget) 'truncated': hits.length - budget,
+  });
+}
+
+/// The lines `find` inlines under a decisive provider hit: where it is
+/// declared, then its consumers per relation, comma-joined and capped the way
+/// `sym` caps `imported-by`. Overflow points at `readers`, which prints the
+/// lists in full.
+List<String> _providerCard(Graph graph, GraphNode decl, {int cap = 6}) {
+  final out = <String>[
+    '  declared in ${decl.declaredIn}'
+        '${decl.line == null ? '' : ':${decl.line}'}'
+        '${decl.providerType == null ? '' : '  ${decl.providerType}'}'
+        '${decl.autoDispose == true ? ' (autoDispose)' : ''}',
+  ];
+  final byRel = graph.consumersByRel(decl.id);
+  var marked = false;
+  for (final entry in byRel.entries) {
+    final shown = entry.value.take(cap).toList();
+    marked = marked || shown.any((c) => _needsMarker(graph, c));
+    final more = entry.value.length - shown.length;
+    out.add('  ${entry.key} (${entry.value.length}): '
+        '${shown.map((c) => _consumerLine(graph, c)).join(', ')}'
+        '${more > 0 ? ', ... $more more' : ''}');
+  }
+  if (byRel.isEmpty) out.add('  (no consumers found)');
+  if (marked) out.add('  $_unconfirmedLegend');
+  return out;
 }
 
 /// The declared name a `find` hit matched on, stripped of the

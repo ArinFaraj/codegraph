@@ -58,7 +58,10 @@ void _markPreflightFresh() {
 /// while ensuring
 /// ordinary CLI navigation stays fast after an edit. Element-precise verbs
 /// opt into the resolved path through [requireResolved].
-Future<void> ensureFreshDefault({bool requireResolved = false}) async {
+Future<void> ensureFreshDefault({
+  required String verb,
+  bool requireResolved = false,
+}) async {
   _preflightFresh = false;
   _preflightWorkspace = null;
   if (!autoRebuild) return;
@@ -74,9 +77,14 @@ Future<void> ensureFreshDefault({bool requireResolved = false}) async {
     if (graph == null) return;
     final canResolve = File('.dart_tool/package_config.json').existsSync();
     if (requireResolved && canResolve && graph.stats['resolvedBuild'] != 1) {
+      // A lookup that blocks for tens of seconds is a different operation
+      // than the one the caller asked for, so the escalation names the verb,
+      // the size of the walk, and the flag that declines it.
       stderr.writeln(
-        'graph is syntax-only but resolved dependencies are available - '
-        'rebuilding',
+        '$verb needs element resolution and this graph is syntax-only - '
+        'running a resolved build over ${graph.stats['files'] ?? '?'} files '
+        'first (whole-workspace analysis; seconds to a minute on a large '
+        'host). `--no-rebuild` answers from the graph as-is instead.',
       );
       await engine.buildResolvedRuntime();
       _markPreflightFresh();

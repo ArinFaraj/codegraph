@@ -280,6 +280,27 @@ class _ResolvedFinder extends RecursiveAstVisitor<void> {
   }
 }
 
+/// Splits a `callers`/`refs` target spelled `Owner.member` into its parts;
+/// `owner` is null for a bare name. `rename` and `find` both speak that
+/// spelling, so it must resolve here as a name plus an owner filter: matched
+/// whole, it is a literal no source file contains.
+/// Target counts, most-called first, name-alphabetical within a tie.
+List<MapEntry<String, int>> _byCountDesc(Map<String, int> counts) =>
+    counts.entries.toList()
+      ..sort((a, b) {
+        final byCount = b.value.compareTo(a.value);
+        return byCount != 0 ? byCount : a.key.compareTo(b.key);
+      });
+
+({String? owner, String name}) splitQualifiedTarget(String symbol) {
+  final m = RegExp(r'^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$').firstMatch(
+    symbol,
+  );
+  return m == null
+      ? (owner: null, name: symbol)
+      : (owner: m.group(1), name: m.group(2)!);
+}
+
 int _emitResolvedResults({
   required String verb,
   required String symbol,
@@ -288,25 +309,42 @@ int _emitResolvedResults({
   required bool asJson,
   required bool caveat,
   required Graph graph,
-  required List<_RHit> hits,
+  required List<_RHit> allHits,
   required Map<String, List<String>> overrides,
   required int unresolvedFiles,
   required bool indexed,
 }) {
+  // The owner is the owner part of [symbol] - derived, never passed, so the
+  // two cannot disagree.
+  final owner = splitQualifiedTarget(symbol).owner;
+  // With an owner, sites bound to a DIFFERENT declaration of the same name are
+  // not the answer - but they are not nothing either: a call through a
+  // supertype-typed receiver dispatches to this override at runtime. An empty
+  // list reads as dead code, so they are reported beside the answer.
+  // Always a copy: this list is sorted in place below, and an alias of the
+  // caller's would sort theirs too.
+  final hits = [
+    for (final h in allHits)
+      if (owner == null || h.target == symbol) h,
+  ];
+
   final overridden = {
     for (final e in overrides.entries)
       if (e.value.isNotEmpty) e.key: e.value,
   };
 
+  // One pass over every site, read two ways: the answer's targets, and the
+  // same-named declarations the owner filtered out.
   final byTarget = <String, int>{};
-  for (final h in hits) {
+  for (final h in allHits) {
     byTarget[h.target] = (byTarget[h.target] ?? 0) + 1;
   }
-  final targets = byTarget.entries.toList()
-    ..sort((a, b) {
-      final byCount = b.value.compareTo(a.value);
-      return byCount != 0 ? byCount : a.key.compareTo(b.key);
-    });
+  final elsewhereByTarget =
+      owner == null ? const <String, int>{} : ({...byTarget}..remove(symbol));
+  final elsewhereCount = elsewhereByTarget.values.fold<int>(0, (a, b) => a + b);
+  final targets = _byCountDesc(owner == null
+      ? byTarget
+      : {if (byTarget.containsKey(symbol)) symbol: byTarget[symbol]!});
 
   int inDeg(String file) => graph.inDeg['file:$file'] ?? 0;
   hits.sort((a, b) {
@@ -325,6 +363,7 @@ int _emitResolvedResults({
       if (indexed) 'indexed': true,
       'count': hits.length,
       'targets': {for (final e in targets) e.key: e.value},
+      if (elsewhereByTarget.isNotEmpty) 'elsewhere': elsewhereByTarget,
       if (overridden.isNotEmpty) 'overrides': overridden,
       if (unresolvedFiles > 0) 'filesFellBack': unresolvedFiles,
       'hits': [
@@ -359,12 +398,21 @@ int _emitResolvedResults({
         'change must update the base + all overrides (external base = unsafe)');
   }
   if (hits.isEmpty) {
-    out.add(
-        '  (none — element-resolved; try `find $symbol` or check the name)');
+    out.add(elsewhereByTarget.isEmpty
+        ? '  (none — element-resolved; try `find $symbol` or check the name)'
+        : '  (none bound to $symbol itself - element-resolved)');
   }
   for (final h in hits) {
     final k = h.kind == 'ref' ? ' [ref]' : '';
     out.add('  ${h.file}:${h.line}$k -> ${h.target}  ${h.text}');
+  }
+  if (elsewhereByTarget.isNotEmpty) {
+    final named = _byCountDesc(elsewhereByTarget);
+    out.add('  ($elsewhereCount more site(s) of the same name bind to '
+        '${named.map((e) => '${e.key} (${e.value})').take(6).join(', ')} - a '
+        'call through a supertype-typed receiver is attributed to the '
+        'declaration it binds to, and may dispatch here at runtime; drop the '
+        '"$owner." qualifier to see them)');
   }
   if (unresolvedFiles > 0) {
     out.add('  (note: $unresolvedFiles files could not be resolved — '
@@ -388,9 +436,10 @@ int _runIndexedResolved({
   final targetBySymbol = {
     for (final target in index.targets) target.symbol: target,
   };
+  final want = splitQualifiedTarget(symbol);
   final sites = index.references.where((site) {
     final targetName = targetBySymbol[site.symbol]?.name;
-    if ((targetName ?? executableName(site.symbol)) != symbol) return false;
+    if ((targetName ?? executableName(site.symbol)) != want.name) return false;
     return refsMode || site.kind == refactorSiteCall;
   });
   final linesByFile = <String, List<String>>{};
@@ -436,7 +485,7 @@ int _runIndexedResolved({
     asJson: asJson,
     caveat: caveat,
     graph: graph,
-    hits: hits,
+    allHits: hits,
     overrides: overrides,
     unresolvedFiles: 0,
     indexed: true,
@@ -455,6 +504,7 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
     return 64;
   }
   final symbol = positional[1];
+  final want = splitQualifiedTarget(symbol);
 
   if (!File('.dart_tool/package_config.json').existsSync()) {
     stderr.writeln('--resolved needs resolved dependencies but no '
@@ -470,7 +520,7 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
   if (!args.contains('--no-index') &&
       index != null &&
       index.complete &&
-      (!refsMode || !index.nonExecutableNames.contains(symbol)) &&
+      (!refsMode || !index.nonExecutableNames.contains(want.name)) &&
       index.sourceDigest == graph.stats['sourceDigest']) {
     return _runIndexedResolved(
       verb: verb,
@@ -517,7 +567,7 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
         progress.advance(++completed);
         continue;
       }
-      if (!content.contains(symbol)) {
+      if (!content.contains(want.name)) {
         progress.advance(++completed);
         continue; // prefilter: skip resolution
       }
@@ -536,7 +586,7 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
         continue;
       }
       final rel = f.path.startsWith('./') ? f.path.substring(2) : f.path;
-      r.unit.accept(_ResolvedFinder(symbol, r.unit.lineInfo, rel,
+      r.unit.accept(_ResolvedFinder(want.name, r.unit.lineInfo, rel,
           content.split('\n'), hits, refsMode, overrides));
       progress.advance(++completed);
     }
@@ -551,7 +601,7 @@ Future<int> runResolved(List<String> args, {bool caveat = true}) async {
     asJson: asJson,
     caveat: caveat,
     graph: graph,
-    hits: hits,
+    allHits: hits,
     overrides: overrides,
     unresolvedFiles: unresolvedFiles,
     indexed: false,

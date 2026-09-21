@@ -108,7 +108,7 @@ void main() {
     await engine.buildDefault(const []);
     addCanaryClass();
 
-    await freshness.ensureFreshDefault();
+    await freshness.ensureFreshDefault(verb: 'find');
 
     final g = jsonDecode(
       File('docs/maps/code_graph.json').readAsStringSync(),
@@ -128,7 +128,7 @@ void main() {
     expect((g['stats'] as Map)['analysisPolicy'], 0);
 
     writeFixturePackageConfig(tempDir);
-    await freshness.ensureFreshDefault();
+    await freshness.ensureFreshDefault(verb: 'find');
 
     g = jsonDecode(
       File('docs/maps/code_graph.json').readAsStringSync(),
@@ -143,7 +143,7 @@ void main() {
           .where((file) => file.path.endsWith('.md')))
         file.path: file.readAsBytesSync(),
     };
-    await freshness.ensureFreshDefault(requireResolved: true);
+    await freshness.ensureFreshDefault(verb: 'route', requireResolved: true);
 
     g = jsonDecode(
       File('docs/maps/code_graph.json').readAsStringSync(),

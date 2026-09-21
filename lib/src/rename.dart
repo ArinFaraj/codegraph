@@ -58,6 +58,25 @@ class _Edit {
 
 typedef _Refuse = int Function(String reason, {Object? extra});
 
+/// What a PROVEN-complete edit set still owes its caller: consequences the
+/// identifiers do not carry. Empty for every declaration kind whose name is
+/// only ever a name.
+List<String> _renameWarnings(Iterable<Element> component, String wantName) {
+  // An enum constant has no override hierarchy, so the set holding one holds
+  // nothing else; its name is also a runtime string, and string literals are
+  // data this rename never rewrites.
+  for (final el in component) {
+    if (el is! FieldElement || !el.isEnumConstant) continue;
+    return [
+      'enum constant: `${el.enclosingElement.name}.$wantName` is also a '
+          'runtime STRING via .name / values.byName / toString() and any '
+          'by-name serialization - persisted or wire data spelling the old '
+          'name will no longer parse. Confirm before applying.',
+    ];
+  }
+  return const [];
+}
+
 int _emitRename({
   required String wantName,
   required String newName,
@@ -66,6 +85,7 @@ int _emitRename({
   required bool asJson,
   required bool apply,
   required CancelGuard guard,
+  List<String> warnings = const [],
 }) {
   final byFile = <String, List<_Edit>>{};
   var retainedBackups = <String>[];
@@ -141,6 +161,7 @@ int _emitRename({
       'declarations': members,
       'sites': edits.length,
       'applied': apply,
+      if (warnings.isNotEmpty) 'warnings': warnings,
       if (lateCancel) 'lateCancel': true,
       if (retainedBackups.isNotEmpty) 'retainedBackups': retainedBackups,
       'edits': [
@@ -168,6 +189,9 @@ int _emitRename({
       for (final e in (entry.value..sort((a, b) => a.line.compareTo(b.line)))) {
         stdout.writeln('  ${e.file}:${e.line}');
       }
+    }
+    for (final warning in warnings) {
+      stdout.writeln('  (!) $warning');
     }
     for (final path in retainedBackups) {
       stderr.writeln('warning: applied successfully; remove retained backup: '
@@ -362,6 +386,17 @@ class _Collector extends RecursiveAstVisitor<void> {
       _decl(node.declaredFragment?.element, t.offset, t.length);
     }
     super.visitEnumDeclaration(node);
+  }
+
+  // An enum constant is neither a top-level variable nor an executable, so
+  // neither index carries it. Uses bind to the constant's implicit getter and
+  // are picked up by visitSimpleIdentifier below.
+  @override
+  void visitEnumConstantDeclaration(EnumConstantDeclaration node) {
+    if (node.name.lexeme == name) {
+      _decl(node.declaredFragment?.element, node.name.offset, node.name.length);
+    }
+    super.visitEnumConstantDeclaration(node);
   }
 
   @override
@@ -782,5 +817,6 @@ Future<int> _run(List<String> args, CancelGuard guard) async {
     asJson: asJson,
     apply: apply,
     guard: guard,
+    warnings: _renameWarnings(component, wantName),
   );
 }
