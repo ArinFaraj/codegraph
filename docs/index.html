@@ -3,18 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>codegraph: resolved code intelligence for Dart &amp; Flutter</title>
-  <meta name="description" content="Analyzer-built symbol, dependency, provider, route, and test index for Dart and Flutter projects.">
+  <title>codegraph: exact answers about a Dart or Flutter repository</title>
+  <meta name="description" content="Every use of a symbol with its role, what a change reaches, and renames that are complete or refused with a reason. Answered by a warm Dart analyzer, with nothing written into your repository.">
   <meta name="theme-color" content="#f3f5f7">
   <link rel="canonical" href="https://arinfaraj.github.io/codegraph/">
-  <meta property="og:title" content="codegraph: resolved code intelligence for Dart &amp; Flutter">
-  <meta property="og:description" content="Analyzer-built project index and CLI for Dart, Flutter, Riverpod, and GoRouter codebases.">
+  <meta property="og:title" content="codegraph: exact answers about a Dart or Flutter repository">
+  <meta property="og:description" content="Every use of a symbol with its role, what a change reaches, and verified renames, for coding agents and people.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://arinfaraj.github.io/codegraph/">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="codegraph: resolved code intelligence for Dart &amp; Flutter">
-  <meta name="twitter:description" content="Inspect dependencies, calculate impact, select tests, and apply verified renames.">
-
+  <meta name="twitter:title" content="codegraph: exact answers about a Dart or Flutter repository">
+  <meta name="twitter:description" content="Every use of a symbol with its role, what a change reaches, and verified renames.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23151820'/%3E%3Cpath d='M7 9h8l-4 7h13M7 9l4 15' fill='none' stroke='%23e5ff52' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='7' cy='9' r='2.3' fill='%234a68ff'/%3E%3Ccircle cx='24' cy='16' r='2.3' fill='%234a68ff'/%3E%3Ccircle cx='11' cy='24' r='2.3' fill='%234a68ff'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -106,7 +105,7 @@
     .good { color: #71e3b4; }
     .warn { color: #ffc45e; }
     .console-status { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 11px 14px; color: #7f8a98; border-top: 1px solid #2b323e; background: #0d1117; font: 400 9px var(--mono); }
-    .console-status span::before { content: "●"; margin-right: 6px; color: #71e3b4; }
+    .console-status span::before { content: "\25CF"; margin-right: 6px; color: #71e3b4; }
 
     .hero-foot { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); margin-top: clamp(66px, 8vw, 100px); border-top: 1px solid var(--line); }
     .hero-foot > div { min-height: 92px; display: flex; flex-direction: column; justify-content: center; padding: 17px 20px; border-left: 1px solid var(--line); }
@@ -145,7 +144,7 @@
     .aside-fact b { display: block; margin-bottom: 3px; color: #f4f7fa; font-size: 12px; }
     .aside-fact span { display: block; color: #84909f; font: 400 9px/1.5 var(--mono); }
     .workflow-meta { display: flex; flex-wrap: wrap; gap: 12px 25px; padding: 11px 16px; color: #76818f; border-top: 1px solid #303744; background: #0d1117; font: 400 9px var(--mono); }
-    .workflow-meta span::before { content: "✓"; margin-right: 6px; color: #71e3b4; }
+    .workflow-meta span::before { content: "\2713"; margin-right: 6px; color: #71e3b4; }
 
     /* Animated architecture */
     .architecture { color: var(--white); background: var(--blue); border-bottom-color: #1734b7; }
@@ -198,7 +197,7 @@
     .safety-copy p { max-width: 560px; color: var(--ink-soft); }
     .safety-list { margin: 27px 0 0; padding: 0; list-style: none; }
     .safety-list li { display: flex; gap: 11px; margin: 11px 0; color: var(--ink-soft); font-size: 13px; }
-    .safety-list li::before { content: "✓"; color: var(--green); font-family: var(--mono); }
+    .safety-list li::before { content: "\2713"; color: var(--green); font-family: var(--mono); }
     .refusal { border: 1px solid var(--line-dark); border-radius: 7px; background: var(--terminal); overflow: hidden; }
     .refusal-head { min-height: 41px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; color: #8a95a4; border-bottom: 1px solid #303744; background: var(--terminal-raised); font: 400 9px var(--mono); }
     .refusal-head span:last-child { color: #ff8b84; }
@@ -292,9 +291,9 @@
         <svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><rect x=".5" y=".5" width="27" height="27" rx="5.5" fill="#151820"/><path d="M7 8h7l-3.5 6H21M7 8l3.5 13" stroke="#e5ff52" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7" cy="8" r="2" fill="#6380ff"/><circle cx="21" cy="14" r="2" fill="#6380ff"/><circle cx="10.5" cy="21" r="2" fill="#6380ff"/></svg>
         codegraph
       </a>
-      <span class="version">v3.0.0</span>
-      <nav class="nav-links" aria-label="Primary navigation"><a href="#workflow">Workflow</a><a href="#architecture">Architecture</a><a href="#commands">Commands</a><a href="#install">Install</a></nav>
-      <a class="nav-cta" href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
+      <span class="version">v4.0.0</span>
+      <nav class="nav-links" aria-label="Primary navigation"><a href="#commands">Commands</a><a href="#rename">Rename</a><a href="#install">Install</a></nav>
+      <a class="nav-cta" href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">GitHub</a>
     </div>
   </header>
 
@@ -303,191 +302,100 @@
       <div class="shell">
         <div class="hero-top">
           <div class="hero-copy">
-            <div class="hero-kicker"><i></i> Dart and Flutter static analysis</div>
-            <h1>Build a resolved index. <span class="mark">Query it</span> from the CLI.</h1>
-            <p class="hero-lede">codegraph indexes symbols, callers, imports, provider reads, typed routes, and test relationships. It calculates impact, selects tests, and applies verified renames. If an edit cannot be proven complete, it refuses.</p>
-            <div class="hero-actions"><a class="button" href="#install">Install <span aria-hidden="true">↓</span></a><a class="button light" href="https://github.com/ArinFaraj/codegraph#query-what-agents-run" target="_blank" rel="noopener">Command reference <span aria-hidden="true">↗</span></a></div>
+            <div class="hero-kicker"><i></i>for coding agents and the people next to them</div>
+            <h1>Exact answers about your <span class="mark">Dart</span> code.</h1>
+            <p class="hero-lede">Every use of a symbol with its line and its role, what a change reaches, and renames that are complete or refused with a reason. Answered by the Dart analyzer, kept warm in the background, as your files are right now. Nothing is written into your repository and there is nothing to regenerate.</p>
+            <div class="hero-actions"><a class="button" href="#install">Install</a><a class="button light" href="https://github.com/ArinFaraj/codegraph#readme" target="_blank" rel="noopener">Read the docs</a></div>
           </div>
+          <div class="hero-console" aria-label="Example output">
+            <div class="console-bar"><span class="console-lights"><i></i><i></i><i></i></span><span>refs</span><span>exact</span></div>
+<pre><span class="prompt">$</span> <span class="cmd">codegraph refs sessionProvider</span>
+refs sessionProvider (provider, lib/core/session.dart:8):
+  <span class="muted">6 uses in 2 files (1 in tests)</span>
+<span class="blue">ref.watch (1):</span>
+  lib/features/home/home_page.dart:9  ref.watch(sessionProvider)
+<span class="blue">ref.read (1):</span>
+  lib/features/home/home_page.dart:17  deps.ref.read(sessionProvider)
+<span class="blue">ref.listen (1):</span>
+  lib/features/home/home_page.dart:10  ref.listen(sessionProvider, ...)
+<span class="blue">tests, override (1):</span>
+  test/home_test.dart:14  sessionProvider.overrideWith(...)
 
-          <div class="hero-console" aria-label="Codegraph change query example">
-            <div class="console-bar"><div class="console-lights" aria-hidden="true"><i></i><i></i><i></i></div><span>mobile_app / zsh</span><span>graph fresh</span></div>
-            <pre><span class="cmd"><span class="prompt">$</span> codegraph change authRepositoryProvider</span>
-
-<span class="blue">target</span>      authRepositoryProvider
-            lib/features/auth/data/auth_repository.dart:18
-
-<span class="blue">affected code</span>
-  7 direct readers
-  14 transitive dependents
-  2 routes · 3 screens · 4 tests
-
-<span class="warn">follow-up</span>   1 file has no test reference
-<span class="good">identity</span>    resolved by the Dart analyzer</pre>
-            <div class="console-status"><span>Dart analyzer</span><span>Riverpod</span><span>GoRouter</span></div>
+<span class="prompt">$</span> <span class="cmd">codegraph rename DiskStore.save persist --apply</span>
+renaming method DiskStore.save -&gt; persist: 4 edits in 2 files
+<span class="good">applied. Analysis of 2 affected files shows no new errors.</span></pre>
+            <div class="console-status"><span>synced with disk before every answer</span><span>covers what dart analyze covers</span></div>
           </div>
         </div>
-
-        <div class="hero-foot" aria-label="Benchmark snapshot">
-          <div><b>Repository benchmarks</b><span>checked by CI</span></div>
-          <div><strong>61 ms</strong><span>syntax build</span></div>
-          <div><strong>57×</strong><span>indexed rename</span></div>
-          <div><strong>86.7%</strong><span>test reduction</span></div>
-          <div><strong class="zero">0 misses</strong><span>13-scenario oracle</span></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="section workflow" id="workflow">
-      <div class="shell">
-        <div class="section-head"><h2>Find a symbol, change it, select tests.</h2><p>These are representative CLI responses. Human-readable output is the default; supported commands also provide JSON.</p></div>
-        <div class="workflow-console">
-          <div class="workflow-tabs" role="tablist" aria-label="Developer workflow">
-            <button class="workflow-tab" type="button" role="tab" aria-selected="true" data-step="inspect"><span class="tab-key"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.8"/><path d="m15 15 4.2 4.2"/></svg></span><span><b>Find symbol</b><small>codegraph find</small></span></button>
-            <button class="workflow-tab" type="button" role="tab" aria-selected="false" data-step="change"><span class="tab-key"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h9M6 12h6M6 17h4"/><path d="m15 14 3 3 3-3M18 17V8"/></svg></span><span><b>Rename symbol</b><small>codegraph rename</small></span></button>
-            <button class="workflow-tab" type="button" role="tab" aria-selected="false" data-step="verify"><span class="tab-key"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8M9 3v3m6-3v3"/><rect x="4" y="5" width="16" height="15" rx="3"/><path d="m8 13 2.3 2.3L16 9.8"/></svg></span><span><b>Select tests</b><small>codegraph affected-tests</small></span></button>
-          </div>
-          <div class="workflow-body">
-            <pre class="workflow-output" id="workflow-output"></pre>
-            <aside class="workflow-aside" aria-label="Query facts">
-              <div class="aside-label">Query contract</div>
-              <div class="aside-fact"><b id="fact-primary">Element exact</b><span id="fact-primary-note">analyzer-backed identity</span></div>
-              <div class="aside-fact"><b id="fact-secondary">80 lines</b><span id="fact-secondary-note">default output budget</span></div>
-              <div class="aside-fact"><b id="fact-tertiary">Fresh</b><span id="fact-tertiary-note">auto-rebuild when stale</span></div>
-            </aside>
-          </div>
-          <div class="workflow-meta"><span>human + JSON output</span><span>local packages included</span><span>uncertainty is explicit</span></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="section architecture" id="architecture">
-      <div class="shell">
-        <div class="section-head"><h2>Indexed Dart, Riverpod, GoRouter, and test relationships.</h2><p>Resolved builds use Dart analyzer element identity. Framework extractors add provider reads, typed route topology, and test entrypoints.</p></div>
-        <div class="architecture-layout">
-          <div class="framework-list">
-            <div class="framework-row"><b>Dart analyzer</b><span>Declarations, references, callers, subtypes, parts, override sets, and local packages.</span></div>
-            <div class="framework-row"><b>Riverpod</b><span>Providers plus watch, read, listen, refresh, and invalidate relationships.</span></div>
-            <div class="framework-row"><b>GoRouter</b><span>Typed placements, paths, shells, branches, pages, navigators, and redirects.</span></div>
-            <div class="framework-row"><b>Test graph</b><span>Entrypoints connected through helpers, imports, providers, routes, and symbols.</span></div>
-          </div>
-
-          <div class="graph-shell" aria-label="Animated resolved authentication dependency graph">
-            <div class="graph-head"><span>route and provider slice / authentication</span><span>resolved</span></div>
-            <svg class="graph-svg" viewBox="0 0 760 460" role="img" aria-labelledby="graph-title graph-desc">
-              <title id="graph-title">Authentication dependency graph</title>
-              <desc id="graph-desc">Provider, route, page, and test nodes connected through the authentication controller. Animated packets follow the exact relationship paths.</desc>
-              <defs>
-                <pattern id="graph-grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#29418d" stroke-width=".7"/></pattern>
-                <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#8297ff"/></marker>
-                <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#7ce7bd"/></marker>
-                <marker id="arrow-yellow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#e5ff52"/></marker>
-              </defs>
-              <rect width="760" height="460" fill="url(#graph-grid)" opacity=".48"/>
-              <path id="edge-read" class="graph-edge green" d="M260 82 C316 96 302 162 330 185" marker-end="url(#arrow-green)"/>
-              <path id="edge-build" class="graph-edge yellow" d="M500 82 C446 97 456 162 430 185" marker-end="url(#arrow-yellow)"/>
-              <path id="edge-page" class="graph-edge" d="M330 269 C302 303 258 316 220 335" marker-end="url(#arrow-blue)"/>
-              <path id="edge-test" class="graph-edge" d="M430 269 C468 299 503 316 540 335" marker-end="url(#arrow-blue)"/>
-              <path class="graph-edge faint" d="M150 117 C220 251 451 290 540 335" marker-end="url(#arrow-blue)"/>
-              <circle class="graph-halo" cx="380" cy="227" r="92"/>
-              <circle class="flow-packet green" r="6"><animateMotion dur="4.8s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#edge-read"/></animateMotion></circle>
-              <circle class="flow-packet yellow" r="6"><animateMotion dur="5.4s" begin="1.1s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#edge-build"/></animateMotion></circle>
-              <circle class="flow-packet blue" r="5"><animateMotion dur="5.8s" begin="2.2s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#edge-test"/></animateMotion></circle>
-              <g class="edge-label" transform="translate(278 126)"><rect width="48" height="20"/><text x="9" y="13">reads</text></g>
-              <g class="edge-label" transform="translate(437 126)"><rect width="51" height="20"/><text x="8" y="13">builds</text></g>
-              <g class="edge-label" transform="translate(257 296)"><rect width="57" height="20"/><text x="8" y="13">renders</text></g>
-              <g class="edge-label" transform="translate(467 296)"><rect width="59" height="20"/><text x="8" y="13">selects</text></g>
-              <g class="graph-node" transform="translate(40 45)"><rect width="220" height="72"/><text class="node-kind" x="15" y="19">RIVERPOD PROVIDER</text><text x="15" y="42">authRepositoryProvider</text><text class="node-file" x="15" y="59">lib/features/auth/data</text></g>
-              <g class="graph-node" transform="translate(500 45)"><rect width="210" height="72"/><text class="node-kind" x="15" y="19">TYPED ROUTE</text><text x="15" y="42">SignInRoute</text><text class="node-file" x="15" y="59">path /sign-in</text></g>
-              <g class="graph-node core" transform="translate(270 185)"><rect width="220" height="84"/><text class="node-kind" x="16" y="21">RIVERPOD NOTIFIER</text><text x="16" y="48">AuthController</text><text class="node-file" x="16" y="67">AsyncValue&lt;User?&gt;</text></g>
-              <g class="graph-node" transform="translate(55 335)"><rect width="190" height="72"/><text class="node-kind" x="15" y="19">FLUTTER PAGE</text><text x="15" y="42">SignInPage</text><text class="node-file" x="15" y="59">lib/features/auth/view</text></g>
-              <g class="graph-node" transform="translate(500 335)"><rect width="215" height="72"/><text class="node-kind" x="15" y="19">TEST ENTRYPOINT</text><text x="15" y="42">auth_flow_test</text><text class="node-file" x="15" y="59">test/features/auth</text></g>
-            </svg>
-            <div class="graph-foot"><span>provider read</span><span>route build</span><span>test impact</span></div>
-          </div>
+        <div class="hero-foot">
+          <div><b>Measured on a 3,380-file Flutter app</b><span>native binary, warm worker</span></div>
+          <div><strong>0.2s</strong><span>find, show a file</span></div>
+          <div><strong>65ms</strong><span>repeat refs, 331 uses</span></div>
+          <div><strong>&lt;1s</strong><span>fresh after an edit</span></div>
+          <div><strong class="zero">0</strong><span>files committed</span></div>
         </div>
       </div>
     </section>
 
     <section class="section capabilities" id="commands">
       <div class="shell">
-        <div class="section-head"><h2>CLI commands.</h2><p>Human-readable output is the default. Use <code>--json</code> for supported queries and CI integration.</p></div>
+        <div class="section-head"><h2>Six verbs.</h2><p>Name a symbol as <code>Name</code>, <code>Owner.member</code>, <code>path.dart:name</code> or <code>path.dart:LINE</code>. Every verb takes <code>--json</code> and <code>--limit N</code>.</p></div>
         <div class="capability-table">
-          <div class="capability-row"><h3>Orient</h3><p>Locate concepts, inspect declarations, and understand a feature neighborhood.</p><div class="command-pills"><code>find</code><code>brief</code><code>sym</code><code>skeleton</code><code>path</code></div></div>
-          <div class="capability-row"><h3>Trace</h3><p>Follow provider wiring, inbound references, inheritance, and call flow.</p><div class="command-pills"><code>uses</code><code>readers</code><code>callers</code><code>refs</code><code>impls</code><code>callchain</code></div></div>
-          <div class="capability-row"><h3>Change</h3><p>Calculate downstream impact, inspect route topology, and apply verified renames.</p><div class="command-pills"><code>change</code><code>impact</code><code>route</code><code>rename --apply</code></div></div>
-          <div class="capability-row"><h3>Verify</h3><p>Review branch risk, select runnable test groups, and surface coverage gaps.</p><div class="command-pills"><code>review</code><code>affected-tests</code><code>lint</code><code>untested</code><code>health</code></div></div>
-          <div class="capability-row"><h3>Operate</h3><p>Install agent context, keep generated knowledge fresh, and diagnose integration.</p><div class="command-pills"><code>init</code><code>build</code><code>doctor</code><code>passport</code><code>attention</code></div></div>
+          <div class="capability-row"><h3>find</h3><p>Where something is declared. Top-level declarations before members, library code before tests. Instant, no analyzer needed.</p><div class="command-pills"><code>find Store</code><code>find Wallets.sandbox</code></div></div>
+          <div class="capability-row"><h3>show</h3><p>A file's outline with importers and provider uses; a directory's pages, providers and notes; a symbol's signature, subtypes, overrides and use counts; a provider's readers by role.</p><div class="command-pills"><code>show lib/core/session.dart</code><code>show lib/features/payment</code><code>show FeatureKey</code></div></div>
+          <div class="capability-row"><h3>refs</h3><p>Every use, with its line and role: ref.watch, ref.read, override, call, construct, implement, named argument. Includes test, tool and path-package code.</p><div class="command-pills"><code>refs sessionProvider</code><code>refs Store.save</code></div></div>
+          <div class="capability-row"><h3>impact</h3><p>What uses a symbol or file, one step further, and the tests that reach it. With <code>--diff</code>, seeded from the declarations your change touches.</p><div class="command-pills"><code>impact walletKey</code><code>impact --diff --base main</code></div></div>
+          <div class="capability-row"><h3>rename</h3><p>A complete edit set from the element model: override sets, fields with their this. and super. parameters and named arguments, classes with their constructors. Verified after applying.</p><div class="command-pills"><code>rename Base.label caption</code><code>--apply</code></div></div>
+          <div class="capability-row"><h3>why</h3><p>The import path from one file to another, with the line of each step.</p><div class="command-pills"><code>why home_page.dart session.dart</code></div></div>
         </div>
       </div>
     </section>
 
-    <section class="section safety">
+    <section class="section safety" id="rename">
       <div class="shell safety-layout">
-        <div class="safety-copy"><h2>Unsafe edits return exit 3.</h2><p>Rename refuses when symbol identity or the complete edit set cannot be proven. Affected-test plans expand when static analysis is uncertain.</p><ul class="safety-list"><li>Ambiguous identities return candidates.</li><li>External override chains block unsafe renames.</li><li>Dynamic or stale boundaries run more tests.</li><li>Every answer states its indexed scope.</li></ul></div>
-        <div class="refusal" aria-label="Unsafe rename refusal example"><div class="refusal-head"><span>rename / dry run</span><span>exit 3</span></div><pre><span class="cmd"><span class="prompt">$</span> codegraph rename HomePage.build renderHome</span>
+        <div class="safety-copy">
+          <h2>Complete, or refused with a reason.</h2>
+          <p>A rename waits until the whole workspace is analyzed, checks every edit against the text on disk, applies the edits in one staged step, then re-analyzes the edited files and their importers. A new error restores every file.</p>
+          <ul class="safety-list">
+            <li>UNSAFE: dynamic calls to the name, framework overrides, code generation, public API of a publishable package, privacy changes, collisions</li>
+            <li>UNSUPPORTED: a kind it cannot compute yet; renaming by hand is fine</li>
+            <li>Warnings for string literals, enum names stored as data, and edited generated files</li>
+          </ul>
+        </div>
+        <div class="refusal">
+          <div class="refusal-head"><span>rename</span><span>refused</span></div>
+<pre><span class="prompt">$</span> <span class="cmd">codegraph rename Counter.build create</span>
+<span class="bad">UNSAFE:</span> Counter.build overrides or is overridden by
+Notifier.build, declared outside the workspace
+(package:riverpod/riverpod.dart)
 
-<span class="bad">REFUSED</span>
-HomePage.build overrides StatelessWidget.build.
-
-The override chain reaches an external framework base.
-Renaming it would break the contract.
-
-<span class="good">working tree unchanged</span></pre></div>
+<span class="prompt">$</span> <span class="cmd">codegraph rename Buffer.flush drain</span>
+<span class="bad">UNSAFE:</span> 1 call to .flush could not be resolved to a
+declaration (dynamic receivers or missing types);
+they may be uses of this member
+  lib/core/store.dart:14</pre>
+        </div>
       </div>
     </section>
 
     <section class="install" id="install">
       <div class="shell install-inner">
-        <div><h2>Install and initialize.</h2><p>Install the binary, add the project integration, build the graph, and verify the installation.</p></div>
-        <div><div class="install-console">
-          <button class="install-command" type="button" data-copy="dart pub global activate -sgit https://github.com/ArinFaraj/codegraph"><b>1</b><code>dart pub global activate -sgit https://github.com/ArinFaraj/codegraph</code><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5" y="5" width="8" height="8"/><path d="M3 10H2V2h8v1"/></svg></button>
-          <button class="install-command" type="button" data-copy="codegraph init --ci"><b>2</b><code>codegraph init --ci</code><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5" y="5" width="8" height="8"/><path d="M3 10H2V2h8v1"/></svg></button>
-          <button class="install-command" type="button" data-copy="codegraph build && codegraph doctor"><b>3</b><code>codegraph build &amp;&amp; codegraph doctor</code><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5" y="5" width="8" height="8"/><path d="M3 10H2V2h8v1"/></svg></button>
-        </div><div class="install-note">Resolved builds use the project's existing .dart_tool/package_config.json. Syntax fallback is explicit when resolution is unavailable.</div></div>
+        <div>
+          <h2>Install once per machine.</h2>
+          <p>A background worker per checkout keeps the analyzer warm, exits after 20 idle minutes, and at most two run at once. Its cache lives outside your repository.</p>
+        </div>
+        <div>
+          <div class="install-console">
+            <div class="install-command"><b>1</b><code>dart pub global activate -sgit https://github.com/ArinFaraj/codegraph</code></div>
+            <div class="install-command"><b>2</b><code>~/.pub-cache/bin/codegraph install-native</code></div>
+            <div class="install-command"><b>3</b><code>codegraph refs YourClass</code></div>
+          </div>
+          <p class="install-note">Put ~/.local/bin before ~/.pub-cache/bin on PATH. Agent setup: docs/agents.md.</p>
+        </div>
       </div>
     </section>
   </main>
 
-  <footer><div class="shell footer-inner"><span>codegraph v3 · MIT licensed · Dart / Flutter</span><div class="footer-links"><a href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/ArinFaraj/codegraph/blob/main/README.md" target="_blank" rel="noopener">Docs</a><a href="https://github.com/ArinFaraj/codegraph/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a><a href="https://github.com/ArinFaraj/codegraph/issues" target="_blank" rel="noopener">Issues</a></div></div></footer>
-
-  <script>
-    (() => {
-      const steps = {
-        inspect: {
-          output: `<span class="cmd"><span class="prompt">$</span> codegraph find authRepositoryProvider</span>\n\n<span class="blue">provider</span>  authRepositoryProvider\n          <span class="muted">lib/features/auth/data/auth_repository.dart:18</span>\n\nread by   7 files\nstate     AsyncValue&lt;User?&gt;\n\n<span class="good">resolved</span>  package:mobile_app/auth_repository.dart`,
-          facts: ['Element exact','analyzer-backed identity','80 lines','default output budget','Fresh','auto-rebuild when stale']
-        },
-        change: {
-          output: `<span class="cmd"><span class="prompt">$</span> codegraph rename AuthController.signOut logOut</span>\n\n<span class="good">target resolved</span>\n  AuthController.signOut\n\n<span class="good">complete edit set</span>\n  declaration + 8 references\n  9 edits across 6 files\n\n<span class="warn">dry run</span>  add --apply to write`,
-          facts: ['9 edits','across 6 files','Rollback','on install failure','Preserved','BOM · CRLF · mode']
-        },
-        verify: {
-          output: `<span class="cmd"><span class="prompt">$</span> codegraph affected-tests --base main</span>\n\nscope     <span class="good">targeted</span>\nselected  3 test files · 2 runner groups\nreduction 86.7% in the frozen oracle\n\n<span class="warn">evidence</span>\n  provider reader → auth_controller_test.dart\n  route redirect  → auth_flow_test.dart\n  helper chain    → session_test.dart`,
-          facts: ['0 misses','13 frozen scenarios','Fail open','when uncertain','Runnable','argv per test group']
-        }
-      };
-      const tabs = [...document.querySelectorAll('.workflow-tab')];
-      const output = document.getElementById('workflow-output');
-      const factIds = ['fact-primary','fact-primary-note','fact-secondary','fact-secondary-note','fact-tertiary','fact-tertiary-note'];
-      function showStep(key) {
-        const step = steps[key];
-        output.innerHTML = step.output;
-        factIds.forEach((id, i) => { document.getElementById(id).textContent = step.facts[i]; });
-        tabs.forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.step === key)));
-      }
-      tabs.forEach(tab => tab.addEventListener('click', () => showStep(tab.dataset.step)));
-      showStep('inspect');
-
-      document.querySelectorAll('.install-command').forEach(button => {
-        button.addEventListener('click', async () => {
-          const code = button.querySelector('code');
-          const original = code.textContent;
-          try { await navigator.clipboard.writeText(button.dataset.copy); code.textContent = 'Copied to clipboard'; }
-          catch (_) { code.textContent = 'Copy command manually'; }
-          window.setTimeout(() => { code.textContent = original; }, 1700);
-        });
-      });
-    })();
-  </script>
+  <footer><div class="shell footer-inner"><span>codegraph v4 - MIT licensed - Dart and Flutter</span><div class="footer-links"><a href="https://github.com/ArinFaraj/codegraph" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/ArinFaraj/codegraph/blob/main/README.md" target="_blank" rel="noopener">Docs</a><a href="https://github.com/ArinFaraj/codegraph/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a><a href="https://github.com/ArinFaraj/codegraph/issues" target="_blank" rel="noopener">Issues</a></div></div></footer>
 </body>
 </html>

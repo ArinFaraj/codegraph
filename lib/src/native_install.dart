@@ -47,11 +47,13 @@ Future<int> run(List<String> args) async {
     '${target.path}.install-$pid-${DateTime.now().microsecondsSinceEpoch}',
   );
   stdout.writeln('compiling native Codegraph to ${target.path}');
-  final result = await Process.run(
-    'dart',
-    ['compile', 'exe', entrypoint.path, '-o', temporary.path],
-    workingDirectory: packageRoot.path,
-  );
+  final result = await Process.run('dart', [
+    'compile',
+    'exe',
+    entrypoint.path,
+    '-o',
+    temporary.path,
+  ], workingDirectory: packageRoot.path);
   if (result.stdout.toString().isNotEmpty) stdout.write(result.stdout);
   if (result.stderr.toString().isNotEmpty) stderr.write(result.stderr);
   if (result.exitCode != 0 || !temporary.existsSync()) {
@@ -62,8 +64,9 @@ Future<int> run(List<String> args) async {
   final verification = await Process.run(temporary.path, ['--version']);
   if (verification.exitCode != 0 ||
       !verification.stdout.toString().startsWith('codegraph ')) {
-    stderr
-        .writeln('compiled executable failed its version check; not installed');
+    stderr.writeln(
+      'compiled executable failed its version check; not installed',
+    );
     temporary.deleteSync();
     return 1;
   }

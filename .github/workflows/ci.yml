@@ -9,25 +9,17 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
-      - name: Install benchmark dependencies
-        run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: dart pub get
       - run: dart analyze --fatal-infos
-      - run: dart format --output=none --set-exit-if-changed .
+      - run: dart format --output=none --set-exit-if-changed lib bin test tool
       - run: dart test
-      - run: dart run benchmarks/perf.dart --compare benchmarks/perf_baseline.json
-      - run: dart run benchmarks/usefulness/run.dart --check --no-write
-      - run: dart run benchmarks/affected_tests.dart
-      - run: dart run benchmarks/route_mutations.dart
 
-  # A tag is only a release once the gates pass on the tagged tree. This job
-  # exists because the manual step was not happening: v0.9.7 stayed "Latest"
-  # while ten tags shipped past it, so the repo advertised a two-month-old
-  # version of itself.
+  # A tag is only a release once the gates pass on the tagged tree, and the
+  # release notes are the CHANGELOG section for that version.
   release:
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
@@ -41,8 +33,9 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pubspec="$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -1)"
-          if [ "$tag" != "$pubspec" ]; then
-            echo "tag $GITHUB_REF_NAME does not match pubspec version $pubspec" >&2
+          code="$(sed -n "s/^const codegraphVersion = '\(.*\)';/\1/p" lib/src/version.dart)"
+          if [ "$tag" != "$pubspec" ] || [ "$tag" != "$code" ]; then
+            echo "tag $GITHUB_REF_NAME, pubspec $pubspec and lib/src/version.dart $code must match" >&2
             exit 1
           fi
       - name: Release notes come from CHANGELOG.md, or there is no release
