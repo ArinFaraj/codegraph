@@ -6,6 +6,9 @@ import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:codegraph/src/analysis.dart';
 import 'package:codegraph/src/engine.dart';
+import 'package:codegraph/src/impact.dart';
+import 'package:codegraph/src/refs.dart';
+import 'package:codegraph/src/show.dart';
 import 'package:codegraph/src/result.dart';
 import 'package:codegraph/src/workspace.dart';
 import 'package:test/test.dart';
@@ -35,7 +38,7 @@ void main() {
   String text(Answer a) => a.render(asJson: false, limit: null);
 
   test('refs finds provider reads through a ref held in a field', () async {
-    final r = await engine.refs('sessionProvider');
+    final r = await refs(engine, 'sessionProvider');
     final out = text(r);
     expect(r.exit, Exit.ok);
     expect(
@@ -58,7 +61,7 @@ void main() {
   });
 
   test('refs groups by role and counts files', () async {
-    final r = await engine.refs('Wallets.sandbox');
+    final r = await refs(engine, 'Wallets.sandbox');
     final uses = r.toJson()['uses'] as List;
     expect(uses.map((u) => (u as Map)['path']).toSet(), {
       'lib/features/wallet_list.dart',
@@ -69,28 +72,28 @@ void main() {
   });
 
   test('show lists enum and mixin subtypes the element model knows', () async {
-    final out = text(await engine.showSymbol('FeatureKey'));
+    final out = text(await showSymbol(engine, 'FeatureKey'));
     expect(out, contains('subtypes (2, transitive):'));
     expect(out, contains('enum Backend  lib/core/backend.dart:3'));
     expect(out, contains('enum Gate  lib/core/keys.dart:6'));
-    final loud = text(await engine.showSymbol('Loud'));
+    final loud = text(await showSymbol(engine, 'Loud'));
     expect(loud, contains('class Announcer  lib/core/keys.dart:24'));
   });
 
   test('show of a member lists the rest of its override set', () async {
-    final out = text(await engine.showSymbol('Store.save'));
+    final out = text(await showSymbol(engine, 'Store.save'));
     expect(out, contains('DiskStore.save  lib/core/store.dart:7'));
     expect(out, contains('FakeStore.save  test/home_test.dart:8'));
   });
 
   test('text and JSON come from the same answer', () async {
-    final impact = await engine.impact(SymbolSeed('sessionProvider'));
-    final json = impact.toJson();
-    final out = text(impact);
+    final answer = await impact(engine, SymbolSeed('sessionProvider'));
+    final json = answer.toJson();
+    final out = text(answer);
     for (final path in (json['direct'] as Map).keys) {
       expect(out, contains('  $path  ('));
     }
-    final show = (await engine.showSymbol('sessionProvider')).toJson();
+    final show = (await showSymbol(engine, 'sessionProvider')).toJson();
     expect(
       (show['readers'] as List).map((u) => (u as Map)['role']),
       containsAll(['ref.watch', 'ref.read', 'ref.listen', 'ref.invalidate']),
@@ -98,7 +101,7 @@ void main() {
   });
 
   test('show of a provider lists readers by role', () async {
-    final out = text(await engine.showSymbol('sessionProvider'));
+    final out = text(await showSymbol(engine, 'sessionProvider'));
     expect(
       out,
       startsWith('provider sessionProvider  lib/core/session.dart:8'),
@@ -111,40 +114,41 @@ void main() {
   });
 
   test('an ambiguous name lists its candidates', () async {
-    final r = await engine.refs('save');
+    final r = await refs(engine, 'save');
     expect(r.exit, Exit.ambiguous);
     expect(text(r), contains('Store.save  lib/core/store.dart:2'));
-    final missing = await engine.refs('noSuchThing');
+    final missing = await refs(engine, 'noSuchThing');
     expect(missing.exit, Exit.failed);
     expect(text(missing), contains('no declaration named "noSuchThing"'));
   });
 
   test('symbols can be named by file and line or file and name', () async {
-    final byLine = await engine.refs('lib/core/keys.dart:16');
+    final byLine = await refs(engine, 'lib/core/keys.dart:16');
     expect(
       text(byLine),
       startsWith('refs walletKey (function, lib/core/keys.dart:16)'),
     );
-    final oneLineEnum = await engine.refs('lib/core/keys.dart:26');
+    final oneLineEnum = await refs(engine, 'lib/core/keys.dart:26');
     expect(
       text(oneLineEnum),
       startsWith('refs Tone (enum, lib/core/keys.dart:26): 2 uses in 1 file'),
     );
-    final byName = await engine.refs(
+    final byName = await refs(
+      engine,
       'lib/features/labels.dart:Wallets.sandbox',
     );
     expect(text(byName), startsWith('refs Wallets.sandbox (field'));
   });
 
   test('impact of a symbol walks uses, one step further, and tests', () async {
-    final r = await engine.impact(SymbolSeed('walletKey'));
+    final r = await impact(engine, SymbolSeed('walletKey'));
     final out = text(r);
     expect(
       out,
       contains('uses it directly (1):\n  lib/features/home/home_page.dart'),
     );
     expect(r.toJson()['tests'], isEmpty);
-    final store = await engine.impact(SymbolSeed('Store'));
+    final store = await impact(engine, SymbolSeed('Store'));
     expect(store.toJson()['tests'], ['test/home_test.dart']);
   });
 
@@ -156,7 +160,7 @@ void main() {
     );
     try {
       await engine.refresh();
-      final r = await engine.impact(DiffSeed(null));
+      final r = await impact(engine, DiffSeed(null));
       expect((r.toJson()['seeds'] as List).map((s) => (s as Map)['name']), [
         'walletKey',
       ]);
@@ -175,13 +179,16 @@ void main() {
     try {
       expect(await analysis.sync(), contains('lib/core/extra.dart'));
       engine.filesChanged(['lib/core/extra.dart']);
-      final r = await engine.refs('walletKey');
+      final r = await refs(engine, 'walletKey');
       expect(text(r), contains('lib/core/extra.dart:2'));
     } finally {
       file.deleteSync();
     }
     await engine.refresh();
-    expect(text(await engine.refs('walletKey')), isNot(contains('extra.dart')));
+    expect(
+      text(await refs(engine, 'walletKey')),
+      isNot(contains('extra.dart')),
+    );
   });
 
   test(
@@ -200,7 +207,7 @@ void main() {
         'FeatureKey',
         'Gate',
       ]) {
-        final r = await engine.refs(name);
+        final r = await refs(engine, name);
         final got = {
           for (final u in r.toJson()['uses'] as List)
             '${(u as Map)['path']}:${u['line']}',

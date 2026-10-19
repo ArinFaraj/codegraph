@@ -57,11 +57,13 @@ FileOutline parseOutline(String path, String content) {
         doc: d.doc,
       ),
     );
-    final annotated = switch (node) {
-      FunctionDeclaration() || ClassDeclaration() when !d.isMember =>
-        isRiverpodAnnotated((node as AnnotatedNode).metadata),
-      _ => false,
-    };
+    final annotated =
+        !d.isMember &&
+        switch (node) {
+          FunctionDeclaration(:final metadata) ||
+          ClassDeclaration(:final metadata) => isRiverpodAnnotated(metadata),
+          _ => false,
+        };
     if (annotated) {
       final name = generatedProviderName(d.name);
       decls.add(

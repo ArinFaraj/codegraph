@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:codegraph/src/analysis.dart';
 import 'package:codegraph/src/engine.dart';
 import 'package:codegraph/src/rename.dart';
-import 'package:codegraph/src/rename_answers.dart';
+import 'package:codegraph/src/show.dart';
 import 'package:codegraph/src/result.dart';
 import 'package:codegraph/src/workspace.dart';
 import 'package:test/test.dart';
@@ -293,5 +293,21 @@ class Counter extends Notifier<int> {
       (await rename(engine, 'walletKey', 'walletKey', apply: false)).exit,
       Exit.usage,
     );
+  });
+
+  test('a hierarchy past the subtype cap refuses the rename', () async {
+    final subtypes = [
+      for (var i = 0; i <= Engine.subtypeCap; i++)
+        'class Wide$i extends WideBase {}',
+    ].join('\n');
+    File(
+      '${root.path}/lib/core/wide.dart',
+    ).writeAsStringSync('class WideBase {\n  void ping() {}\n}\n$subtypes\n');
+    await engine.refresh();
+    final r = await rename(engine, 'WideBase.ping', 'pong', apply: false);
+    expect(r.exit, Exit.refused);
+    expect(text(r), contains('more than ${Engine.subtypeCap} subtypes'));
+    final show = await showSymbol(engine, 'WideBase');
+    expect(text(show), contains('partial: subtype walks stop at'));
   });
 }

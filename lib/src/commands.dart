@@ -1,6 +1,9 @@
 import 'engine.dart';
+import 'impact.dart';
+import 'refs.dart';
 import 'rename.dart' as rename_verb;
 import 'result.dart';
+import 'show.dart';
 
 /// What the user typed, with flags separated from arguments.
 class Command {
@@ -148,7 +151,7 @@ class RefsRequest extends WorkerRequest {
   final String query;
 
   @override
-  Future<Answer> run(Engine engine) => engine.refs(query);
+  Future<Answer> run(Engine engine) => refs(engine, query);
 
   @override
   Map<String, Object?> get _fields => {'verb': 'refs', 'query': query};
@@ -159,7 +162,7 @@ class ShowRequest extends WorkerRequest {
   final String query;
 
   @override
-  Future<Answer> run(Engine engine) => engine.showSymbol(query);
+  Future<Answer> run(Engine engine) => showSymbol(engine, query);
 
   @override
   Map<String, Object?> get _fields => {'verb': 'show', 'query': query};
@@ -170,7 +173,7 @@ class ImpactRequest extends WorkerRequest {
   final ImpactSeed seed;
 
   @override
-  Future<Answer> run(Engine engine) => engine.impact(seed);
+  Future<Answer> run(Engine engine) => impact(engine, seed);
 
   @override
   Map<String, Object?> get _fields => {

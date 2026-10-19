@@ -3,6 +3,32 @@
 The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
 
+## 4.1.1 - 2026-10-19
+
+A second review pass. Answers are unchanged on the reference app; one hole
+in rename is closed.
+
+### Fixed
+
+- A rename refuses when a class hierarchy behind it has more than 500
+  subtypes. The subtype walk stops there, and the override set or the
+  `super.x` parameters it feeds could have been incomplete. A missed override
+  still compiles, so the post-apply check could not catch it.
+- `show` and `impact` label an answer `partial:` whenever a subtype walk
+  behind it stopped early, not only for the subtype list itself.
+
+### Internal
+
+- Each resolved verb is one file holding its computation and its answer
+  (`refs.dart`, `show.dart`, `impact.dart`, `rename.dart`); the engine keeps
+  only state and the queries they share.
+- Resolving a query goes through one `withTarget` helper, and a lookup that
+  does not find exactly one declaration is a typed `Unresolved`, so no verb
+  casts the result.
+- Rename refusals are a list of rules, one function each.
+- `impact` seeding returns one value (title, seeds, notes) instead of filling
+  a list passed in.
+
 ## 4.1.0 - 2026-10-19
 
 A restructuring after a hard review of 4.0.0. The answers on a 3,380-file

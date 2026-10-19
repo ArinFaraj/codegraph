@@ -1,5 +1,5 @@
 import 'package:codegraph/src/commands.dart';
-import 'package:codegraph/src/engine.dart';
+import 'package:codegraph/src/impact.dart';
 import 'package:test/test.dart';
 
 void main() {

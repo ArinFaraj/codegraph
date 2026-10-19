@@ -105,12 +105,15 @@ class Resolved extends Resolution {
   final Target target;
 }
 
-class Ambiguous extends Resolution {
+/// A query that did not name exactly one declaration.
+sealed class Unresolved extends Resolution {}
+
+class Ambiguous extends Unresolved {
   Ambiguous(this.targets);
   final List<Target> targets;
 }
 
-class Missing extends Resolution {
+class Missing extends Unresolved {
   Missing(this.message);
   final String message;
 }

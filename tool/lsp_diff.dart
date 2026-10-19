@@ -14,6 +14,7 @@ import 'dart:math';
 
 import 'package:codegraph/src/analysis.dart';
 import 'package:codegraph/src/engine.dart';
+import 'package:codegraph/src/refs.dart';
 import 'package:codegraph/src/outline.dart';
 import 'package:codegraph/src/workspace.dart';
 
@@ -67,7 +68,7 @@ Future<void> main(List<String> args) async {
   final disagreements = <String>[];
   for (final (path, d) in picked) {
     final theirs = (await lsp.references(ws, path, d)).toSet();
-    final r = await engine.refs('$path:${d.line}');
+    final r = await refs(engine, '$path:${d.line}');
     final uses = [
       for (final u in (r.toJson()['uses'] as List?) ?? const [])
         u as Map<String, dynamic>,

@@ -146,10 +146,8 @@ class FileChoiceAnswer extends Answer {
   Map<String, Object?> toJson() => {'candidates': candidates};
 }
 
-/// The answer for a lookup that did not find exactly one declaration, or
-/// null when it did.
-Answer? failureOf(String verb, String query, Resolution r) => switch (r) {
-  Resolved() => null,
+/// Why a lookup did not find exactly one declaration.
+Answer lookupFailure(String verb, String query, Unresolved u) => switch (u) {
   Ambiguous(:final targets) => AmbiguousAnswer(verb, query, targets),
   Missing(:final message) => MessageAnswer(
     verb,
