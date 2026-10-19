@@ -1,4 +1,6 @@
 // Parse-only facts about one file, as cached in .dart_tool/codegraph/.
+import 'kinds.dart';
+
 class Decl {
   Decl({
     required this.name,
@@ -14,7 +16,7 @@ class Decl {
 
   factory Decl.fromJson(Map<String, dynamic> j) => Decl(
     name: j['n'] as String,
-    kind: j['k'] as String,
+    kind: DeclKind.values.byName(j['k'] as String),
     line: j['l'] as int,
     offset: j['o'] as int,
     end: j['e'] as int,
@@ -25,11 +27,7 @@ class Decl {
   );
 
   final String name;
-
-  /// class, mixin, enum, extension, extension-type, typedef, function,
-  /// variable, provider, constructor, method, getter, setter, field,
-  /// enum-value.
-  final String kind;
+  final DeclKind kind;
   final int line;
   final int offset;
   final int end;
@@ -45,13 +43,13 @@ class Decl {
 
   Map<String, dynamic> toJson() => {
     'n': name,
-    'k': kind,
+    'k': kind.name,
     'l': line,
     'o': offset,
     'e': end,
     's': sig,
-    if (owner != null) 'w': owner,
-    if (doc != null) 'd': doc,
+    'w': ?owner,
+    'd': ?doc,
     if (generated) 'g': true,
   };
 }
@@ -59,28 +57,33 @@ class Decl {
 class UriDirective {
   UriDirective(this.kind, this.uri, this.line);
 
-  factory UriDirective.fromJson(Map<String, dynamic> j) =>
-      UriDirective(j['k'] as String, j['u'] as String, j['l'] as int);
+  factory UriDirective.fromJson(Map<String, dynamic> j) => UriDirective(
+    DirectiveKind.values.byName(j['k'] as String),
+    j['u'] as String,
+    j['l'] as int,
+  );
 
-  /// import, export, part, part-of.
-  final String kind;
+  final DirectiveKind kind;
   final String uri;
   final int line;
 
-  Map<String, dynamic> toJson() => {'k': kind, 'u': uri, 'l': line};
+  Map<String, dynamic> toJson() => {'k': kind.name, 'u': uri, 'l': line};
 }
 
 class ProviderUse {
   ProviderUse(this.provider, this.role, this.line);
 
-  factory ProviderUse.fromJson(Map<String, dynamic> j) =>
-      ProviderUse(j['p'] as String, j['r'] as String, j['l'] as int);
+  factory ProviderUse.fromJson(Map<String, dynamic> j) => ProviderUse(
+    j['p'] as String,
+    Role.values.byName(j['r'] as String),
+    j['l'] as int,
+  );
 
   final String provider;
-  final String role;
+  final Role role;
   final int line;
 
-  Map<String, dynamic> toJson() => {'p': provider, 'r': role, 'l': line};
+  Map<String, dynamic> toJson() => {'p': provider, 'r': role.name, 'l': line};
 }
 
 class FileOutline {
@@ -91,6 +94,7 @@ class FileOutline {
     required this.directives,
     required this.providerUses,
     required this.identifiers,
+    required this.stringWords,
   });
 
   factory FileOutline.fromJson(String path, Map<String, dynamic> j) =>
@@ -110,6 +114,7 @@ class FileOutline {
             ProviderUse.fromJson(d as Map<String, dynamic>),
         ],
         identifiers: (j['ids'] as List).cast<String>().toSet(),
+        stringWords: (j['strs'] as List).cast<String>().toSet(),
       );
 
   /// Workspace-relative path.
@@ -118,10 +123,16 @@ class FileOutline {
   final List<Decl> decls;
   final List<UriDirective> directives;
   final List<ProviderUse> providerUses;
+
+  /// Identifier tokens the file contains.
   final Set<String> identifiers;
 
+  /// Words that appear inside the file's string literals.
+  final Set<String> stringWords;
+
   Iterable<Decl> get topLevel => decls.where((d) => !d.isMember);
-  Iterable<Decl> get providers => decls.where((d) => d.kind == 'provider');
+  Iterable<Decl> get providers =>
+      decls.where((d) => d.kind == DeclKind.provider);
 
   Map<String, dynamic> toJson() => {
     'lines': lines,
@@ -129,5 +140,6 @@ class FileOutline {
     'dirs': [for (final d in directives) d.toJson()],
     'uses': [for (final u in providerUses) u.toJson()],
     'ids': identifiers.toList()..sort(),
+    'strs': stringWords.toList()..sort(),
   };
 }

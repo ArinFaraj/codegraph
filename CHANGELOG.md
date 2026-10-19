@@ -3,6 +3,44 @@
 The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
 
+## 4.2.0 - 2026-10-19
+
+### Added
+
+- `rename <file.dart> <new/path.dart>` moves a file. Every import, export
+  and conditional import that points at it is rewritten, keeping `package:`
+  URIs where the new location allows and recomputing relative ones,
+  including the moved file's own. Applying re-analyzes the moved file and
+  every rewritten file and puts everything back, file and directories
+  included, if an error appears or the new path is not analyzed. Libraries
+  with parts are `UNSUPPORTED`. On the reference app, moving a file imported
+  from 28 files and back left the tree as it was.
+
+### Changed
+
+- Declaration kinds, directive kinds and use roles are enums shared by the
+  parse-only and resolved halves, so `find` and `show` now use the same
+  labels (`enum value`, `extension type`) and the role display order is the
+  enum's order.
+- One `FileTracker` decides which files are analyzed and what changed, for
+  both the CLI's outline cache and the worker. It also notices
+  `pubspec.yaml`, `analysis_options.yaml` and package config changes, which
+  restart the worker's analyzer and rescan the CLI's file list.
+- `Workspace.relative` refuses paths outside the workspace; code that can
+  meet one uses `relativeOrNull`.
+- The parse-only verbs are one file each (`find`, `show_file`, `why`), with
+  argument classification in `args.dart`.
+- Each verb defines its own worker request; the decoder is one line per
+  verb.
+- `find` and `show <dir>` count mentions from an index built once, and the
+  rename string-literal warning reads only files whose string literals
+  contain the word.
+- The verify-and-roll-back step is shared by rename and move.
+
+### Removed
+
+- The v3 test hooks and the unused `ioFailure` flag in the edit installer.
+
 ## 4.1.1 - 2026-10-19
 
 A second review pass. Answers are unchanged on the reference app; one hole

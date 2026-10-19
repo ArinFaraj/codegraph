@@ -1,5 +1,10 @@
 import 'package:codegraph/src/commands.dart';
 import 'package:codegraph/src/impact.dart';
+import 'package:codegraph/src/move.dart';
+import 'package:codegraph/src/refs.dart';
+import 'package:codegraph/src/rename.dart';
+import 'package:codegraph/src/request.dart';
+import 'package:codegraph/src/show.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -22,9 +27,16 @@ void main() {
       ImpactRequest(FileSeed('lib/a.dart'), json: false, limit: 40),
       ImpactRequest(DiffSeed('dev'), json: false, limit: 40),
       RenameRequest('a', 'b', apply: true, json: false, limit: 40),
+      MoveRequest(
+        'lib/a.dart',
+        'lib/b.dart',
+        apply: false,
+        json: true,
+        limit: 5,
+      ),
     ];
     for (final r in requests) {
-      expect(WorkerRequest.fromJson(r.toJson()).toJson(), r.toJson());
+      expect(decodeRequest(r.toJson()).toJson(), r.toJson());
     }
   });
 }

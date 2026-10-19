@@ -5,7 +5,9 @@ import 'package:analyzer/dart/element/element.dart';
 import 'classify.dart';
 import 'declarations.dart';
 import 'engine.dart';
+import 'kinds.dart';
 import 'refs.dart';
+import 'request.dart';
 import 'result.dart';
 import 'riverpod.dart';
 import 'symbols.dart';
@@ -47,6 +49,28 @@ Future<Answer> showSymbol(
   );
 });
 
+class ShowRequest extends WorkerRequest {
+  ShowRequest(this.query, {required super.json, required super.limit});
+
+  ShowRequest.fromJson(Map<String, dynamic> j)
+    : this(
+        j['query'] as String,
+        json: j['json'] as bool,
+        limit: j['limit'] as int?,
+      );
+
+  final String query;
+
+  @override
+  String get verb => 'show';
+
+  @override
+  Map<String, Object?> get fields => {'query': query};
+
+  @override
+  Future<Answer> run(Engine engine) => showSymbol(engine, query);
+}
+
 class ShowSymbolAnswer extends Answer {
   ShowSymbolAnswer({
     required this.target,
@@ -83,14 +107,14 @@ class ShowSymbolAnswer extends Answer {
   String? get _partial =>
       truncated ? 'subtype walks stop at ${Engine.subtypeCap}' : null;
 
-  Map<String, int> get _counts {
-    final counts = <String, int>{};
+  Map<Role, int> get _counts {
+    final counts = <Role, int>{};
     for (final u in uses) {
       counts[u.role] = (counts[u.role] ?? 0) + 1;
     }
     return Map.fromEntries(
       counts.entries.toList()
-        ..sort((a, b) => roleRank(a.key).compareTo(roleRank(b.key))),
+        ..sort((a, b) => a.key.index.compareTo(b.key.index)),
     );
   }
 
@@ -153,7 +177,7 @@ class ShowSymbolAnswer extends Answer {
       for (final (line, sig) in members) {'line': line, 'signature': sig},
     ],
     'overrides': [for (final o in overrides) o.toJson()],
-    'useCounts': _counts,
+    'useCounts': {for (final e in _counts.entries) e.key.label: e.value},
     if (_isProvider)
       'readers': [for (final u in uses.where((u) => !u.inTest)) useJson(u)],
     'partial': ?_partial,

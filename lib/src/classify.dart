@@ -5,6 +5,7 @@ import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
 import 'analysis.dart';
+import 'kinds.dart';
 import 'riverpod.dart';
 import 'workspace.dart';
 
@@ -54,7 +55,7 @@ class Use {
 
   final Site site;
   final int line;
-  final String role;
+  final Role role;
 
   /// The trimmed source line the use sits on.
   final String source;
@@ -98,26 +99,26 @@ class _Finder extends GeneralizingAstVisitor<void> {
 
 /// How a use reads in context. Riverpod roles win over the analyzer's
 /// generic kinds because they are what a reader of provider code asks for.
-String roleOf(Site site, SourceCache sources) {
+Role roleOf(Site site, SourceCache sources) {
   final node = nodeAt(sources.unit(site.path), site.offset);
   AstNode? child = node;
   var parent = node?.parent;
   for (var depth = 0; parent != null && depth < 12; depth++) {
     switch (parent) {
       case Comment():
-        return 'doc';
+        return Role.doc;
       case ImportDirective() || ExportDirective():
-        return 'import';
+        return Role.import;
       case Annotation():
-        return 'annotation';
+        return Role.annotation;
       case ExtendsClause():
-        return 'extend';
+        return Role.extend;
       case ImplementsClause():
-        return 'implement';
+        return Role.implement;
       case WithClause():
-        return 'mixin';
+        return Role.mixin;
       case MixinOnClause():
-        return 'on';
+        return Role.on;
       case MethodInvocation(
         :final methodName,
         :final argumentList,
@@ -126,10 +127,10 @@ String roleOf(Site site, SourceCache sources) {
         final role = providerRoles[methodName.name];
         if (role != null && argumentList == child) return role;
         if (methodName.name.startsWith('overrideWith') && target == child) {
-          return 'override';
+          return Role.override;
         }
       case InstanceCreationExpression() when depth <= 3:
-        return 'construct';
+        return Role.construct;
       case Statement() || Declaration():
         return _genericRole(site.kind, node);
       default:
@@ -141,57 +142,27 @@ String roleOf(Site site, SourceCache sources) {
   return _genericRole(site.kind, node);
 }
 
-String _genericRole(String kind, AstNode? node) => switch (kind) {
-  'INVOCATION' || 'INVOCATION_BY_ENUM_CONSTANT_WITHOUT_ARGUMENTS' => 'call',
-  'READ' => 'read',
-  'WRITE' || 'READ_WRITE' => 'write',
-  'REFERENCE_BY_NAMED_ARGUMENT' => 'named arg',
-  'REFERENCE_BY_CONSTRUCTOR_TEAR_OFF' => 'tear-off',
-  'DOT_SHORTHANDS_CONSTRUCTOR_INVOCATION' => 'construct',
-  _ => node?.parent is NamedType || node is NamedType ? 'type' : 'reference',
+Role _genericRole(String kind, AstNode? node) => switch (kind) {
+  'INVOCATION' || 'INVOCATION_BY_ENUM_CONSTANT_WITHOUT_ARGUMENTS' => Role.call,
+  'READ' => Role.read,
+  'WRITE' || 'READ_WRITE' => Role.write,
+  'REFERENCE_BY_NAMED_ARGUMENT' => Role.namedArg,
+  'REFERENCE_BY_CONSTRUCTOR_TEAR_OFF' => Role.tearOff,
+  'DOT_SHORTHANDS_CONSTRUCTOR_INVOCATION' => Role.construct,
+  _ =>
+    node?.parent is NamedType || node is NamedType ? Role.type : Role.reference,
 };
 
-/// Display order of role sections.
-const roleOrder = [
-  'ref.watch',
-  'ref.read',
-  'ref.listen',
-  'ref.invalidate',
-  'ref.refresh',
-  'ref.exists',
-  'override',
-  'call',
-  'construct',
-  'tear-off',
-  'read',
-  'write',
-  'named arg',
-  'type',
-  'extend',
-  'implement',
-  'mixin',
-  'on',
-  'annotation',
-  'reference',
-  'import',
-  'doc',
-];
-
-int roleRank(String role) {
-  final i = roleOrder.indexOf(role);
-  return i < 0 ? roleOrder.length : i;
-}
-
 /// Uses grouped for display: library code before tests, then by role.
-List<((bool, String), List<Use>)> groupByRole(Iterable<Use> uses) {
-  final groups = <(bool, String), List<Use>>{};
+List<((bool, Role), List<Use>)> groupByRole(Iterable<Use> uses) {
+  final groups = <(bool, Role), List<Use>>{};
   for (final u in uses) {
     (groups[(u.inTest, u.role)] ??= []).add(u);
   }
   final keys = groups.keys.toList()
     ..sort((a, b) {
       if (a.$1 != b.$1) return a.$1 ? 1 : -1;
-      return roleRank(a.$2).compareTo(roleRank(b.$2));
+      return a.$2.index.compareTo(b.$2.index);
     });
   return [for (final k in keys) (k, groups[k]!)];
 }

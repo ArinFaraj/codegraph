@@ -1,8 +1,8 @@
-import 'engine.dart';
 import 'impact.dart';
+import 'move.dart';
 import 'refs.dart';
-import 'rename.dart' as rename_verb;
-import 'result.dart';
+import 'rename.dart';
+import 'request.dart';
 import 'show.dart';
 
 /// What the user typed, with flags separated from arguments.
@@ -106,108 +106,13 @@ class Command {
   final String? error;
 }
 
-/// A question for the worker, already classified by the client.
-sealed class WorkerRequest {
-  WorkerRequest({required this.json, required this.limit});
-
-  factory WorkerRequest.fromJson(Map<String, dynamic> j) {
-    final json = j['json'] as bool;
-    final limit = j['limit'] as int?;
-    return switch (j['verb']) {
-      'refs' => RefsRequest(j['query'] as String, json: json, limit: limit),
-      'show' => ShowRequest(j['query'] as String, json: json, limit: limit),
-      'impact' => ImpactRequest(
-        switch (j['seed']) {
-          'file' => FileSeed(j['path'] as String),
-          'diff' => DiffSeed(j['base'] as String?),
-          _ => SymbolSeed(j['query'] as String),
-        },
-        json: json,
-        limit: limit,
-      ),
-      'rename' => RenameRequest(
-        j['query'] as String,
-        j['newName'] as String,
-        apply: j['apply'] as bool,
-        json: json,
-        limit: limit,
-      ),
-      final v => throw FormatException('unknown worker verb $v'),
-    };
-  }
-
-  final bool json;
-  final int? limit;
-
-  Future<Answer> run(Engine engine);
-
-  Map<String, Object?> get _fields;
-
-  Map<String, Object?> toJson() => {'json': json, 'limit': limit, ..._fields};
-}
-
-class RefsRequest extends WorkerRequest {
-  RefsRequest(this.query, {required super.json, required super.limit});
-  final String query;
-
-  @override
-  Future<Answer> run(Engine engine) => refs(engine, query);
-
-  @override
-  Map<String, Object?> get _fields => {'verb': 'refs', 'query': query};
-}
-
-class ShowRequest extends WorkerRequest {
-  ShowRequest(this.query, {required super.json, required super.limit});
-  final String query;
-
-  @override
-  Future<Answer> run(Engine engine) => showSymbol(engine, query);
-
-  @override
-  Map<String, Object?> get _fields => {'verb': 'show', 'query': query};
-}
-
-class ImpactRequest extends WorkerRequest {
-  ImpactRequest(this.seed, {required super.json, required super.limit});
-  final ImpactSeed seed;
-
-  @override
-  Future<Answer> run(Engine engine) => impact(engine, seed);
-
-  @override
-  Map<String, Object?> get _fields => {
-    'verb': 'impact',
-    ...switch (seed) {
-      SymbolSeed(:final query) => {'seed': 'symbol', 'query': query},
-      FileSeed(:final path) => {'seed': 'file', 'path': path},
-      DiffSeed(:final base) => {'seed': 'diff', 'base': base},
-    },
-  };
-}
-
-class RenameRequest extends WorkerRequest {
-  RenameRequest(
-    this.query,
-    this.newName, {
-    required this.apply,
-    required super.json,
-    required super.limit,
-  });
-
-  final String query;
-  final String newName;
-  final bool apply;
-
-  @override
-  Future<Answer> run(Engine engine) =>
-      rename_verb.rename(engine, query, newName, apply: apply);
-
-  @override
-  Map<String, Object?> get _fields => {
-    'verb': 'rename',
-    'query': query,
-    'newName': newName,
-    'apply': apply,
-  };
-}
+/// Rebuilds a request on the worker side. One line per verb; each request
+/// knows its own fields.
+WorkerRequest decodeRequest(Map<String, dynamic> j) => switch (j['verb']) {
+  'refs' => RefsRequest.fromJson(j),
+  'show' => ShowRequest.fromJson(j),
+  'impact' => ImpactRequest.fromJson(j),
+  'rename' => RenameRequest.fromJson(j),
+  'move' => MoveRequest.fromJson(j),
+  final v => throw FormatException('unknown worker verb $v'),
+};

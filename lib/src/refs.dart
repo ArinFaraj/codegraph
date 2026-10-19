@@ -1,6 +1,7 @@
 // `refs`: every use of one declaration, grouped by role.
 import 'classify.dart';
 import 'engine.dart';
+import 'request.dart';
 import 'result.dart';
 import 'symbols.dart';
 
@@ -12,6 +13,28 @@ Future<Answer> refs(Engine engine, String query) =>
         engine.analysis.fileCount,
       );
     });
+
+class RefsRequest extends WorkerRequest {
+  RefsRequest(this.query, {required super.json, required super.limit});
+
+  RefsRequest.fromJson(Map<String, dynamic> j)
+    : this(
+        j['query'] as String,
+        json: j['json'] as bool,
+        limit: j['limit'] as int?,
+      );
+
+  final String query;
+
+  @override
+  String get verb => 'refs';
+
+  @override
+  Map<String, Object?> get fields => {'query': query};
+
+  @override
+  Future<Answer> run(Engine engine) => refs(engine, query);
+}
 
 class RefsAnswer extends Answer {
   RefsAnswer(this.target, this.uses, this.analyzedFiles);
@@ -48,7 +71,7 @@ class RefsAnswer extends Answer {
 Map<String, Object?> useJson(Use u) => {
   'path': u.path,
   'line': u.line,
-  'role': u.role,
+  'role': u.role.label,
   'test': u.inTest,
 };
 

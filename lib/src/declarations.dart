@@ -4,6 +4,7 @@
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/element/element.dart';
 
+import 'kinds.dart';
 import 'signatures.dart';
 
 class DeclNode {
@@ -25,9 +26,7 @@ class DeclNode {
   final Declaration node;
   final String name;
 
-  /// class, mixin, enum, extension, extension-type, typedef, function,
-  /// getter, setter, variable, constructor, method, field, enum-value.
-  final String kind;
+  final DeclKind kind;
   final int nameOffset;
   final int offset;
   final int end;
@@ -60,7 +59,7 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
             DeclNode(
               node: v,
               name: v.name.lexeme,
-              kind: 'field',
+              kind: DeclKind.field,
               nameOffset: v.name.offset,
               offset: m.offset,
               end: m.end,
@@ -76,7 +75,7 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
           DeclNode(
             node: m,
             name: m.name?.lexeme ?? owner,
-            kind: 'constructor',
+            kind: DeclKind.constructor,
             nameOffset: m.name?.offset ?? m.offset,
             offset: m.offset,
             end: m.end,
@@ -92,10 +91,10 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
             node: m,
             name: m.name.lexeme,
             kind: m.isGetter
-                ? 'getter'
+                ? DeclKind.getter
                 : m.isSetter
-                ? 'setter'
-                : 'method',
+                ? DeclKind.setter
+                : DeclKind.method,
             nameOffset: m.name.offset,
             offset: m.offset,
             end: m.end,
@@ -112,7 +111,7 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
   DeclNode top(
     Declaration d,
     String name,
-    String kind,
+    DeclKind kind,
     int nameOffset,
     String sig,
   ) => DeclNode(
@@ -131,24 +130,36 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
       case ClassDeclaration():
         final name = d.namePart.typeName.lexeme;
         out.add(
-          top(d, name, 'class', d.namePart.typeName.offset, renderClassSig(d)),
+          top(
+            d,
+            name,
+            DeclKind.classDecl,
+            d.namePart.typeName.offset,
+            renderClassSig(d),
+          ),
         );
         members(d.body.members, name, d);
       case MixinDeclaration():
         final name = d.name.lexeme;
-        out.add(top(d, name, 'mixin', d.name.offset, renderMixinSig(d)));
+        out.add(top(d, name, DeclKind.mixin, d.name.offset, renderMixinSig(d)));
         members(d.body.members, name, d);
       case EnumDeclaration():
         final name = d.namePart.typeName.lexeme;
         out.add(
-          top(d, name, 'enum', d.namePart.typeName.offset, renderEnumSig(d)),
+          top(
+            d,
+            name,
+            DeclKind.enumDecl,
+            d.namePart.typeName.offset,
+            renderEnumSig(d),
+          ),
         );
         for (final c in d.body.constants) {
           out.add(
             DeclNode(
               node: c,
               name: c.name.lexeme,
-              kind: 'enum-value',
+              kind: DeclKind.enumValue,
               nameOffset: c.name.offset,
               offset: c.offset,
               end: c.end,
@@ -166,7 +177,7 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
           top(
             d,
             name ?? '<unnamed extension>',
-            'extension',
+            DeclKind.extension,
             d.name?.offset ?? d.offset,
             renderExtensionSig(d),
           ),
@@ -178,7 +189,7 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
           top(
             d,
             name,
-            'extension-type',
+            DeclKind.extensionType,
             d.namePart.typeName.offset,
             renderExtensionTypeSig(d),
           ),
@@ -186,14 +197,20 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
         members(d.body.members, name, d);
       case TypeAlias():
         out.add(
-          top(d, d.name.lexeme, 'typedef', d.name.offset, renderTypedefSig(d)),
+          top(
+            d,
+            d.name.lexeme,
+            DeclKind.typedef,
+            d.name.offset,
+            renderTypedefSig(d),
+          ),
         );
       case FunctionDeclaration():
         final kind = d.isGetter
-            ? 'getter'
+            ? DeclKind.getter
             : d.isSetter
-            ? 'setter'
-            : 'function';
+            ? DeclKind.setter
+            : DeclKind.function;
         out.add(
           top(d, d.name.lexeme, kind, d.name.offset, renderFunctionSig(d)),
         );
@@ -203,7 +220,7 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
             DeclNode(
               node: v,
               name: v.name.lexeme,
-              kind: 'variable',
+              kind: DeclKind.variable,
               nameOffset: v.name.offset,
               offset: d.offset,
               end: d.end,

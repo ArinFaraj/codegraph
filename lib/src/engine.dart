@@ -6,6 +6,7 @@ import 'package:analyzer/dart/element/element.dart';
 
 import 'analysis.dart';
 import 'classify.dart';
+import 'files.dart';
 import 'outline.dart';
 import 'result.dart';
 import 'symbols.dart';
@@ -31,7 +32,11 @@ class Engine {
 
   /// Syncs the analyzer with the disk and drops everything derived from the
   /// files that changed.
-  Future<void> refresh() async => filesChanged(await analysis.sync());
+  Future<FileDelta> refresh() async {
+    final delta = await analysis.sync();
+    filesChanged(delta.all);
+    return delta;
+  }
 
   void filesChanged(Iterable<String> paths) {
     final list = paths.toList();

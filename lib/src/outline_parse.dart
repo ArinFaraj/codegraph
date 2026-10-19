@@ -4,6 +4,7 @@ import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
 import 'declarations.dart';
+import 'kinds.dart';
 import 'outline_model.dart';
 import 'riverpod.dart';
 
@@ -16,22 +17,22 @@ FileOutline parseOutline(String path, String content) {
     for (final d in unit.directives)
       switch (d) {
         ImportDirective() => UriDirective(
-          'import',
+          DirectiveKind.import,
           d.uri.stringValue ?? '',
           line(d.offset),
         ),
         ExportDirective() => UriDirective(
-          'export',
+          DirectiveKind.export,
           d.uri.stringValue ?? '',
           line(d.offset),
         ),
         PartDirective() => UriDirective(
-          'part',
+          DirectiveKind.part,
           d.uri.stringValue ?? '',
           line(d.offset),
         ),
         PartOfDirective() => UriDirective(
-          'part-of',
+          DirectiveKind.partOf,
           d.uri?.stringValue ?? d.libraryName?.toSource() ?? '',
           line(d.offset),
         ),
@@ -48,7 +49,7 @@ FileOutline parseOutline(String path, String content) {
     decls.add(
       Decl(
         name: d.name,
-        kind: providerKind != null ? 'provider' : d.kind,
+        kind: providerKind != null ? DeclKind.provider : d.kind,
         line: line(d.nameOffset),
         offset: d.offset,
         end: d.end,
@@ -69,7 +70,7 @@ FileOutline parseOutline(String path, String content) {
       decls.add(
         Decl(
           name: name,
-          kind: 'provider',
+          kind: DeclKind.provider,
           line: line(d.nameOffset),
           offset: d.offset,
           end: d.end,
@@ -84,8 +85,14 @@ FileOutline parseOutline(String path, String content) {
   unit.accept(_ProviderUseVisitor(uses, line));
 
   final ids = <String>{};
+  final stringWords = <String>{};
+  final word = RegExp(r'[A-Za-z_$][A-Za-z0-9_$]*');
   for (Token? t = unit.beginToken; t != null && !t.isEof; t = t.next) {
-    if (t.type == TokenType.IDENTIFIER) ids.add(t.lexeme);
+    if (t.type == TokenType.IDENTIFIER) {
+      ids.add(t.lexeme);
+    } else if (t.type == TokenType.STRING) {
+      stringWords.addAll(word.allMatches(t.lexeme).map((m) => m[0]!));
+    }
     if (t.next == t) break;
   }
 
@@ -96,6 +103,7 @@ FileOutline parseOutline(String path, String content) {
     directives: directives,
     providerUses: uses,
     identifiers: ids,
+    stringWords: stringWords,
   );
 }
 

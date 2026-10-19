@@ -4,13 +4,14 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'files.dart';
 import 'outline_model.dart';
 import 'outline_parse.dart';
 import 'workspace.dart';
 
 export 'outline_model.dart';
 
-const _cacheVersion = 6;
+const _cacheVersion = 8;
 
 /// Every analyzed file's outline, refreshed from disk on load.
 class OutlineIndex {
@@ -25,78 +26,49 @@ class OutlineIndex {
   Map<String, List<String>>? _importers;
 
   /// The cold path: every analyzed file, reusing the on-disk cache for files
-  /// that have not changed and writing it back when anything did.
+  /// the tracker says have not changed, and writing it back when any did.
   static OutlineIndex load(Workspace ws) {
     final cacheFile = File('${ws.stateDir}/outline.json');
-    Map<String, dynamic> cache = const {};
-    if (cacheFile.existsSync()) {
-      try {
-        final j = jsonDecode(cacheFile.readAsStringSync());
-        if (j is Map<String, dynamic> && j['v'] == _cacheVersion) cache = j;
-      } catch (_) {}
-    }
-    final cachedFiles = (cache['files'] as Map<String, dynamic>?) ?? const {};
-    final dirStamps = (cache['dirs'] as Map<String, dynamic>?) ?? const {};
-
-    List<String>? fileList;
-    if (dirStamps.isNotEmpty) {
-      var dirsUnchanged = true;
-      for (final e in dirStamps.entries) {
-        if (_dirStamp(e.key) != e.value) {
-          dirsUnchanged = false;
-          break;
-        }
-      }
-      if (dirsUnchanged) {
-        fileList = [for (final k in cachedFiles.keys) ws.absolute(k)];
-      }
-    }
-    fileList ??= ws.analyzedFiles();
+    Map<String, dynamic>? cache;
+    try {
+      final j = jsonDecode(cacheFile.readAsStringSync());
+      if (j is Map<String, dynamic> && j['v'] == _cacheVersion) cache = j;
+    } catch (_) {}
+    final tracker = cache == null
+        ? FileTracker(ws)
+        : FileTracker.fromJson(ws, cache['tracker'] as Map<String, dynamic>);
+    final cached = (cache?['files'] as Map<String, dynamic>?) ?? const {};
+    final delta = tracker.sync();
+    final stale = {...delta.added, ...delta.changed};
 
     final files = <String, FileOutline>{};
-    final newCache = <String, dynamic>{};
-    var dirty = cachedFiles.length != fileList.length;
-    for (final abs in fileList) {
-      final rel = ws.relative(abs);
-      final stat = FileStat.statSync(abs);
-      if (stat.type == FileSystemEntityType.notFound) {
-        dirty = true;
+    for (final rel in tracker.files) {
+      final entry = cached[rel];
+      if (!stale.contains(rel) && entry is Map<String, dynamic>) {
+        files[rel] = FileOutline.fromJson(rel, entry);
         continue;
       }
-      final stamp = '${stat.modified.microsecondsSinceEpoch}:${stat.size}';
-      final cached = cachedFiles[rel];
-      if (cached is Map<String, dynamic> && cached['t'] == stamp) {
-        files[rel] = FileOutline.fromJson(
-          rel,
-          cached['o'] as Map<String, dynamic>,
-        );
-        newCache[rel] = cached;
-        continue;
-      }
-      dirty = true;
-      String content;
       try {
-        content = File(abs).readAsStringSync();
-      } catch (_) {
+        files[rel] = parseOutline(
+          rel,
+          File(ws.absolute(rel)).readAsStringSync(),
+        );
+      } on FileSystemException {
         continue;
       }
-      final outline = parseOutline(rel, content);
-      files[rel] = outline;
-      newCache[rel] = {'t': stamp, 'o': outline.toJson()};
     }
-    if (dirty) {
-      final dirs = <String, String>{};
-      for (final abs in fileList) {
-        final dir = abs.substring(0, abs.lastIndexOf('/'));
-        dirs.putIfAbsent(dir, () => _dirStamp(dir));
-      }
+    if (cache == null || !delta.isEmpty) {
       try {
         Directory(ws.stateDir).createSync(recursive: true);
-        final tmp = File('${cacheFile.path}.$pid.tmp');
-        tmp.writeAsStringSync(
-          jsonEncode({'v': _cacheVersion, 'dirs': dirs, 'files': newCache}),
-        );
-        tmp.renameSync(cacheFile.path);
+        File('${cacheFile.path}.$pid.tmp')
+          ..writeAsStringSync(
+            jsonEncode({
+              'v': _cacheVersion,
+              'tracker': tracker.toJson(),
+              'files': {for (final e in files.entries) e.key: e.value.toJson()},
+            }),
+          )
+          ..renameSync(cacheFile.path);
       } catch (_) {}
     }
     return OutlineIndex._(ws, files, ws.packageRoots());
@@ -124,6 +96,7 @@ class OutlineIndex {
       }
     }
     _importers = null;
+    _mentionCounts = null;
   }
 
   /// Resolves an import/export/part URI written in [fromRel] to a
@@ -136,17 +109,15 @@ class OutlineIndex {
       if (slash < 0) return null;
       final root = _packageRoots[rest.substring(0, slash)];
       if (root == null) return null;
-      final rel = workspace.relative(
-        workspace.absolute('$root/lib/${rest.substring(slash + 1)}'),
+      final rel = workspace.relativeOrNull(
+        '$root/lib/${rest.substring(slash + 1)}',
       );
       return files.containsKey(rel) ? rel : null;
     }
     final dir = fromRel.contains('/')
         ? fromRel.substring(0, fromRel.lastIndexOf('/'))
         : '';
-    final rel = workspace.relative(
-      workspace.absolute(dir.isEmpty ? uri : '$dir/$uri'),
-    );
+    final rel = workspace.relativeOrNull(dir.isEmpty ? uri : '$dir/$uri');
     return files.containsKey(rel) ? rel : null;
   }
 
@@ -156,7 +127,7 @@ class OutlineIndex {
     if (f == null) return const [];
     return [
       for (final d in f.directives)
-        if (d.kind == 'import' || d.kind == 'export')
+        if (d.kind.isDependency)
           if (resolveUri(rel, d.uri) case final target?) (target, d),
     ];
   }
@@ -178,19 +149,24 @@ class OutlineIndex {
     return map[rel] ?? const [];
   }
 
+  Map<String, int>? _mentionCounts;
+
   /// Number of files other than [exceptFile] whose tokens mention [name].
   int mentions(String name, {String? exceptFile}) {
-    var n = 0;
-    for (final f in files.values) {
-      if (f.path != exceptFile && f.identifiers.contains(name)) n++;
-    }
-    return n;
+    final counts = _mentionCounts ??= () {
+      final m = <String, int>{};
+      for (final f in files.values) {
+        for (final id in f.identifiers) {
+          m[id] = (m[id] ?? 0) + 1;
+        }
+      }
+      return m;
+    }();
+    final own =
+        exceptFile != null &&
+            (files[exceptFile]?.identifiers.contains(name) ?? false)
+        ? 1
+        : 0;
+    return (counts[name] ?? 0) - own;
   }
-}
-
-String _dirStamp(String dir) {
-  final s = FileStat.statSync(dir);
-  return s.type == FileSystemEntityType.notFound
-      ? 'missing'
-      : '${s.modified.microsecondsSinceEpoch}';
 }

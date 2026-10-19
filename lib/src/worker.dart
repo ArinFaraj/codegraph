@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'analysis.dart';
+import 'byte_store.dart';
 import 'commands.dart';
 import 'engine.dart';
 import 'registry.dart';
@@ -59,15 +60,12 @@ class AnalyzerHost {
 
   /// The engine, refreshed from the disk. Null when the analyzer cannot start.
   Future<Engine?> ready() async {
-    var engine = await (_starting ??= _start());
-    if (engine != null && engine.analysis.configChanged) {
-      say('configuration changed; restarting the analyzer');
-      await engine.analysis.dispose();
-      _engine = null;
-      engine = await (_starting = _start());
-    }
-    await engine?.refresh();
-    return engine;
+    final engine = await (_starting ??= _start());
+    if (engine == null || !(await engine.refresh()).config) return engine;
+    say('configuration changed; restarting the analyzer');
+    await engine.analysis.dispose();
+    _engine = null;
+    return _starting = _start();
   }
 
   Future<Engine?> _start() async {
@@ -160,7 +158,7 @@ Future<int> runWorker(String root) async {
     )
     ..renameSync(stateFile.path);
   await Registry.register(ws.root, pid, server.port);
-  Analysis.pruneByteStores();
+  pruneByteStores();
   say('worker $codegraphVersion pid $pid port ${server.port} for ${ws.root}');
 
   final host = AnalyzerHost(ws, say);
@@ -187,9 +185,7 @@ Future<int> runWorker(String root) async {
     void Function(Map<String, Object?>) send,
     Map<String, dynamic> message,
   ) async {
-    final request = WorkerRequest.fromJson(
-      message['request'] as Map<String, dynamic>,
-    );
+    final request = decodeRequest(message['request'] as Map<String, dynamic>);
     Registry.touch(ws.root);
     Timer? ticker;
     if (!host.isReady) {

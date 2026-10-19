@@ -2,6 +2,7 @@ import 'package:analyzer/dart/element/element.dart';
 
 import 'analysis.dart';
 import 'declarations.dart';
+import 'kinds.dart';
 import 'riverpod.dart';
 import 'workspace.dart';
 
@@ -16,7 +17,7 @@ class Target {
   int get line => at.line;
   int get offset => at.offset;
   String get name => element.displayName;
-  String get kind => kindOf(element);
+  DeclKind get kind => kindOf(element);
   String get location => '$path:$line';
 
   String get qualified {
@@ -33,7 +34,7 @@ class Target {
 
   Map<String, Object?> toJson() => {
     'name': qualified,
-    'kind': kind,
+    'kind': kind.label,
     'path': path,
     'line': line,
   };
@@ -44,29 +45,29 @@ Target? targetOf(Analysis a, Element element) {
   return at == null ? null : Target(element.nonSynthetic, at);
 }
 
-String kindOf(Element e) {
-  if (isProvider(e)) return 'provider';
+DeclKind kindOf(Element e) {
+  if (isProvider(e)) return DeclKind.provider;
   return switch (e) {
-    ClassElement(isMixinClass: true) => 'mixin class',
-    ClassElement() => 'class',
-    EnumElement() => 'enum',
-    MixinElement() => 'mixin',
-    ExtensionTypeElement() => 'extension type',
-    ExtensionElement() => 'extension',
-    TypeAliasElement() => 'typedef',
-    TopLevelFunctionElement() => 'function',
-    TopLevelVariableElement() => 'variable',
-    ConstructorElement() => 'constructor',
-    MethodElement() => 'method',
-    GetterElement() => 'getter',
-    SetterElement() => 'setter',
-    FieldElement(isEnumConstant: true) => 'enum value',
-    FieldElement() => 'field',
-    FormalParameterElement() => 'parameter',
-    LocalVariableElement() => 'local variable',
-    LocalFunctionElement() => 'local function',
-    TypeParameterElement() => 'type parameter',
-    _ => e.kind.displayName,
+    ClassElement(isMixinClass: true) => DeclKind.mixinClass,
+    ClassElement() => DeclKind.classDecl,
+    EnumElement() => DeclKind.enumDecl,
+    MixinElement() => DeclKind.mixin,
+    ExtensionTypeElement() => DeclKind.extensionType,
+    ExtensionElement() => DeclKind.extension,
+    TypeAliasElement() => DeclKind.typedef,
+    TopLevelFunctionElement() => DeclKind.function,
+    TopLevelVariableElement() => DeclKind.variable,
+    ConstructorElement() => DeclKind.constructor,
+    MethodElement() => DeclKind.method,
+    GetterElement() => DeclKind.getter,
+    SetterElement() => DeclKind.setter,
+    FieldElement(isEnumConstant: true) => DeclKind.enumValue,
+    FieldElement() => DeclKind.field,
+    FormalParameterElement() => DeclKind.parameter,
+    LocalVariableElement() => DeclKind.localVariable,
+    LocalFunctionElement() => DeclKind.localFunction,
+    TypeParameterElement() => DeclKind.typeParameter,
+    _ => DeclKind.other,
   };
 }
 
@@ -226,8 +227,8 @@ Future<(DeclNode, List<DeclNode>)?> declarationOf(
 /// unique substring. When several match, a single one under `lib/` wins.
 List<String> fileCandidates(Workspace ws, Iterable<String> files, String arg) {
   final all = files.toSet();
-  final rel = ws.relative(ws.absolute(arg));
-  if (all.contains(rel)) return [rel];
+  final rel = ws.relativeOrNull(arg);
+  if (rel != null && all.contains(rel)) return [rel];
   final base = all.where((p) => p == arg || p.endsWith('/$arg')).toList()
     ..sort();
   final pool = base.isNotEmpty

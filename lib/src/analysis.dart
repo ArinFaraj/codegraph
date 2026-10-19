@@ -1,7 +1,6 @@
 // The only file that touches `package:analyzer/src/`. Everything that changes
 // when the analyzer is upgraded should change here.
 import 'dart:async';
-import 'dart:io';
 
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/element/element.dart';
@@ -15,6 +14,8 @@ import 'package:analyzer/src/dart/analysis/experiments.dart';
 import 'package:analyzer/src/dart/analysis/file_byte_store.dart';
 import 'package:analyzer/src/dart/analysis/search.dart' as search;
 
+import 'byte_store.dart';
+import 'files.dart';
 import 'sdk.dart';
 import 'workspace.dart';
 
@@ -56,17 +57,16 @@ String analyzerLanguageVersion() {
 }
 
 class Analysis {
-  Analysis._(this.workspace, this._collection, this._drivers, this.fineDeps);
+  Analysis._(this.workspace, this._collection, this.fineDeps)
+    : _tracker = FileTracker(workspace);
 
   final Workspace workspace;
   final AnalysisContextCollectionImpl _collection;
-  final List<AnalysisDriver> _drivers;
   final bool fineDeps;
+  final FileTracker _tracker;
 
+  /// Workspace-relative path to the driver analyzing it.
   final Map<String, AnalysisDriver> _owner = {};
-  final Map<String, _Stamp> _stamps = {};
-  final Map<String, _Stamp> _configStamps = {};
-  final Map<String, _Stamp> _dirStamps = {};
 
   int _indexed = 0;
   bool _warm = false;
@@ -74,44 +74,14 @@ class Analysis {
 
   bool get warm => _warm;
   int get fileCount => _owner.length;
-  int get contextCount => _drivers.length;
+  int get contextCount => _collection.contexts.length;
   int get indexedCount => _indexed;
 
   /// Every analyzed file, workspace-relative.
-  Iterable<String> get files => _owner.keys.map(workspace.relative);
+  Iterable<String> get files => _owner.keys;
 
-  static String byteStoreBase() {
-    final home = Platform.environment['HOME'] ?? Directory.systemTemp.path;
-    return Platform.environment['CODEGRAPH_BYTE_STORE'] ??
-        '$home/.cache/codegraph/byte-store';
-  }
-
-  /// One cache per checkout. Entries are keyed by content, but some carry
-  /// paths, so a cache filled by a checkout at another path silently drops
-  /// references here.
-  static String byteStoreFor(Workspace workspace) {
-    var h = 0xcbf29ce484222325;
-    for (final c in workspace.root.codeUnits) {
-      h = ((h ^ c) * 0x100000001b3) & 0x7fffffffffffffff;
-    }
-    return '${byteStoreBase()}/${h.toRadixString(16)}';
-  }
-
-  /// Deletes per-checkout caches untouched for [age], keeping disk use bounded.
-  static void pruneByteStores({Duration age = const Duration(days: 30)}) {
-    final base = Directory(byteStoreBase());
-    if (!base.existsSync()) return;
-    final cutoff = DateTime.now().subtract(age);
-    for (final d in base.listSync().whereType<Directory>()) {
-      try {
-        final marker = File('${d.path}/.last-used');
-        final used = marker.existsSync()
-            ? marker.lastModifiedSync()
-            : d.statSync().modified;
-        if (used.isBefore(cutoff)) d.deleteSync(recursive: true);
-      } catch (_) {}
-    }
-  }
+  Iterable<AnalysisDriver> get _drivers =>
+      _collection.contexts.map((c) => c.driver);
 
   static Future<Analysis> open(
     Workspace workspace, {
@@ -119,105 +89,49 @@ class Analysis {
     String? byteStore,
   }) async {
     final storePath = byteStore ?? byteStoreFor(workspace);
-    // FileByteStore writes nothing, silently, when its directory is missing.
-    Directory(storePath).createSync(recursive: true);
-    File('$storePath/.last-used').writeAsStringSync(workspace.root);
     final collection = AnalysisContextCollectionImpl(
       includedPaths: [workspace.root],
       resourceProvider: PhysicalResourceProvider.INSTANCE,
       sdkPath: sdkPathForAnalysis(),
-      byteStore: FileByteStore(storePath),
+      byteStore: FileByteStore(openByteStore(storePath, workspace)),
       enableIndex: true,
       withFineDependencies: fineDeps,
     );
-    final drivers = [for (final c in collection.contexts) c.driver];
-    final analysis = Analysis._(workspace, collection, drivers, fineDeps);
-    analysis._stampConfig();
+    final analysis = Analysis._(workspace, collection, fineDeps);
     await analysis.sync();
     return analysis;
   }
 
-  /// Brings the analyzer in line with the disk: new, changed and deleted
-  /// files. Returns the workspace-relative paths that changed. A stat per known file and per
-  /// directory holding one; the context roots are only re-walked when a
-  /// directory changed, because a new or deleted file changes its parent.
-  Future<List<String>> sync() async {
-    final changed = <String>[];
-    var rescan = _dirStamps.isEmpty;
-    if (!rescan) {
-      for (final e in _dirStamps.entries) {
-        if (_Stamp.ofDir(e.key) != e.value) {
-          rescan = true;
-          break;
-        }
-      }
+  /// Brings the analyzer in line with the disk and says what changed.
+  Future<FileDelta> sync() async {
+    final delta = _tracker.sync();
+    for (final rel in delta.added) {
+      final abs = workspace.absolute(rel);
+      final driver = _collection.contextFor(abs).driver;
+      driver.addFile(abs);
+      _owner[rel] = driver;
     }
-    if (rescan) {
-      final seen = <String>{};
-      _dirStamps.clear();
-      for (final context in _collection.contexts) {
-        final driver = context.driver;
-        for (final raw in context.contextRoot.analyzedFiles()) {
-          if (!raw.endsWith('.dart')) continue;
-          final path = workspace.absolute(raw);
-          seen.add(path);
-          final dir = path.substring(0, path.lastIndexOf('/'));
-          _dirStamps.putIfAbsent(dir, () => _Stamp.ofDir(dir));
-          if (!_owner.containsKey(path)) {
-            driver.addFile(path);
-            _owner[path] = driver;
-            _stamps[path] = _Stamp.of(path);
-            if (_warm) changed.add(path);
-          }
-        }
-      }
-      for (final path in _owner.keys.toList()) {
-        if (seen.contains(path)) continue;
-        _owner.remove(path)!.removeFile(path);
-        _stamps.remove(path);
-        changed.add(path);
-      }
+    for (final rel in delta.changed) {
+      _owner[rel]?.changeFile(workspace.absolute(rel));
     }
-    for (final e in _owner.entries) {
-      final stamp = _Stamp.of(e.key);
-      if (_stamps[e.key] != stamp) {
-        e.value.changeFile(e.key);
-        _stamps[e.key] = stamp;
-        if (!changed.contains(e.key)) changed.add(e.key);
-      }
+    for (final rel in delta.removed) {
+      _owner.remove(rel)?.removeFile(workspace.absolute(rel));
     }
     for (final d in _drivers) {
       await d.applyPendingFileChanges();
     }
-    return [for (final p in changed) workspace.relative(p)];
+    return delta;
   }
 
   /// Tells the analyzer about files this process just wrote.
-  Future<void> notifyChanged(Iterable<String> relativePaths) async {
-    for (final p in relativePaths) {
-      final path = workspace.absolute(p);
-      final driver = _owner[path];
-      if (driver == null) continue;
-      driver.changeFile(path);
-      _stamps[path] = _Stamp.of(path);
+  Future<void> notifyChanged(Iterable<String> paths) async {
+    final list = paths.toList();
+    for (final rel in list) {
+      _owner[rel]?.changeFile(workspace.absolute(rel));
     }
+    _tracker.restamp(list);
     for (final d in _drivers) {
       await d.applyPendingFileChanges();
-    }
-  }
-
-  /// True when a pubspec, analysis_options or package config changed since
-  /// the contexts were built. The caller must reopen.
-  bool get configChanged {
-    for (final e in _configStamps.entries) {
-      if (_Stamp.of(e.key) != e.value) return true;
-    }
-    return false;
-  }
-
-  void _stampConfig() {
-    for (final f in workspace.configFiles()) {
-      _configStamps[f] = _Stamp.of(f);
     }
   }
 
@@ -230,7 +144,7 @@ class Analysis {
       var last = DateTime.now();
       await Future.wait([
         for (final p in paths)
-          _owner[p]!.getIndex(p).then((_) {
+          _owner[p]!.getIndex(workspace.absolute(p)).then((_) {
             _indexed++;
             final now = DateTime.now();
             if (progress != null &&
@@ -244,21 +158,23 @@ class Analysis {
     }();
   }
 
-  bool isAnalyzed(String relativePath) =>
-      _owner.containsKey(workspace.absolute(relativePath));
+  bool isAnalyzed(String path) => _owner.containsKey(path);
+
+  /// The workspace-relative path of an analyzer source, when it is analyzed.
+  String? _analyzedPath(String fullName) {
+    final rel = workspace.relativeOrNull(fullName);
+    return rel != null && _owner.containsKey(rel) ? rel : null;
+  }
 
   /// Where [element] is declared, or null when that is outside the analyzed
   /// workspace (the SDK, a pub package, an excluded directory).
   Location? locate(Element element) {
     final fragment = element.nonSynthetic.firstFragment;
     final lib = fragment.libraryFragment;
-    if (lib == null || !_owner.containsKey(lib.source.fullName)) return null;
+    final path = lib == null ? null : _analyzedPath(lib.source.fullName);
+    if (lib == null || path == null) return null;
     final offset = fragment.nameOffset ?? fragment.offset;
-    return Location(
-      workspace.relative(lib.source.fullName),
-      offset,
-      lib.lineInfo.getLocation(offset).lineNumber,
-    );
+    return Location(path, offset, lib.lineInfo.getLocation(offset).lineNumber);
   }
 
   /// The URI of the library declaring [element], for messages about
@@ -267,28 +183,18 @@ class Analysis {
       '${element.nonSynthetic.firstFragment.libraryFragment?.source.uri ?? 'unknown'}';
 
   Future<ResolvedLibraryResult?> library(String path) async {
-    final abs = workspace.absolute(path);
-    final driver = _owner[abs] ?? _contextDriver(abs);
-    if (driver == null) return null;
-    final r = await driver.getResolvedLibrary(abs);
+    final r = await _driverFor(
+      path,
+    )?.getResolvedLibrary(workspace.absolute(path));
     return r is ResolvedLibraryResult ? r : null;
   }
 
   Future<ResolvedUnitResult?> unit(String path) async {
-    final abs = workspace.absolute(path);
-    final driver = _owner[abs] ?? _contextDriver(abs);
-    if (driver == null) return null;
-    final r = await driver.getResolvedUnit(abs);
+    final r = await _driverFor(path)?.getResolvedUnit(workspace.absolute(path));
     return r is ResolvedUnitResult ? r : null;
   }
 
-  AnalysisDriver? _contextDriver(String abs) {
-    try {
-      return _collection.contextFor(abs).driver;
-    } catch (_) {
-      return null;
-    }
-  }
+  AnalysisDriver? _driverFor(String path) => _owner[path];
 
   /// Every use of [element] across every context, deduplicated, restricted
   /// to analyzed files.
@@ -361,10 +267,9 @@ class Analysis {
 
   /// Error-severity diagnostics in [path].
   Future<List<Diagnostic>> errors(String path) async {
-    final abs = workspace.absolute(path);
-    final driver = _owner[abs];
+    final driver = _owner[path];
     if (driver == null) return const [];
-    final r = await driver.getErrors(abs);
+    final r = await driver.getErrors(workspace.absolute(path));
     if (r is! ErrorsResult) return const [];
     return [
       for (final d in r.diagnostics)
@@ -373,10 +278,11 @@ class Analysis {
   }
 
   Site? _site(search.SearchResult r) {
-    final path = r.enclosingFragment.libraryFragment?.source.fullName;
-    if (path == null || !_owner.containsKey(path)) return null;
+    final fullName = r.enclosingFragment.libraryFragment?.source.fullName;
+    final path = fullName == null ? null : _analyzedPath(fullName);
+    if (path == null) return null;
     return Site(
-      workspace.relative(path),
+      path,
       r.offset,
       r.length,
       r.kind.name,
@@ -391,30 +297,4 @@ class Analysis {
     });
 
   Future<void> dispose() => _collection.dispose();
-}
-
-class _Stamp {
-  const _Stamp(this.modified, this.size);
-
-  factory _Stamp.of(String path) {
-    final s = FileStat.statSync(path);
-    if (s.type == FileSystemEntityType.notFound) return const _Stamp(-1, -1);
-    return _Stamp(s.modified.microsecondsSinceEpoch, s.size);
-  }
-
-  factory _Stamp.ofDir(String path) {
-    final s = FileStat.statSync(path);
-    if (s.type == FileSystemEntityType.notFound) return const _Stamp(-1, -1);
-    return _Stamp(s.modified.microsecondsSinceEpoch, 0);
-  }
-
-  final int modified;
-  final int size;
-
-  @override
-  bool operator ==(Object other) =>
-      other is _Stamp && other.modified == modified && other.size == size;
-
-  @override
-  int get hashCode => Object.hash(modified, size);
 }

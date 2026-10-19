@@ -177,8 +177,7 @@ void main() {
         "import 'package:app/core/keys.dart';\nString x() => walletKey('y');\n",
       );
     try {
-      expect(await analysis.sync(), contains('lib/core/extra.dart'));
-      engine.filesChanged(['lib/core/extra.dart']);
+      expect((await engine.refresh()).added, ['lib/core/extra.dart']);
       final r = await refs(engine, 'walletKey');
       expect(text(r), contains('lib/core/extra.dart:2'));
     } finally {

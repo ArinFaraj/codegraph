@@ -20,13 +20,11 @@ class AtomicTextEdit {
 class AtomicEditException implements Exception {
   AtomicEditException(
     this.message, {
-    this.ioFailure = false,
     this.details = const [],
     this.recoveryPaths = const [],
   });
 
   final String message;
-  final bool ioFailure;
   final List<String> details;
   final List<String> recoveryPaths;
 
@@ -151,18 +149,12 @@ PreparedTextEdits prepareTextEdits(List<AtomicTextEdit> edits) {
   return PreparedTextEdits(prepared);
 }
 
-typedef AtomicEditHook = void Function(int index, String path);
-
 /// Stages every output beside its target, revalidates every original, then
 /// installs the staged files. A failed install restores every attempted target
 /// from a sibling backup in reverse order. Portable filesystems cannot provide
 /// one atomic operation across multiple paths; this is transaction-like,
 /// rollback-backed application with recovery paths retained on rollback error.
-List<String> applyPreparedTextEdits(
-  PreparedTextEdits prepared, {
-  AtomicEditHook? beforeInstall,
-  AtomicEditHook? beforeRollback,
-}) {
+List<String> applyPreparedTextEdits(PreparedTextEdits prepared) {
   try {
     for (var i = 0; i < prepared.files.length; i++) {
       final item = prepared.files[i];
@@ -182,17 +174,13 @@ List<String> applyPreparedTextEdits(
   } catch (error) {
     _cleanupUncommitted(prepared.files);
     if (error is AtomicEditException) rethrow;
-    throw AtomicEditException(
-      'could not stage the edit: $error',
-      ioFailure: true,
-    );
+    throw AtomicEditException('could not stage the edit: $error');
   }
 
   final attempted = <PreparedTextFile>[];
   try {
     for (var i = 0; i < prepared.files.length; i++) {
       final item = prepared.files[i];
-      beforeInstall?.call(i, item.path);
       // Revalidate immediately before each replacement, not only once before
       // the install loop. If a later target changes while earlier targets are
       // being installed, rollback the earlier work without overwriting the
@@ -212,7 +200,6 @@ List<String> applyPreparedTextEdits(
     for (var i = attempted.length - 1; i >= 0; i--) {
       final item = attempted[i];
       try {
-        beforeRollback?.call(i, item.path);
         File(item.backupPath!).renameSync(item.path);
         item.backupPath = null;
       } catch (_) {
@@ -224,7 +211,6 @@ List<String> applyPreparedTextEdits(
       recovery.isEmpty
           ? 'applying the edit failed; every attempted file was restored'
           : 'applying the edit failed and the restore was incomplete',
-      ioFailure: true,
       details: ['$error'],
       recoveryPaths: recovery,
     );

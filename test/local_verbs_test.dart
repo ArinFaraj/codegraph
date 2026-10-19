@@ -2,7 +2,10 @@ import 'dart:io';
 
 import 'package:codegraph/src/outline.dart';
 import 'package:codegraph/src/result.dart';
-import 'package:codegraph/src/verbs_local.dart';
+import 'package:codegraph/src/args.dart';
+import 'package:codegraph/src/find.dart';
+import 'package:codegraph/src/show_file.dart';
+import 'package:codegraph/src/why.dart';
 import 'package:codegraph/src/workspace.dart';
 import 'package:test/test.dart';
 

@@ -5,15 +5,17 @@ import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 
+import 'kinds.dart';
+
 /// `ref.<method>(provider)` calls and the role each one plays.
 const providerRoles = {
-  'watch': 'ref.watch',
-  'read': 'ref.read',
-  'listen': 'ref.listen',
-  'listenManual': 'ref.listen',
-  'invalidate': 'ref.invalidate',
-  'refresh': 'ref.refresh',
-  'exists': 'ref.exists',
+  'watch': Role.refWatch,
+  'read': Role.refRead,
+  'listen': Role.refListen,
+  'listenManual': Role.refListen,
+  'invalidate': Role.refInvalidate,
+  'refresh': Role.refRefresh,
+  'exists': Role.refExists,
 };
 
 /// A top-level variable whose static type is a Riverpod provider.

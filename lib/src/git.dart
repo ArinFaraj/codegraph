@@ -54,13 +54,14 @@ List<FileChange>? gitChanges(Workspace ws, {String? base}) {
     if (line.startsWith('--- ')) {
       minusPath = line.startsWith('--- a/') ? line.substring(6) : null;
     } else if (line.startsWith('+++ ')) {
-      if (line == '+++ /dev/null') {
-        final rel = ws.relative('$gitRoot/$minusPath');
-        current = changes[rel] = FileChange(rel, deleted: true);
-      } else {
-        final rel = ws.relative('$gitRoot/${line.substring(6)}');
-        current = changes[rel] = FileChange(rel);
-      }
+      final rel = ws.relativeOrNull(
+        line == '+++ /dev/null'
+            ? '$gitRoot/$minusPath'
+            : '$gitRoot/${line.substring(6)}',
+      );
+      current = rel == null
+          ? null
+          : changes[rel] = FileChange(rel, deleted: line == '+++ /dev/null');
     } else if (line.startsWith('@@') && current != null && !current.deleted) {
       final m = RegExp(r'\+(\d+)(?:,(\d+))?').firstMatch(line);
       if (m == null) continue;
@@ -84,13 +85,12 @@ List<FileChange>? gitChanges(Workspace ws, {String? base}) {
   if (untracked.exitCode == 0) {
     for (final p in (untracked.stdout as String).split('\n')) {
       if (p.trim().isEmpty) continue;
-      final rel = ws.relative(ws.absolute(p));
+      final rel = ws.relativeOrNull(p);
+      if (rel == null) continue;
       final lines = File(ws.absolute(rel)).readAsLinesSync().length;
       changes[rel] = FileChange(rel, hunks: [Hunk(1, lines == 0 ? 1 : lines)]);
     }
   }
-  return changes.values
-      .where((c) => !c.path.startsWith('/') && !isGeneratedFile(c.path))
-      .toList()
+  return changes.values.where((c) => !isGeneratedFile(c.path)).toList()
     ..sort((a, b) => a.path.compareTo(b.path));
 }

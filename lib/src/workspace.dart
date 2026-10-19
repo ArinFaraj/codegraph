@@ -52,11 +52,20 @@ class Workspace {
     return null;
   }
 
-  String relative(String path) {
-    final p = _normalize(path);
+  /// [path] relative to the workspace root, or null when it lies outside.
+  String? relativeOrNull(String path) {
+    final p = _normalize(absolute(path));
     if (p == root) return '.';
-    return p.startsWith('$root/') ? p.substring(root.length + 1) : p;
+    return p.startsWith('$root/') ? p.substring(root.length + 1) : null;
   }
+
+  bool contains(String path) => relativeOrNull(path) != null;
+
+  /// [path] relative to the workspace root. Only for paths known to be
+  /// inside it; use [relativeOrNull] for anything that might not be.
+  String relative(String path) =>
+      relativeOrNull(path) ??
+      (throw ArgumentError.value(path, 'path', 'outside ${root}'));
 
   String absolute(String path) =>
       path.startsWith('/') ? _normalize(path) : _normalize('$root/$path');

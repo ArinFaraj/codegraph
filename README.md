@@ -36,6 +36,8 @@ codegraph impact --diff [--base R]  tests that reach it; --diff seeds from
 codegraph rename <symbol> <new>     dry run of a complete rename; --apply
                                     writes it, re-analyzes the affected
                                     files, and rolls back on new errors
+codegraph rename <a.dart> <b.dart>  moves a file and rewrites every import,
+                                    export and conditional import of it
 codegraph why <fileA> <fileB>       the import path from one file to another
 codegraph doctor [--warm|--stop|--restart]
 ```
@@ -100,8 +102,16 @@ constructors. Refusals come in two kinds:
   (`@riverpod`, `@freezed`, `@JsonSerializable`, ...), public API of a path
   package whose pubspec does not say `publish_to: none`, a privacy change, or
   a name collision. Stop and decide by hand.
-- `UNSUPPORTED`: codegraph does not compute this kind yet (files, unnamed
-  constructors). Renaming by hand is fine; run `dart analyze` afterwards.
+- `UNSUPPORTED`: codegraph does not compute this kind yet (unnamed
+  constructors, libraries with parts). Renaming by hand is fine; run
+  `dart analyze` afterwards.
+
+Renaming a file (`rename lib/a.dart lib/b/a.dart`) moves it and rewrites
+every import, export and conditional import that points at it, keeping
+`package:` URIs where the new location allows and recomputing relative ones,
+including the moved file's own. The same re-analysis and rollback apply. A
+widely imported file makes the analyzer re-resolve its dependents, so the
+apply and the next broad query can take tens of seconds on a large app.
 
 Dry runs also warn when string literals spell the old name, when an enum
 value's name may be stored or sent as data, and when generated files are

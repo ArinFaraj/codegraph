@@ -5,12 +5,13 @@
 import 'dart:async';
 
 import 'package:analyzer/dart/element/element.dart';
-import 'package:analyzer/diagnostic/diagnostic.dart';
 
 import 'edits.dart';
 import 'engine.dart';
+import 'request.dart';
 import 'result.dart';
 import 'symbols.dart';
+import 'verify.dart';
 import 'workspace.dart';
 
 enum RefusalKind {
@@ -69,24 +70,6 @@ class PlanRefused extends Planning {
 class PlanFailed extends Planning {
   PlanFailed(this.answer);
   final Answer answer;
-}
-
-sealed class Applied {}
-
-class AppliedClean extends Applied {
-  AppliedClean(this.checkedFiles);
-  final int checkedFiles;
-}
-
-class RolledBack extends Applied {
-  RolledBack(this.errors);
-  final List<String> errors;
-}
-
-class NotApplied extends Applied {
-  NotApplied(this.message, this.details);
-  final String message;
-  final List<String> details;
 }
 
 Future<Answer> rename(
@@ -190,23 +173,18 @@ Future<Planning> planRename(Engine engine, String query, String newName) async {
 }
 
 Future<Applied> applyRename(Engine engine, RenamePlan plan) async {
-  final analysis = engine.analysis;
-  final ws = engine.workspace;
   final files = plan.edits.map((e) => e.path).toSet().toList()..sort();
-  final checked = {
+  final baseline = await ErrorBaseline.take(engine, [
     ...files,
     for (final f in files) ...engine.outline.importers(f),
-  };
-  final before = {
-    for (final f in checked) f: _errorCounts(await analysis.errors(f)),
-  };
+  ]);
 
   final PreparedTextEdits prepared;
   try {
     prepared = prepareTextEdits([
       for (final e in plan.edits)
         AtomicTextEdit(
-          file: ws.absolute(e.path),
+          file: engine.workspace.absolute(e.path),
           offset: e.offset,
           length: plan.oldName.length,
           expected: plan.oldName,
@@ -217,24 +195,10 @@ Future<Applied> applyRename(Engine engine, RenamePlan plan) async {
   } on AtomicEditException catch (e) {
     return NotApplied(e.message, [...e.details, ...e.recoveryPaths]);
   }
-  await _changed(engine, files);
+  await filesWritten(engine, files);
 
-  final introduced = <String>[];
-  for (final f in checked) {
-    final now = await analysis.errors(f);
-    final counts = _errorCounts(now);
-    final was = before[f]!;
-    for (final d in now) {
-      final key = d.diagnosticCode.lowerCaseName;
-      if ((counts[key] ?? 0) > (was[key] ?? 0)) {
-        introduced.add(
-          '$f:${engine.sources.lineOf(f, d.offset)}  ${d.message}',
-        );
-      }
-    }
-  }
-  if (introduced.isEmpty) return AppliedClean(checked.length);
-
+  final introduced = await baseline.introduced(engine);
+  if (introduced.isEmpty) return AppliedClean(baseline.fileCount);
   try {
     restorePreparedTextEdits(prepared);
   } on AtomicEditException catch (e) {
@@ -244,22 +208,8 @@ Future<Applied> applyRename(Engine engine, RenamePlan plan) async {
       [...e.details, ...e.recoveryPaths, ...introduced],
     );
   }
-  await _changed(engine, files);
+  await filesWritten(engine, files);
   return RolledBack(introduced);
-}
-
-Future<void> _changed(Engine engine, List<String> files) async {
-  await engine.analysis.notifyChanged(files);
-  engine.filesChanged(files);
-}
-
-Map<String, int> _errorCounts(List<Diagnostic> diagnostics) {
-  final out = <String, int>{};
-  for (final d in diagnostics) {
-    final key = d.diagnosticCode.lowerCaseName;
-    out[key] = (out[key] ?? 0) + 1;
-  }
-  return out;
 }
 
 /// The element a rename of [e] actually renames: a `this.x` parameter
@@ -567,8 +517,8 @@ Future<List<_Span>> _spans(
       final at = f.nameOffset;
       final lib = f.libraryFragment;
       if (at == null || lib == null || f.name != oldName) continue;
-      final path = analysis.workspace.relative(lib.source.fullName);
-      if (analysis.isAnalyzed(path)) add(path, at);
+      final path = analysis.workspace.relativeOrNull(lib.source.fullName);
+      if (path != null && analysis.isAnalyzed(path)) add(path, at);
     }
     for (final s in await analysis.references(e)) {
       if (s.length > 0) add(s.path, s.offset);
@@ -577,10 +527,10 @@ Future<List<_Span>> _spans(
       for (final c in e.constructors) {
         for (final f in c.fragments) {
           if (f.typeNameOffset case final at?) {
-            add(
-              analysis.workspace.relative(f.libraryFragment.source.fullName),
-              at,
+            final path = analysis.workspace.relativeOrNull(
+              f.libraryFragment.source.fullName,
             );
+            if (path != null && analysis.isAnalyzed(path)) add(path, at);
           }
         }
       }
@@ -616,18 +566,20 @@ List<String> _warnings(Engine engine, Element e, List<_Span> spans) {
 }
 
 /// String literals spelling [name] as a word, outside directives and
-/// comments, as `path:line`.
+/// comments, as `path:line`. The outline says which files have the word in a
+/// string at all, so only those are read.
 List<String> _stringMentions(Engine engine, String name) {
   if (name.length < 4) return const [];
   final pattern = RegExp(
     '[\'"][^\'"\\n]*\\b${RegExp.escape(name)}\\b[^\'"\\n]*[\'"]',
   );
   final out = <String>[];
-  for (final path in engine.analysis.files) {
-    if (isGeneratedFile(path)) continue;
-    final text = engine.sources.text(path);
-    if (!text.contains(name)) continue;
-    for (final m in pattern.allMatches(text)) {
+  final candidates = [
+    for (final f in engine.outline.files.values)
+      if (f.stringWords.contains(name) && !isGeneratedFile(f.path)) f.path,
+  ]..sort();
+  for (final path in candidates) {
+    for (final m in pattern.allMatches(engine.sources.text(path))) {
       final line = engine.sources.lineOf(path, m.start);
       final source = engine.sources.lineText(path, line);
       if (RegExp(r'^(import|export|part)\b|^//').hasMatch(source)) continue;
@@ -644,6 +596,43 @@ const _reserved = {
   'for', 'if', 'in', 'is', 'new', 'null', 'rethrow', 'return', 'super',
   'switch', 'this', 'throw', 'true', 'try', 'var', 'void', 'while', 'with',
 };
+
+class RenameRequest extends WorkerRequest {
+  RenameRequest(
+    this.query,
+    this.newName, {
+    required this.apply,
+    required super.json,
+    required super.limit,
+  });
+
+  RenameRequest.fromJson(Map<String, dynamic> j)
+    : this(
+        j['query'] as String,
+        j['newName'] as String,
+        apply: j['apply'] as bool,
+        json: j['json'] as bool,
+        limit: j['limit'] as int?,
+      );
+
+  final String query;
+  final String newName;
+  final bool apply;
+
+  @override
+  String get verb => 'rename';
+
+  @override
+  Map<String, Object?> get fields => {
+    'query': query,
+    'newName': newName,
+    'apply': apply,
+  };
+
+  @override
+  Future<Answer> run(Engine engine) =>
+      rename(engine, query, newName, apply: apply);
+}
 
 class RefusalAnswer extends Answer {
   RefusalAnswer(this.refusal);

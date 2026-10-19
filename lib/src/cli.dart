@@ -4,10 +4,18 @@ import 'client.dart';
 import 'commands.dart';
 import 'doctor.dart';
 import 'impact.dart';
+import 'move.dart';
+import 'refs.dart';
+import 'rename.dart';
+import 'request.dart';
+import 'show.dart';
 import 'native_install.dart' as native_install;
 import 'outline.dart';
 import 'result.dart';
-import 'verbs_local.dart';
+import 'args.dart';
+import 'find.dart';
+import 'show_file.dart';
+import 'why.dart';
 import 'version.dart';
 import 'worker.dart';
 import 'workspace.dart';
@@ -29,6 +37,8 @@ codegraph $codegraphVersion - exact answers about a Dart or Flutter repository
   codegraph rename <symbol> <new>     dry run of a complete rename; --apply
                                       writes it, re-analyzes the affected
                                       files, and rolls back on new errors
+  codegraph rename <a.dart> <b.dart>  moves a file and rewrites every import
+                                      and export of it, the same way
   codegraph why <fileA> <fileB>       the import path from one file to another
   codegraph doctor [--warm|--stop|--restart]
                                       worker and setup status
@@ -171,17 +181,29 @@ Future<int> runCli(List<String> argv) async {
       return _ask(ws, ImpactRequest(seed, json: c.json, limit: c.limit));
     case 'rename':
       if (c.args.length != 2) {
-        return _usage('codegraph rename <symbol> <newName> [--apply]');
+        return _usage(
+          'codegraph rename <symbol> <newName> [--apply], or '
+          'rename <file.dart> <new/path.dart> [--apply]',
+        );
       }
+      final [from, to] = c.args;
       return _ask(
         ws,
-        RenameRequest(
-          c.args[0],
-          c.args[1],
-          apply: c.apply,
-          json: c.json,
-          limit: c.limit,
-        ),
+        from.endsWith('.dart') && to.endsWith('.dart')
+            ? MoveRequest(
+                from,
+                to,
+                apply: c.apply,
+                json: c.json,
+                limit: c.limit,
+              )
+            : RenameRequest(
+                from,
+                to,
+                apply: c.apply,
+                json: c.json,
+                limit: c.limit,
+              ),
       );
     case 'doctor':
       return doctor(ws, warm: c.warm, stop: c.stop, restart: c.restart);

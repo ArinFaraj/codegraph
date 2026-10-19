@@ -5,6 +5,7 @@ import 'package:analyzer/dart/element/element.dart';
 import 'declarations.dart';
 import 'engine.dart';
 import 'git.dart';
+import 'request.dart';
 import 'result.dart';
 import 'symbols.dart';
 import 'workspace.dart';
@@ -207,6 +208,35 @@ Future<Answer> _traverse(Engine engine, Seeds seeds) async {
       if (subtypesTruncated) 'subtype walks stop at ${Engine.subtypeCap}',
     ],
   );
+}
+
+class ImpactRequest extends WorkerRequest {
+  ImpactRequest(this.seed, {required super.json, required super.limit});
+
+  factory ImpactRequest.fromJson(Map<String, dynamic> j) => ImpactRequest(
+    switch (j['seed']) {
+      'file' => FileSeed(j['path'] as String),
+      'diff' => DiffSeed(j['base'] as String?),
+      _ => SymbolSeed(j['query'] as String),
+    },
+    json: j['json'] as bool,
+    limit: j['limit'] as int?,
+  );
+
+  final ImpactSeed seed;
+
+  @override
+  String get verb => 'impact';
+
+  @override
+  Map<String, Object?> get fields => switch (seed) {
+    SymbolSeed(:final query) => {'seed': 'symbol', 'query': query},
+    FileSeed(:final path) => {'seed': 'file', 'path': path},
+    DiffSeed(:final base) => {'seed': 'diff', 'base': base},
+  };
+
+  @override
+  Future<Answer> run(Engine engine) => impact(engine, seed);
 }
 
 class ImpactAnswer extends Answer {

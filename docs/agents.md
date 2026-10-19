@@ -15,6 +15,7 @@ Symbols go to `codegraph`, exact strings go to `rg`.
 - `codegraph refs <symbol>`: every use with its line and role (ref.watch, call, implements, ...)
 - `codegraph impact <symbol|file>` or `impact --diff`: what a change reaches, and which tests
 - `codegraph rename <symbol> <new>` then `--apply`: complete renames, verified by analysis.
+  `rename <a.dart> <b.dart>` moves a file and rewrites every import of it.
   `UNSAFE` means stop and report the reason. `UNSUPPORTED` means rename by hand, then run analyze.
 ```
 
@@ -40,6 +41,7 @@ description: Exact answers about this Dart/Flutter repository - where a class, p
 | What breaks if X or this file changes, which tests reach it | `codegraph impact X` |
 | What does my uncommitted change reach | `codegraph impact --diff` (`--base dev` for the branch) |
 | Rename X everywhere | `codegraph rename X newName`, read the edits, then add `--apply` |
+| Move a file and fix every import | `codegraph rename lib/a.dart lib/b/a.dart`, then `--apply` |
 | How does file A end up depending on B | `codegraph why A B` |
 
 Name a symbol as `Name`, `Owner.member`, `path.dart:name` or `path.dart:LINE`.

@@ -118,6 +118,17 @@ void main() {
     final again = await run(root, ['refs', 'sessionProvider']);
     expect(again.stdout, contains('lib/core/late.dart:2'));
 
+    final moved = await run(root, [
+      'rename',
+      'lib/core/keys.dart',
+      'lib/core/model/keys.dart',
+    ]);
+    expect(moved.exitCode, 0, reason: '${moved.stdout}${moved.stderr}');
+    expect(
+      moved.stdout,
+      contains('would move lib/core/keys.dart -> lib/core/model/keys.dart'),
+    );
+
     final show = await run(root, ['show', 'FeatureKey']);
     expect(show.stdout, contains('enum Backend'));
 
