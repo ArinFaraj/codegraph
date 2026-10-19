@@ -18,15 +18,10 @@ import 'package:analyzer/src/dart/analysis/search.dart' as search;
 import 'sdk.dart';
 import 'workspace.dart';
 
-/// One use of an element: a span in an analyzed file.
+/// One use of an element: a span in an analyzed file. Paths outside this
+/// file are always workspace-relative.
 class Site {
-  Site(
-    this.path,
-    this.offset,
-    this.length,
-    this.kind, {
-    this.qualified = false,
-  });
+  Site(this.path, this.offset, this.length, this.kind, this.enclosing);
 
   final String path;
   final int offset;
@@ -35,9 +30,21 @@ class Site {
   /// The analyzer's own classification (`READ`, `WRITE`, `INVOCATION`,
   /// `REFERENCE`, `REFERENCE_BY_NAMED_ARGUMENT`, ...).
   final String kind;
-  final bool qualified;
+
+  /// The innermost element whose declaration holds the use.
+  final Element enclosing;
 
   String get key => '$path:$offset:$length';
+}
+
+/// Where an element is declared.
+class Location {
+  Location(this.path, this.offset, this.line);
+
+  /// Workspace-relative.
+  final String path;
+  final int offset;
+  final int line;
 }
 
 typedef Progress = void Function(String message);
@@ -69,7 +76,9 @@ class Analysis {
   int get fileCount => _owner.length;
   int get contextCount => _drivers.length;
   int get indexedCount => _indexed;
-  Iterable<String> get files => _owner.keys;
+
+  /// Every analyzed file, workspace-relative.
+  Iterable<String> get files => _owner.keys.map(workspace.relative);
 
   static String byteStoreBase() {
     final home = Platform.environment['HOME'] ?? Directory.systemTemp.path;
@@ -129,7 +138,7 @@ class Analysis {
   }
 
   /// Brings the analyzer in line with the disk: new, changed and deleted
-  /// files. Returns the paths that changed. A stat per known file and per
+  /// files. Returns the workspace-relative paths that changed. A stat per known file and per
   /// directory holding one; the context roots are only re-walked when a
   /// directory changed, because a new or deleted file changes its parent.
   Future<List<String>> sync() async {
@@ -180,12 +189,12 @@ class Analysis {
     for (final d in _drivers) {
       await d.applyPendingFileChanges();
     }
-    return changed;
+    return [for (final p in changed) workspace.relative(p)];
   }
 
   /// Tells the analyzer about files this process just wrote.
-  Future<void> notifyChanged(Iterable<String> paths) async {
-    for (final p in paths) {
+  Future<void> notifyChanged(Iterable<String> relativePaths) async {
+    for (final p in relativePaths) {
       final path = workspace.absolute(p);
       final driver = _owner[path];
       if (driver == null) continue;
@@ -235,9 +244,27 @@ class Analysis {
     }();
   }
 
-  AnalysisDriver? driverFor(String path) => _owner[workspace.absolute(path)];
+  bool isAnalyzed(String relativePath) =>
+      _owner.containsKey(workspace.absolute(relativePath));
 
-  bool isAnalyzed(String path) => _owner.containsKey(workspace.absolute(path));
+  /// Where [element] is declared, or null when that is outside the analyzed
+  /// workspace (the SDK, a pub package, an excluded directory).
+  Location? locate(Element element) {
+    final fragment = element.nonSynthetic.firstFragment;
+    final lib = fragment.libraryFragment;
+    if (lib == null || !_owner.containsKey(lib.source.fullName)) return null;
+    final offset = fragment.nameOffset ?? fragment.offset;
+    return Location(
+      workspace.relative(lib.source.fullName),
+      offset,
+      lib.lineInfo.getLocation(offset).lineNumber,
+    );
+  }
+
+  /// The URI of the library declaring [element], for messages about
+  /// declarations outside the workspace.
+  String sourceOf(Element element) =>
+      '${element.nonSynthetic.firstFragment.libraryFragment?.source.uri ?? 'unknown'}';
 
   Future<ResolvedLibraryResult?> library(String path) async {
     final abs = workspace.absolute(path);
@@ -297,9 +324,9 @@ class Analysis {
       for (final r in await d.search.directSubtypeReferences(type)) {
         final e = r.enclosingFragment.element;
         if (e is! InterfaceElement) continue;
-        final path = e.firstFragment.libraryFragment.source.fullName;
-        if (!isAnalyzed(path)) continue;
-        out.putIfAbsent('$path#${e.name}', () => e);
+        final at = locate(e);
+        if (at == null) continue;
+        out.putIfAbsent('${at.path}#${e.name}', () => e);
       }
     }
     return out.values.toList()
@@ -311,12 +338,9 @@ class Analysis {
     final out = <String, Element>{};
     for (final d in _drivers) {
       for (final e in await d.search.classMembers(name)) {
-        final f = e.firstFragment.libraryFragment;
-        if (f == null || !isAnalyzed(f.source.fullName)) continue;
-        out.putIfAbsent(
-          '${f.source.fullName}#${e.enclosingElement?.name}.$name',
-          () => e,
-        );
+        final at = locate(e);
+        if (at == null) continue;
+        out.putIfAbsent('${at.path}:${at.offset}', () => e);
       }
     }
     return out.values.toList();
@@ -327,9 +351,9 @@ class Analysis {
     final out = <String, Element>{};
     for (final d in _drivers) {
       for (final e in await d.search.topLevelElements(pattern)) {
-        final f = e.firstFragment.libraryFragment;
-        if (f == null || !isAnalyzed(f.source.fullName)) continue;
-        out.putIfAbsent('${f.source.fullName}#${e.name}', () => e);
+        final at = locate(e);
+        if (at == null) continue;
+        out.putIfAbsent('${at.path}:${at.offset}', () => e);
       }
     }
     return out.values.toList();
@@ -350,13 +374,13 @@ class Analysis {
 
   Site? _site(search.SearchResult r) {
     final path = r.enclosingFragment.libraryFragment?.source.fullName;
-    if (path == null || !isAnalyzed(path)) return null;
+    if (path == null || !_owner.containsKey(path)) return null;
     return Site(
-      workspace.absolute(path),
+      workspace.relative(path),
       r.offset,
       r.length,
       r.kind.name,
-      qualified: r.isQualified,
+      r.enclosingFragment.element,
     );
   }
 

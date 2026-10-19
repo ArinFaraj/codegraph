@@ -41,7 +41,7 @@ codegraph doctor [--warm|--stop|--restart]
 ```
 
 Symbols are written `Name`, `Owner.member`, `path/to/file.dart:name` or
-`path/to/file.dart:LINE`. Every verb takes `--json`, `--limit N` (40 rows by
+`path/to/file.dart:LINE` (the outermost declaration named on that line). Every verb takes `--json`, `--limit N` (40 rows by
 default) and `--all`.
 
 ```text

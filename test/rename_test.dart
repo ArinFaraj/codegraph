@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:codegraph/src/analysis.dart';
 import 'package:codegraph/src/engine.dart';
 import 'package:codegraph/src/rename.dart';
+import 'package:codegraph/src/rename_answers.dart';
 import 'package:codegraph/src/result.dart';
 import 'package:codegraph/src/workspace.dart';
 import 'package:test/test.dart';
@@ -24,15 +25,14 @@ void main() {
   });
 
   tearDown(() async {
-    debugDropEditIndex = null;
     await analysis.dispose();
     root.deleteSync(recursive: true);
     Directory('${root.path}.store').deleteSync(recursive: true);
   });
 
-  String text(Result r) => r.render(asJson: false, limit: null);
-  List<String> edits(Result r) => [
-    for (final e in r.json['edits'] as List)
+  String text(Answer a) => a.render(asJson: false, limit: null);
+  List<String> edits(Answer r) => [
+    for (final e in r.toJson()['edits'] as List)
       '${(e as Map)['path']}:${e['line']}',
   ];
   String read(String rel) => File('${root.path}/$rel').readAsStringSync();
@@ -179,7 +179,7 @@ class Counter extends Notifier<int> {
   int build() => 0;
 }
 ''');
-    await analysis.sync();
+    await engine.refresh();
     final r = await rename(engine, 'Counter.build', 'create', apply: false);
     expect(r.exit, Exit.refused);
     expect(
@@ -246,13 +246,12 @@ class Counter extends Notifier<int> {
         ])
           f: read(f),
       };
-      debugDropEditIndex = 1;
-      final r = await rename(
-        engine,
-        'Wallets.sandbox',
-        'sandboxList',
-        apply: true,
-      );
+      final plan =
+          (await planRename(engine, 'Wallets.sandbox', 'sandboxList')
+                  as PlanReady)
+              .plan;
+      plan.edits.removeAt(1);
+      final r = RenameAnswer(plan, await applyRename(engine, plan));
       expect(r.exit, Exit.refused, reason: text(r));
       expect(text(r), contains('rolled back'));
       expect(text(r), contains('lib/features/wallet_list.dart:3'));
@@ -263,7 +262,7 @@ class Counter extends Notifier<int> {
   );
 
   test(
-    'an edit set that no longer matches the text on disk is refused',
+    'an edit set that no longer matches the text on disk is not applied',
     () async {
       expect(
         (await rename(engine, 'walletKey', 'walletId', apply: false)).exit,
@@ -272,8 +271,11 @@ class Counter extends Notifier<int> {
       final page = File('${root.path}/lib/features/home/home_page.dart');
       page.writeAsStringSync('// moved\n${page.readAsStringSync()}');
       final r = await rename(engine, 'walletKey', 'walletId', apply: true);
-      expect(r.exit, Exit.refused);
-      expect(text(r), contains('whose text is not "walletKey"'));
+      expect(r.exit, Exit.failed);
+      expect(
+        text(r),
+        contains('not applied: source changed since it was analyzed'),
+      );
       expect(read('lib/core/keys.dart'), contains('String walletKey('));
     },
   );

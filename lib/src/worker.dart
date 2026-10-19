@@ -1,12 +1,12 @@
 // The resident analyzer for one checkout. Started on demand by the client,
-// it holds the analysis contexts warm, syncs with the disk before every
-// request, and exits after a quiet period so its memory comes back.
+// it keeps one engine warm, refreshes it from the disk before every request,
+// and exits after a quiet period so its memory comes back.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'analysis.dart';
-import 'cli.dart';
+import 'commands.dart';
 import 'engine.dart';
 import 'registry.dart';
 import 'result.dart';
@@ -17,10 +17,10 @@ class WorkerState {
   WorkerState(this.pid, this.port, this.version);
 
   static WorkerState? read(Workspace ws) {
-    final f = File(statePath(ws));
-    if (!f.existsSync()) return null;
     try {
-      final j = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+      final j =
+          jsonDecode(File(statePath(ws)).readAsStringSync())
+              as Map<String, dynamic>;
       return WorkerState(
         j['pid'] as int,
         j['port'] as int,
@@ -39,12 +39,90 @@ class WorkerState {
   final String version;
 }
 
-Duration _idleTimeout() {
-  final minutes = int.tryParse(
-    Platform.environment['CODEGRAPH_IDLE_MINUTES'] ?? '',
-  );
-  return Duration(minutes: minutes ?? 20);
+/// Owns the engine's lifecycle: start, warm-up, and a restart when a
+/// pubspec, analysis options or the package config changes.
+class AnalyzerHost {
+  AnalyzerHost(this.workspace, this.say)
+    : fineDeps = Platform.environment['CODEGRAPH_FINE_DEPS'] == '1';
+
+  final Workspace workspace;
+  final void Function(String) say;
+  final bool fineDeps;
+  final DateTime started = DateTime.now();
+
+  String phase = 'starting the analyzer';
+  Object? error;
+  Engine? _engine;
+  Future<Engine?>? _starting;
+
+  bool get isReady => _engine != null;
+
+  /// The engine, refreshed from the disk. Null when the analyzer cannot start.
+  Future<Engine?> ready() async {
+    var engine = await (_starting ??= _start());
+    if (engine != null && engine.analysis.configChanged) {
+      say('configuration changed; restarting the analyzer');
+      await engine.analysis.dispose();
+      _engine = null;
+      engine = await (_starting = _start());
+    }
+    await engine?.refresh();
+    return engine;
+  }
+
+  Future<Engine?> _start() async {
+    phase = 'starting the analyzer';
+    try {
+      final analysis = await Analysis.open(workspace, fineDeps: fineDeps);
+      phase = 'indexing workspace';
+      unawaited(
+        analysis.warmUp(progress: (m) => phase = m).then((_) {
+          phase = 'ready';
+          say(
+            'warm: ${analysis.fileCount} files in '
+            '${DateTime.now().difference(started).inSeconds}s',
+          );
+        }),
+      );
+      return _engine = Engine(analysis);
+    } catch (e) {
+      error = e;
+      phase = 'failed';
+      say('analyzer failed to start: $e');
+      return null;
+    }
+  }
+
+  Map<String, Object?> status() {
+    final a = _engine?.analysis;
+    return {
+      'ok': true,
+      'version': codegraphVersion,
+      'pid': pid,
+      'phase': phase,
+      'files': a?.fileCount,
+      'indexed': a?.indexedCount,
+      'warm': a?.warm ?? false,
+      'contexts': a?.contextCount,
+      'fineDeps': fineDeps,
+      'rssMb': ProcessInfo.currentRss >> 20,
+      'uptimeSeconds': DateTime.now().difference(started).inSeconds,
+      'idleMinutes': idleTimeout().inMinutes,
+      'error': ?error?.toString(),
+    };
+  }
+
+  Future<void> dispose() async {
+    try {
+      await _engine?.analysis.dispose();
+    } catch (_) {}
+  }
 }
+
+Duration idleTimeout() => Duration(
+  minutes:
+      int.tryParse(Platform.environment['CODEGRAPH_IDLE_MINUTES'] ?? '') ?? 20,
+);
 
 Future<int> runWorker(String root) async {
   final ws = Workspace.find(root);
@@ -57,11 +135,11 @@ Future<int> runWorker(String root) async {
   final log = logFile.openWrite(mode: FileMode.append);
   void say(String m) => log.writeln('${DateTime.now().toIso8601String()} $m');
 
-  final lockFile = File(
+  final lock = File(
     '${ws.stateDir}/worker.lock',
   ).openSync(mode: FileMode.write);
   try {
-    lockFile.lockSync(FileLock.exclusive);
+    lock.lockSync(FileLock.exclusive);
   } on FileSystemException {
     say('another worker holds the lock; exiting');
     await log.close();
@@ -70,7 +148,7 @@ Future<int> runWorker(String root) async {
 
   final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
   final stateFile = File(WorkerState.statePath(ws));
-  final tmp = File('${stateFile.path}.$pid.tmp')
+  File('${stateFile.path}.$pid.tmp')
     ..writeAsStringSync(
       jsonEncode({
         'pid': pid,
@@ -79,140 +157,63 @@ Future<int> runWorker(String root) async {
         'root': ws.root,
         'started': DateTime.now().toIso8601String(),
       }),
-    );
-  tmp.renameSync(stateFile.path);
+    )
+    ..renameSync(stateFile.path);
   await Registry.register(ws.root, pid, server.port);
+  Analysis.pruneByteStores();
   say('worker $codegraphVersion pid $pid port ${server.port} for ${ws.root}');
 
-  final fineDeps = Platform.environment['CODEGRAPH_FINE_DEPS'] == '1';
-  Analysis.pruneByteStores();
-  final started = DateTime.now();
-  var phase = 'starting the analyzer';
-  Analysis? analysis;
-  Object? openError;
-
-  Future<Analysis> open() async {
-    phase = 'starting the analyzer';
-    final a = await Analysis.open(ws, fineDeps: fineDeps);
-    phase = 'indexing workspace';
-    unawaited(
-      a.warmUp(progress: (m) => phase = m).then((_) {
-        phase = 'ready';
-        say(
-          'warm: ${a.fileCount} files in ${DateTime.now().difference(started).inSeconds}s',
-        );
-      }),
-    );
-    return a;
-  }
-
-  Future<Analysis?> start() => open().then<Analysis?>(
-    (a) => analysis = a,
-    onError: (Object e) {
-      openError = e;
-      say('analyzer failed to start: $e');
-      return null;
-    },
-  );
-
-  var opening = start();
+  final host = AnalyzerHost(ws, say);
+  unawaited(host.ready());
 
   final done = Completer<void>();
+  void stop() {
+    if (!done.isCompleted) done.complete();
+  }
+
   Timer? idle;
   void resetIdle() {
     idle?.cancel();
-    idle = Timer(_idleTimeout(), () {
+    idle = Timer(idleTimeout(), () {
       say('idle; exiting');
-      if (!done.isCompleted) done.complete();
+      stop();
     });
   }
 
   resetIdle();
   var queue = Future<void>.value();
 
-  Future<void> handle(Socket socket, Map<String, dynamic> request) async {
-    void send(Map<String, Object?> m) {
-      try {
-        socket.writeln(jsonEncode(m));
-      } catch (_) {}
-    }
-
-    final type = request['type'];
-    if (type == 'ping') {
-      send({'ok': true, 'version': codegraphVersion});
-      return;
-    }
-    if (type == 'stop') {
-      send({'ok': true});
-      if (!done.isCompleted) done.complete();
-      return;
-    }
-    if (type == 'status') {
-      final a = analysis;
-      send({
-        'ok': true,
-        'version': codegraphVersion,
-        'pid': pid,
-        'phase': phase,
-        'files': a?.fileCount,
-        'indexed': a?.indexedCount,
-        'warm': a?.warm ?? false,
-        'contexts': a?.contextCount,
-        'fineDeps': fineDeps,
-        'rssMb': ProcessInfo.currentRss >> 20,
-        'uptimeSeconds': DateTime.now().difference(started).inSeconds,
-        'idleMinutes': _idleTimeout().inMinutes,
-        if (openError != null) 'error': '$openError',
-      });
-      return;
-    }
-
-    final argv = (request['argv'] as List).cast<String>();
+  Future<void> run(
+    void Function(Map<String, Object?>) send,
+    Map<String, dynamic> message,
+  ) async {
+    final request = WorkerRequest.fromJson(
+      message['request'] as Map<String, dynamic>,
+    );
     Registry.touch(ws.root);
     Timer? ticker;
-    if (analysis == null) {
-      send({'progress': 'waiting for the analyzer: $phase'});
-      ticker = Timer.periodic(
-        const Duration(seconds: 5),
-        (_) => send({'progress': 'waiting for the analyzer: $phase'}),
-      );
+    if (!host.isReady) {
+      void progress() =>
+          send({'progress': 'waiting for the analyzer: ${host.phase}'});
+      progress();
+      ticker = Timer.periodic(const Duration(seconds: 5), (_) => progress());
     }
     try {
-      await opening;
-      if (analysis == null) {
+      final engine = await host.ready();
+      if (engine == null) {
         send({
           'exit': Exit.cannotAnalyze,
-          'out': 'the analyzer failed to start: $openError',
+          'out': 'the analyzer failed to start: ${host.error}',
         });
         return;
       }
-      if (analysis!.configChanged) {
-        send({
-          'progress':
-              'pubspec, analysis options or package config changed; restarting the analyzer',
-        });
-        await analysis!.dispose();
-        analysis = null;
-        opening = start();
-        await opening;
-        if (analysis == null) {
-          send({
-            'exit': Exit.cannotAnalyze,
-            'out': 'the analyzer failed to restart: $openError',
-          });
-          return;
-        }
-      }
-      await analysis!.sync();
-      final command = Command.parse(argv);
-      final engine = Engine(analysis!);
-      final result = await runResolvedVerb(engine, command);
+      final answer = await request.run(engine);
       send({
-        'exit': result.exit,
-        'out': result.render(asJson: command.json, limit: command.limit),
+        'exit': answer.exit,
+        'out': answer.render(asJson: request.json, limit: request.limit),
       });
     } catch (e, st) {
-      say('request ${argv.join(' ')} failed: $e\n$st');
+      say('request ${jsonEncode(message)} failed: $e\n$st');
       send({'exit': Exit.failed, 'out': 'codegraph worker error: $e'});
     } finally {
       ticker?.cancel();
@@ -221,45 +222,58 @@ Future<int> runWorker(String root) async {
 
   server.listen((socket) {
     resetIdle();
+    void send(Map<String, Object?> m) {
+      try {
+        socket.writeln(jsonEncode(m));
+      } catch (_) {}
+    }
+
     socket
         .cast<List<int>>()
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen((line) {
-          final Map<String, dynamic> request;
+          final Map<String, dynamic> message;
           try {
-            request = jsonDecode(line) as Map<String, dynamic>;
+            message = jsonDecode(line) as Map<String, dynamic>;
           } catch (_) {
             return;
           }
-          final type = request['type'];
-          if (type == 'ping' || type == 'status' || type == 'stop') {
-            unawaited(handle(socket, request).then((_) => socket.close()));
-            return;
+          switch (message['type']) {
+            case 'ping':
+              send({'ok': true, 'version': codegraphVersion});
+              socket.close();
+            case 'status':
+              send(host.status());
+              socket.close();
+            case 'stop':
+              send({'ok': true});
+              socket.close();
+              stop();
+            case 'run':
+              queue = queue
+                  .then((_) => run(send, message))
+                  .whenComplete(() {
+                    resetIdle();
+                    socket.close();
+                  })
+                  .catchError((Object _) {});
           }
-          queue = queue
-              .then((_) => handle(socket, request))
-              .then((_) {
-                resetIdle();
-                return socket.close();
-              })
-              .catchError((Object _) {});
         }, onError: (Object _) {});
   });
 
   await done.future;
   idle?.cancel();
   await server.close();
-  try {
-    final state = WorkerState.read(ws);
-    if (state?.pid == pid) stateFile.deleteSync();
-  } catch (_) {}
+  if (WorkerState.read(ws)?.pid == pid) {
+    try {
+      stateFile.deleteSync();
+    } catch (_) {}
+  }
   Registry.unregister(ws.root);
-  try {
-    await analysis?.dispose();
-  } catch (_) {}
+  await host.dispose();
   say('stopped');
   await log.close();
-  lockFile.closeSync();
+  lock.closeSync();
   return 0;
 }

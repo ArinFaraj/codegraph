@@ -1,17 +1,336 @@
-import 'dart:io';
-
+// `rename` in two steps. [planRename] resolves the target, checks whether a
+// rename is safe, and computes the edit set from the element model.
+// [applyRename] installs a plan, re-analyzes what it touched, and restores
+// every file if an error appeared.
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 
 import 'edits.dart';
 import 'engine.dart';
+import 'rename_answers.dart';
 import 'result.dart';
 import 'symbols.dart';
 import 'workspace.dart';
 
-/// Test seam: drop the edit at this index from the computed edit set, to
-/// prove that post-apply analysis catches a missed reference and rolls back.
-int? debugDropEditIndex;
+enum RefusalKind {
+  /// Renaming could break code codegraph cannot see or change.
+  unsafe('UNSAFE'),
+
+  /// codegraph does not compute this kind of rename yet.
+  unsupported('UNSUPPORTED');
+
+  const RefusalKind(this.label);
+  final String label;
+}
+
+class Refusal {
+  Refusal(this.kind, this.reason, [this.details = const []]);
+  final RefusalKind kind;
+  final String reason;
+  final List<String> details;
+}
+
+class RenamePlan {
+  RenamePlan(this.target, this.newName, this.edits, this.warnings);
+
+  final Target target;
+  final String newName;
+
+  /// Workspace-relative edit spans. Mutable so a test can withhold one.
+  final List<RenameEdit> edits;
+  final List<String> warnings;
+
+  String get oldName => target.element.name!;
+}
+
+class RenameEdit {
+  RenameEdit(this.path, this.offset, this.line, this.source);
+  final String path;
+  final int offset;
+  final int line;
+
+  /// The source line before the edit.
+  final String source;
+}
+
+sealed class Planning {}
+
+class PlanReady extends Planning {
+  PlanReady(this.plan);
+  final RenamePlan plan;
+}
+
+class PlanRefused extends Planning {
+  PlanRefused(this.refusal);
+  final Refusal refusal;
+}
+
+class PlanFailed extends Planning {
+  PlanFailed(this.answer);
+  final Answer answer;
+}
+
+sealed class Applied {}
+
+class AppliedClean extends Applied {
+  AppliedClean(this.checkedFiles);
+  final int checkedFiles;
+}
+
+class RolledBack extends Applied {
+  RolledBack(this.errors);
+  final List<String> errors;
+}
+
+class NotApplied extends Applied {
+  NotApplied(this.message, this.details);
+  final String message;
+  final List<String> details;
+}
+
+Future<Answer> rename(
+  Engine engine,
+  String query,
+  String newName, {
+  required bool apply,
+}) async {
+  switch (await planRename(engine, query, newName)) {
+    case PlanFailed(:final answer):
+      return answer;
+    case PlanRefused(:final refusal):
+      return RefusalAnswer(refusal);
+    case PlanReady(:final plan):
+      return RenameAnswer(plan, apply ? await applyRename(engine, plan) : null);
+  }
+}
+
+Future<Planning> planRename(Engine engine, String query, String newName) async {
+  if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(newName) ||
+      _reserved.contains(newName)) {
+    return PlanFailed(
+      MessageAnswer(
+        'rename',
+        '"$newName" is not a valid Dart identifier',
+        exit: Exit.usage,
+      ),
+    );
+  }
+  final r = await engine.resolve(query);
+  if (failureOf('rename', query, r) case final failure?) {
+    return PlanFailed(failure);
+  }
+  final element = _renamable((r as Resolved).target.element);
+  if (element is Refusal) return PlanRefused(element);
+  final e = element as Element;
+  final target = targetOf(engine.analysis, e)!;
+  if (e.name == newName) {
+    return PlanFailed(
+      MessageAnswer(
+        'rename',
+        '${target.qualified} is already named $newName',
+        exit: Exit.usage,
+      ),
+    );
+  }
+  final members = await engine.overrideSet(e);
+  final refusal = await _refusal(engine, e, target, members, newName);
+  if (refusal != null) return PlanRefused(refusal);
+
+  final elements = await _renameSet(engine, e, members);
+  final spans = await _spans(engine, elements, e.name!);
+  final mismatched = [
+    for (final s in spans)
+      if (!_holds(engine, s, e.name!))
+        '${s.path}:${engine.sources.lineOf(s.path, s.offset)}',
+  ];
+  if (mismatched.isNotEmpty) {
+    return PlanRefused(
+      Refusal(
+        RefusalKind.unsafe,
+        'the analyzer reported uses whose text is not "${e.name}"; refusing '
+        'an edit set that cannot be checked',
+        mismatched.take(10).toList(),
+      ),
+    );
+  }
+  final edits = [
+    for (final s in spans)
+      RenameEdit(
+        s.path,
+        s.offset,
+        engine.sources.lineOf(s.path, s.offset),
+        engine.sources.lineText(
+          s.path,
+          engine.sources.lineOf(s.path, s.offset),
+        ),
+      ),
+  ];
+  return PlanReady(
+    RenamePlan(target, newName, edits, _warnings(engine, e, spans)),
+  );
+}
+
+Future<Applied> applyRename(Engine engine, RenamePlan plan) async {
+  final analysis = engine.analysis;
+  final ws = engine.workspace;
+  final files = plan.edits.map((e) => e.path).toSet().toList()..sort();
+  final checked = {
+    ...files,
+    for (final f in files) ...engine.outline.importers(f),
+  };
+  final before = {
+    for (final f in checked) f: _errorCounts(await analysis.errors(f)),
+  };
+
+  final PreparedTextEdits prepared;
+  try {
+    prepared = prepareTextEdits([
+      for (final e in plan.edits)
+        AtomicTextEdit(
+          file: ws.absolute(e.path),
+          offset: e.offset,
+          length: plan.oldName.length,
+          expected: plan.oldName,
+          replacement: plan.newName,
+        ),
+    ]);
+    applyPreparedTextEdits(prepared);
+  } on AtomicEditException catch (e) {
+    return NotApplied(e.message, [...e.details, ...e.recoveryPaths]);
+  }
+  await _changed(engine, files);
+
+  final introduced = <String>[];
+  for (final f in checked) {
+    final now = await analysis.errors(f);
+    final counts = _errorCounts(now);
+    final was = before[f]!;
+    for (final d in now) {
+      final key = d.diagnosticCode.lowerCaseName;
+      if ((counts[key] ?? 0) > (was[key] ?? 0)) {
+        introduced.add(
+          '$f:${engine.sources.lineOf(f, d.offset)}  ${d.message}',
+        );
+      }
+    }
+  }
+  if (introduced.isEmpty) return AppliedClean(checked.length);
+
+  try {
+    restorePreparedTextEdits(prepared);
+  } on AtomicEditException catch (e) {
+    return NotApplied(
+      'the rename introduced errors and restoring the files failed: '
+      '${e.message}',
+      [...e.details, ...e.recoveryPaths, ...introduced],
+    );
+  }
+  await _changed(engine, files);
+  return RolledBack(introduced);
+}
+
+Future<void> _changed(Engine engine, List<String> files) async {
+  await engine.analysis.notifyChanged(files);
+  engine.filesChanged(files);
+}
+
+Map<String, int> _errorCounts(List<Diagnostic> diagnostics) {
+  final out = <String, int>{};
+  for (final d in diagnostics) {
+    final key = d.diagnosticCode.lowerCaseName;
+    out[key] = (out[key] ?? 0) + 1;
+  }
+  return out;
+}
+
+/// The element a rename of [e] actually renames: a `this.x` parameter
+/// renames its field, a `super.x` parameter the parameter it forwards to.
+/// Returns a [Refusal] for kinds that cannot be renamed.
+Object _renamable(Element e) {
+  var x = e;
+  while (x is SuperFormalParameterElement &&
+      x.superConstructorParameter != null) {
+    x = x.superConstructorParameter!.baseElement;
+  }
+  if (x is FieldFormalParameterElement && x.field != null) x = x.field!;
+  return switch (x) {
+    ConstructorElement(name: null || '' || 'new') => Refusal(
+      RefusalKind.unsupported,
+      'an unnamed constructor is named after its class; rename the class',
+    ),
+    LibraryElement() => Refusal(
+      RefusalKind.unsupported,
+      'renaming files is not supported yet',
+    ),
+    Element(name: null || '') => Refusal(
+      RefusalKind.unsupported,
+      'this declaration has no name to rename',
+    ),
+    _ => x.nonSynthetic,
+  };
+}
+
+Future<Refusal?> _refusal(
+  Engine engine,
+  Element e,
+  Target target,
+  List<Element> members,
+  String newName,
+) async {
+  final analysis = engine.analysis;
+  final oldName = e.name!;
+  if (e.isPrivate != newName.startsWith('_') &&
+      e is! FormalParameterElement &&
+      e is! LocalVariableElement) {
+    return Refusal(
+      RefusalKind.unsafe,
+      'renaming ${target.qualified} to $newName changes its library privacy',
+    );
+  }
+  for (final m in members) {
+    if (analysis.locate(m) == null) {
+      return Refusal(
+        RefusalKind.unsafe,
+        '${target.qualified} overrides or is overridden by '
+        '${m.enclosingElement?.displayName ?? '?'}.$oldName, declared outside '
+        'the workspace (${analysis.sourceOf(m)})',
+      );
+    }
+  }
+  for (final m in {e, ...members}) {
+    if (_codegenAnnotation(m) case (final on, final name)?) {
+      return Refusal(
+        RefusalKind.unsafe,
+        '$on is annotated @$name: generated code and anything it serializes '
+        'derive names from this declaration. Rename by hand, rerun '
+        'build_runner, then check stored and wire formats',
+      );
+    }
+  }
+  if (_publishedRoot(engine.workspace, e, target) case final root?) {
+    return Refusal(
+      RefusalKind.unsafe,
+      '${target.qualified} is public API of $root, whose pubspec does not say '
+      'publish_to: none, so consumers outside this repository may use it',
+    );
+  }
+  if (isInstanceMember(e) || e.enclosingElement is ExtensionElement) {
+    final dynamicUses = await analysis.unresolvedMemberReferences(oldName);
+    if (dynamicUses.isNotEmpty) {
+      return Refusal(
+        RefusalKind.unsafe,
+        '${plural(dynamicUses.length, 'call')} to .$oldName could not be '
+        'resolved to a declaration (dynamic receivers or missing types); '
+        'they may be uses of this member',
+        [
+          for (final s in dynamicUses.take(10))
+            '${s.path}:${engine.sources.lineOf(s.path, s.offset)}',
+        ],
+      );
+    }
+  }
+  return _collision(e, members, newName, target);
+}
 
 const _codegenAnnotations = {
   'riverpod',
@@ -34,485 +353,8 @@ const _codegenAnnotations = {
   'MappableClass',
 };
 
-const _reserved = {
-  'assert', 'break', 'case', 'catch', 'class', 'const', 'continue', //
-  'default', 'do', 'else', 'enum', 'extends', 'false', 'final', 'finally',
-  'for', 'if', 'in', 'is', 'new', 'null', 'rethrow', 'return', 'super',
-  'switch', 'this', 'throw', 'true', 'try', 'var', 'void', 'while', 'with',
-};
-
-class _Refusal implements Exception {
-  _Refusal(this.kind, this.reason, [this.details = const []]);
-
-  /// UNSAFE: renaming could break code we cannot see or change. UNSUPPORTED:
-  /// codegraph does not compute this kind of rename yet.
-  final String kind;
-  final String reason;
-  final List<String> details;
-}
-
-class _Span {
-  _Span(this.path, this.offset, this.length);
-  final String path;
-  final int offset;
-  final int length;
-  String get key => '$path:$offset:$length';
-}
-
-Future<Result> rename(
-  Engine engine,
-  String query,
-  String newName, {
-  required bool apply,
-}) async {
-  final r = Result('rename')
-    ..json['query'] = query
-    ..json['newName'] = newName;
-  if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(newName) ||
-      _reserved.contains(newName)) {
-    r.exit = Exit.usage;
-    r.header('"$newName" is not a valid Dart identifier');
-    return r;
-  }
-  final analysis = engine.analysis;
-  final ws = analysis.workspace;
-  final outline = engine.outlines();
-  final found = await lookup(analysis, outline, query);
-  if (found is NotFound) {
-    r.exit = Exit.failed;
-    r.header(found.message);
-    r.footer('try: codegraph find $query');
-    return r;
-  }
-  final targets = (found as Found).targets;
-  if (targets.length > 1) {
-    r.exit = Exit.ambiguous;
-    r.header(
-      '"$query" matches ${plural(targets.length, 'declaration')}; '
-      'name one by path:line or Owner.member:',
-    );
-    for (final t in targets) {
-      r.row('  ${t.kind} ${t.qualified}  ${t.location}');
-    }
-    return r;
-  }
-
-  final List<_Span> spans;
-  final warnings = <String>[];
-  final Element element;
-  try {
-    element = _normalize(targets.single.element);
-    final oldName = element.name;
-    if (oldName == null || oldName.isEmpty) {
-      throw _Refusal('UNSUPPORTED', 'this declaration has no name to rename');
-    }
-    if (oldName == newName) {
-      r.exit = Exit.usage;
-      r.header(
-        '${targetOf(analysis, element)!.qualified} is already named $newName',
-      );
-      return r;
-    }
-    spans = await _editSet(engine, element, newName, warnings);
-  } on _Refusal catch (refusal) {
-    r.exit = Exit.refused;
-    r.header('${refusal.kind}: ${refusal.reason}');
-    for (final d in refusal.details) {
-      r.row('  $d');
-    }
-    r.json['refused'] = {
-      'kind': refusal.kind,
-      'reason': refusal.reason,
-      'details': refusal.details,
-    };
-    if (refusal.kind == 'UNSUPPORTED') {
-      r.footer(
-        'codegraph cannot compute this rename yet. Renaming by hand is '
-        'fine; run `dart analyze` afterwards.',
-      );
-    }
-    return r;
-  }
-
-  final target = targetOf(analysis, element)!;
-  final oldName = element.name!;
-  final edits = <AtomicTextEdit>[];
-  for (final s in spans) {
-    edits.add(
-      AtomicTextEdit(
-        file: s.path,
-        offset: s.offset,
-        length: s.length,
-        expected: oldName,
-        replacement: newName,
-      ),
-    );
-  }
-  if (debugDropEditIndex case final i? when i < edits.length) {
-    edits.removeAt(i);
-  }
-  final files = edits.map((e) => e.file).toSet().toList()..sort();
-  r.header(
-    '${apply ? 'renaming' : 'would rename'} ${target.kind} '
-    '${target.qualified} -> $newName: ${plural(edits.length, 'edit')} in '
-    '${plural(files.length, 'file')}${apply ? '' : ' (dry run; --apply to write)'}',
-  );
-  for (final e in edits) {
-    final line = engine.sources.lineOf(e.file, e.offset);
-    r.row(
-      '  ${ws.relative(e.file)}:$line  ${engine.sources.lineText(e.file, line)}',
-    );
-  }
-  for (final w in warnings) {
-    r.footer('warning: $w');
-  }
-  r.json['target'] = {
-    'name': target.qualified,
-    'kind': target.kind,
-    'path': target.path,
-    'line': target.line,
-  };
-  r.json['edits'] = [
-    for (final e in edits)
-      {
-        'path': ws.relative(e.file),
-        'line': engine.sources.lineOf(e.file, e.offset),
-        'offset': e.offset,
-      },
-  ];
-  r.json['warnings'] = warnings;
-  if (!apply) return r;
-
-  final checkSet = <String>{...files};
-  for (final f in files) {
-    for (final importer in outline.importers(ws.relative(f))) {
-      checkSet.add(ws.absolute(importer));
-    }
-  }
-  final before = <String, Map<String, int>>{};
-  for (final f in checkSet) {
-    before[f] = _errorCounts(await analysis.errors(f));
-  }
-
-  final PreparedTextEdits prepared;
-  try {
-    prepared = prepareTextEdits(edits);
-    applyPreparedTextEdits(prepared);
-  } on AtomicEditException catch (e) {
-    r.exit = Exit.failed;
-    r.footer('not applied: ${e.message}');
-    for (final d in [...e.details, ...e.recoveryPaths]) {
-      r.footer('  $d');
-    }
-    return r;
-  }
-  await analysis.notifyChanged(files);
-
-  final introduced = <String>[];
-  for (final f in checkSet) {
-    final now = await analysis.errors(f);
-    final counts = _errorCounts(now);
-    final was = before[f] ?? const {};
-    for (final d in now) {
-      final key = d.diagnosticCode.lowerCaseName;
-      if ((counts[key] ?? 0) > (was[key] ?? 0)) {
-        final line = engine.sources.lineOf(f, d.offset);
-        introduced.add('${ws.relative(f)}:$line  ${d.message}');
-      }
-    }
-  }
-  if (introduced.isEmpty) {
-    r.footer(
-      'applied. Analysis of ${plural(checkSet.length, 'affected file')} '
-      'shows no new errors.',
-    );
-    r.json['applied'] = true;
-    r.json['checkedFiles'] = checkSet.length;
-    return r;
-  }
-
-  try {
-    restorePreparedTextEdits(prepared);
-  } on AtomicEditException catch (e) {
-    r.exit = Exit.failed;
-    r.footer(
-      'the rename introduced errors and restoring the files failed: ${e.message}',
-    );
-    for (final d in [...e.details, ...e.recoveryPaths]) {
-      r.footer('  $d');
-    }
-    return r;
-  }
-  await analysis.notifyChanged(files);
-  r.exit = Exit.refused;
-  r.footer(
-    'rolled back: the rename introduced ${plural(introduced.length, 'error')}, '
-    'so every file was restored:',
-  );
-  for (final e in introduced.take(15)) {
-    r.footer('  $e');
-  }
-  r.json['applied'] = false;
-  r.json['rolledBack'] = introduced;
-  return r;
-}
-
-Map<String, int> _errorCounts(List<Diagnostic> diagnostics) {
-  final out = <String, int>{};
-  for (final d in diagnostics) {
-    final key = d.diagnosticCode.lowerCaseName;
-    out[key] = (out[key] ?? 0) + 1;
-  }
-  return out;
-}
-
-/// Maps a parameter that stands for a field to the field, and a super
-/// parameter to the parameter it forwards to.
-Element _normalize(Element e) {
-  var x = e;
-  for (var i = 0; i < 20; i++) {
-    if (x is SuperFormalParameterElement &&
-        x.superConstructorParameter != null) {
-      x = x.superConstructorParameter!.baseElement;
-      continue;
-    }
-    if (x is FieldFormalParameterElement && x.field != null) {
-      return x.field!.nonSynthetic;
-    }
-    break;
-  }
-  if (x is ConstructorElement &&
-      (x.name == null || x.name == 'new' || x.name!.isEmpty)) {
-    throw _Refusal(
-      'UNSUPPORTED',
-      'an unnamed constructor is named after its class; rename the class',
-    );
-  }
-  if (x is LibraryElement) {
-    throw _Refusal('UNSUPPORTED', 'renaming files is not supported yet');
-  }
-  return x.nonSynthetic;
-}
-
-Future<List<_Span>> _editSet(
-  Engine engine,
-  Element element,
-  String newName,
-  List<String> warnings,
-) async {
-  final analysis = engine.analysis;
-  final ws = analysis.workspace;
-  final oldName = element.name!;
-  final target = targetOf(analysis, element)!;
-
-  final declaringFile = ws.absolute(target.path);
-  if (!analysis.isAnalyzed(declaringFile)) {
-    throw _Refusal(
-      'UNSAFE',
-      '${target.qualified} is declared outside the analyzed '
-          'workspace (${target.path}), so its other uses cannot be seen',
-    );
-  }
-  if (element.isPrivate != newName.startsWith('_') &&
-      element is! FormalParameterElement &&
-      element is! LocalVariableElement) {
-    throw _Refusal(
-      'UNSAFE',
-      'renaming ${target.qualified} to $newName changes its library privacy',
-    );
-  }
-
-  _refuseCodegen(element);
-  _refusePublished(ws, element, target);
-
-  final members = await engine.hierarchyMembers(element);
-  for (final m in members) {
-    final f = m.firstFragment.libraryFragment;
-    if (f == null || !analysis.isAnalyzed(f.source.fullName)) {
-      final owner = m.enclosingElement?.displayName ?? '?';
-      throw _Refusal(
-        'UNSAFE',
-        '${target.qualified} overrides or is overridden by $owner.$oldName, '
-            'declared outside the workspace (${f?.source.uri ?? 'unknown'})',
-      );
-    }
-    _refuseCodegen(m);
-  }
-
-  final owner = element.enclosingElement;
-  final isInstanceMember =
-      owner is InterfaceElement &&
-      element is! ConstructorElement &&
-      !(element is ExecutableElement && element.isStatic) &&
-      !(element is FieldElement && element.isStatic);
-  if (isInstanceMember || owner is ExtensionElement) {
-    final dynamicUses = await analysis.unresolvedMemberReferences(oldName);
-    if (dynamicUses.isNotEmpty) {
-      throw _Refusal(
-        'UNSAFE',
-        '${plural(dynamicUses.length, 'call')} to .$oldName could not be '
-            'resolved to a declaration (dynamic receivers or missing types); '
-            'they may be uses of this member',
-        [
-          for (final s in dynamicUses.take(10))
-            '${ws.relative(s.path)}:${engine.sources.lineOf(s.path, s.offset)}',
-        ],
-      );
-    }
-  }
-
-  _refuseCollision(element, members, newName, target);
-
-  final renamed = <Element>{};
-  if (members.length > 1 || isInstanceMember) {
-    for (final m in members) {
-      renamed.addAll(engine.propertyFamily(m));
-    }
-  } else {
-    renamed.addAll(engine.propertyFamily(element));
-  }
-
-  final fields = renamed.whereType<FieldElement>().toSet();
-  if (fields.isNotEmpty) {
-    final params = <FormalParameterElement>{};
-    final classes = <InterfaceElement>{
-      for (final f in fields)
-        if (f.enclosingElement is InterfaceElement)
-          f.enclosingElement as InterfaceElement,
-    };
-    for (final c in classes) {
-      for (final ctor in c.constructors) {
-        for (final p in ctor.formalParameters) {
-          if (p is FieldFormalParameterElement &&
-              fields.contains(p.field?.nonSynthetic)) {
-            params.add(p);
-          }
-        }
-      }
-    }
-    final subclasses = <InterfaceElement>{};
-    for (final c in classes) {
-      subclasses.addAll(await engine.subtypes(c));
-    }
-    var grew = true;
-    while (grew) {
-      grew = false;
-      for (final c in subclasses) {
-        for (final ctor in c.constructors) {
-          for (final p in ctor.formalParameters) {
-            if (p is SuperFormalParameterElement &&
-                params.contains(p.superConstructorParameter?.baseElement) &&
-                params.add(p)) {
-              grew = true;
-            }
-          }
-        }
-      }
-    }
-    renamed.addAll(params);
-  }
-
-  if (element is FormalParameterElement && element.isNamed) {
-    final fn = element.enclosingElement;
-    if (fn is ExecutableElement && fn.enclosingElement is InterfaceElement) {
-      for (final m in await engine.hierarchyMembers(fn)) {
-        if (m is ExecutableElement) {
-          for (final p in m.formalParameters) {
-            if (p.name == oldName) renamed.add(p);
-          }
-        }
-      }
-    }
-  }
-
-  final spans = <String, _Span>{};
-  void add(_Span s) => spans.putIfAbsent(s.key, () => s);
-  for (final e in renamed) {
-    for (final fragment in e.fragments) {
-      final offset = fragment.nameOffset;
-      final lib = fragment.libraryFragment;
-      if (offset == null || lib == null) continue;
-      if (fragment.name != oldName) continue;
-      add(_Span(ws.absolute(lib.source.fullName), offset, oldName.length));
-    }
-    for (final s in await analysis.references(e)) {
-      add(_Span(s.path, s.offset, s.length));
-    }
-  }
-  if (element is InterfaceElement) {
-    for (final c in element.constructors) {
-      for (final f in c.fragments) {
-        final offset = f.typeNameOffset;
-        if (offset == null) continue;
-        add(
-          _Span(
-            ws.absolute(f.libraryFragment.source.fullName),
-            offset,
-            oldName.length,
-          ),
-        );
-      }
-    }
-  }
-
-  final out = <_Span>[];
-  final mismatched = <String>[];
-  for (final s in spans.values) {
-    if (s.length == 0) continue;
-    final text = engine.sources.text(s.path);
-    if (s.offset + s.length > text.length ||
-        text.substring(s.offset, s.offset + s.length) != oldName) {
-      mismatched.add(
-        '${ws.relative(s.path)}:${engine.sources.lineOf(s.path, s.offset)}',
-      );
-      continue;
-    }
-    if (!analysis.isAnalyzed(s.path)) {
-      throw _Refusal(
-        'UNSAFE',
-        'a use sits in a file that is not analyzed: '
-            '${ws.relative(s.path)}',
-      );
-    }
-    out.add(s);
-  }
-  if (mismatched.isNotEmpty) {
-    throw _Refusal(
-      'UNSAFE',
-      'the analyzer reported uses whose text is not "$oldName"; refusing an '
-          'edit set that cannot be checked',
-      mismatched.take(10).toList(),
-    );
-  }
-  out.sort((a, b) {
-    final c = a.path.compareTo(b.path);
-    return c != 0 ? c : a.offset.compareTo(b.offset);
-  });
-
-  if (out.any((s) => isGeneratedFile(s.path))) {
-    warnings.add(
-      'edits generated files; they match what the generator would '
-      'write, but rerun build_runner to confirm',
-    );
-  }
-  if (element is FieldElement && element.isEnumConstant) {
-    warnings.add(
-      '$oldName is an enum value: .name, values.byName and '
-      'serialized data spell it as a string, and stored or remote data may '
-      'still say "$oldName"',
-    );
-  }
-  final literal = _stringMentions(engine, oldName);
-  if (literal.isNotEmpty) {
-    warnings.add(
-      'string literals mention "$oldName" and are not renamed: '
-      '${literal.take(5).join(', ')}${literal.length > 5 ? ', ...' : ''}',
-    );
-  }
-  return out;
-}
-
-void _refuseCodegen(Element e) {
+/// The declaration carrying a code generation annotation, [e] or its owner.
+(String, String)? _codegenAnnotation(Element e) {
   for (final candidate in [e, e.enclosingElement]) {
     if (candidate == null) continue;
     for (final a in candidate.metadata.annotations) {
@@ -521,103 +363,210 @@ void _refuseCodegen(Element e) {
           ? ae.enclosingElement.name
           : ae?.name;
       if (name != null && _codegenAnnotations.contains(name)) {
-        final on = candidate == e ? 'it' : candidate.displayName;
-        throw _Refusal(
-          'UNSAFE',
-          '$on is annotated @$name: generated code and anything it '
-              'serializes derive names from this declaration. Rename by hand, '
-              'rerun build_runner, then check stored and wire formats',
-        );
+        return (candidate == e ? 'it' : candidate.displayName, name);
       }
     }
   }
+  return null;
 }
 
-void _refusePublished(Workspace ws, Element e, Target target) {
-  if (e.isPrivate) return;
+/// The publishable package [e] is public API of, or null.
+String? _publishedRoot(Workspace ws, Element e, Target target) {
   final owner = e.enclosingElement;
-  if (owner != null && owner is! LibraryElement && owner.isPrivate) return;
-  if (e is LocalVariableElement || e is LocalFunctionElement) return;
-  if (e is FormalParameterElement && !e.isNamed) return;
-  final abs = ws.absolute(target.path);
-  for (final root in ws.publishablePackageRoots()) {
-    if (abs.startsWith('$root/lib/')) {
-      throw _Refusal(
-        'UNSAFE',
-        '${target.qualified} is public API of ${ws.relative(root)}, whose '
-            'pubspec does not say publish_to: none, so consumers outside this '
-            'repository may use it',
-      );
-    }
+  if (e.isPrivate ||
+      (owner != null && owner is! LibraryElement && owner.isPrivate) ||
+      e is LocalVariableElement ||
+      e is LocalFunctionElement ||
+      (e is FormalParameterElement && !e.isNamed)) {
+    return null;
   }
+  for (final root in ws.publishablePackageRoots().map(ws.relative)) {
+    if (target.path.startsWith('$root/lib/')) return root;
+  }
+  return null;
 }
 
-void _refuseCollision(
-  Element element,
+Refusal? _collision(
+  Element e,
   List<Element> members,
   String newName,
   Target target,
 ) {
-  final owners = <Element>{
-    for (final m in members)
-      if (m.enclosingElement case final o?) o,
-    if (element.enclosingElement case final o?) o,
-  };
-  for (final o in owners) {
-    if (o is InstanceElement && element is! FormalParameterElement) {
-      final clash = [
-        ...o.fields,
-        ...o.getters,
-        ...o.setters,
-        ...o.methods,
-      ].where((m) => m.name == newName);
-      if (clash.isNotEmpty) {
-        throw _Refusal(
-          'UNSAFE',
+  for (final o in {
+    for (final m in {e, ...members}) ?m.enclosingElement,
+  }) {
+    if (o is InstanceElement && e is! FormalParameterElement) {
+      final members = [...o.fields, ...o.getters, ...o.setters, ...o.methods];
+      if (members.any((m) => m.name == newName)) {
+        return Refusal(
+          RefusalKind.unsafe,
           '${o.displayName} already has a member named $newName',
         );
       }
     }
-    if (o is LibraryElement) {
-      final clash = o.children.where((c) => c.name == newName);
-      if (clash.isNotEmpty) {
-        throw _Refusal(
-          'UNSAFE',
-          '${target.path} already declares a top-level $newName',
-        );
+    if (o is LibraryElement && o.children.any((c) => c.name == newName)) {
+      return Refusal(
+        RefusalKind.unsafe,
+        '${target.path} already declares a top-level $newName',
+      );
+    }
+  }
+  return null;
+}
+
+/// Every element whose name a rename of [e] must change: the override set
+/// with each member's getter, setter and field, the `this.x` and `super.x`
+/// parameters that stand for a renamed field, and a named parameter's
+/// counterparts across the override set.
+Future<Set<Element>> _renameSet(
+  Engine engine,
+  Element e,
+  List<Element> members,
+) async {
+  final out = {for (final m in members) ...engine.propertyFamily(m)};
+
+  final fields = out.whereType<FieldElement>().toSet();
+  final classes = {
+    for (final f in fields)
+      if (f.enclosingElement case final InterfaceElement c) c,
+  };
+  final params = <FormalParameterElement>{
+    for (final c in classes)
+      for (final ctor in c.constructors)
+        for (final p in ctor.formalParameters)
+          if (p is FieldFormalParameterElement &&
+              fields.contains(p.field?.nonSynthetic))
+            p,
+  };
+  final subclasses = {
+    for (final c in classes) ...(await engine.subtypes(c)).types,
+  };
+  for (var grew = true; grew;) {
+    grew = false;
+    for (final c in subclasses) {
+      for (final ctor in c.constructors) {
+        for (final p in ctor.formalParameters) {
+          if (p is SuperFormalParameterElement &&
+              params.contains(p.superConstructorParameter?.baseElement) &&
+              params.add(p)) {
+            grew = true;
+          }
+        }
       }
     }
   }
+  out.addAll(params);
+
+  if (e is FormalParameterElement && e.isNamed) {
+    final fn = e.enclosingElement;
+    if (fn is ExecutableElement && isInstanceMember(fn)) {
+      for (final m in await engine.overrideSet(fn)) {
+        if (m is ExecutableElement) {
+          out.addAll(m.formalParameters.where((p) => p.name == e.name));
+        }
+      }
+    }
+  }
+  return out;
 }
 
+class _Span {
+  _Span(this.path, this.offset);
+  final String path;
+  final int offset;
+  String get key => '$path:$offset';
+}
+
+/// The declaration names and use sites of [elements], plus the type name of
+/// each constructor declaration when a class is renamed.
+Future<List<_Span>> _spans(
+  Engine engine,
+  Set<Element> elements,
+  String oldName,
+) async {
+  final analysis = engine.analysis;
+  final spans = <String, _Span>{};
+  void add(String path, int offset) =>
+      spans.putIfAbsent('$path:$offset', () => _Span(path, offset));
+  for (final e in elements) {
+    for (final f in e.fragments) {
+      final at = f.nameOffset;
+      final lib = f.libraryFragment;
+      if (at == null || lib == null || f.name != oldName) continue;
+      final path = analysis.workspace.relative(lib.source.fullName);
+      if (analysis.isAnalyzed(path)) add(path, at);
+    }
+    for (final s in await analysis.references(e)) {
+      if (s.length > 0) add(s.path, s.offset);
+    }
+    if (e is InterfaceElement) {
+      for (final c in e.constructors) {
+        for (final f in c.fragments) {
+          if (f.typeNameOffset case final at?) {
+            add(
+              analysis.workspace.relative(f.libraryFragment.source.fullName),
+              at,
+            );
+          }
+        }
+      }
+    }
+  }
+  return spans.values.toList()..sort((a, b) {
+    final c = a.path.compareTo(b.path);
+    return c != 0 ? c : a.offset.compareTo(b.offset);
+  });
+}
+
+bool _holds(Engine engine, _Span s, String oldName) {
+  final text = engine.sources.text(s.path);
+  return s.offset + oldName.length <= text.length &&
+      text.substring(s.offset, s.offset + oldName.length) == oldName;
+}
+
+List<String> _warnings(Engine engine, Element e, List<_Span> spans) {
+  final oldName = e.name!;
+  final literals = _stringMentions(engine, oldName);
+  return [
+    if (spans.any((s) => isGeneratedFile(s.path)))
+      'edits generated files; they match what the generator would write, '
+          'but rerun build_runner to confirm',
+    if (e is FieldElement && e.isEnumConstant)
+      '$oldName is an enum value: .name, values.byName and serialized data '
+          'spell it as a string, and stored or remote data may still say '
+          '"$oldName"',
+    if (literals.isNotEmpty)
+      'string literals mention "$oldName" and are not renamed: '
+          '${literals.take(5).join(', ')}${literals.length > 5 ? ', ...' : ''}',
+  ];
+}
+
+/// String literals spelling [name] as a word, outside directives and
+/// comments, as `path:line`.
 List<String> _stringMentions(Engine engine, String name) {
   if (name.length < 4) return const [];
-  final ws = engine.workspace;
   final pattern = RegExp(
     '[\'"][^\'"\\n]*\\b${RegExp.escape(name)}\\b[^\'"\\n]*[\'"]',
   );
   final out = <String>[];
   for (final path in engine.analysis.files) {
     if (isGeneratedFile(path)) continue;
-    final String text;
-    try {
-      text = File(path).readAsStringSync();
-    } catch (_) {
-      continue;
-    }
+    final text = engine.sources.text(path);
     if (!text.contains(name)) continue;
     for (final m in pattern.allMatches(text)) {
-      final line = '\n'.allMatches(text.substring(0, m.start)).length + 1;
-      final lineText = text.split('\n')[line - 1].trimLeft();
-      if (lineText.startsWith('import ') ||
-          lineText.startsWith('export ') ||
-          lineText.startsWith('part ') ||
-          lineText.startsWith('//')) {
-        continue;
-      }
-      out.add('${ws.relative(path)}:$line');
+      final line = engine.sources.lineOf(path, m.start);
+      final source = engine.sources.lineText(path, line);
+      if (RegExp(r'^(import|export|part)\b|^//').hasMatch(source)) continue;
+      out.add('$path:$line');
       if (out.length > 20) return out;
     }
   }
   return out;
 }
+
+const _reserved = {
+  'assert', 'break', 'case', 'catch', 'class', 'const', 'continue', //
+  'default', 'do', 'else', 'enum', 'extends', 'false', 'final', 'finally',
+  'for', 'if', 'in', 'is', 'new', 'null', 'rethrow', 'return', 'super',
+  'switch', 'this', 'throw', 'true', 'try', 'var', 'void', 'while', 'with',
+};

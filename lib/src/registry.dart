@@ -58,7 +58,7 @@ abstract final class Registry {
           j['port'] as int,
           DateTime.parse(j['lastUsed'] as String),
         );
-        if (_alive(e.pid)) {
+        if (processAlive(e.pid)) {
           out.add(e);
         } else {
           f.deleteSync();
@@ -101,12 +101,6 @@ abstract final class Registry {
     }
     unregister(e.root);
   }
-
-  static bool _alive(int pid) {
-    if (Platform.isWindows) return true;
-    final r = Process.runSync('kill', ['-0', '$pid']);
-    return r.exitCode == 0;
-  }
 }
 
 class RegistryEntry {
@@ -115,4 +109,9 @@ class RegistryEntry {
   final int pid;
   final int port;
   final DateTime lastUsed;
+}
+
+bool processAlive(int pid) {
+  if (Platform.isWindows) return true;
+  return Process.runSync('kill', ['-0', '$pid']).exitCode == 0;
 }

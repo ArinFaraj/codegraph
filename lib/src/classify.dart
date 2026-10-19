@@ -5,24 +5,23 @@ import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
 import 'analysis.dart';
-import 'outline.dart';
+import 'riverpod.dart';
+import 'workspace.dart';
 
-/// File text and parse trees for the files a query touches, reused until the
-/// file changes on disk.
+/// File text and parse trees by workspace-relative path. Entries live until
+/// the engine invalidates them, which it does for every file the analyzer
+/// reports as changed.
 class SourceCache {
+  SourceCache(this.workspace);
+
+  final Workspace workspace;
   final Map<String, _Entry> _entries = {};
 
-  _Entry _entry(String path) {
-    final stat = FileStat.statSync(path);
-    final stamp = '${stat.modified.microsecondsSinceEpoch}:${stat.size}';
-    final cached = _entries[path];
-    if (cached != null && cached.stamp == stamp) return cached;
-    final text = File(path).readAsStringSync();
-    final entry = _Entry(stamp, text);
-    if (_entries.length > 2000) _entries.clear();
-    _entries[path] = entry;
-    return entry;
-  }
+  void invalidate(Iterable<String> paths) => paths.forEach(_entries.remove);
+
+  _Entry _entry(String path) => _entries[path] ??= _Entry(
+    File(workspace.absolute(path)).readAsStringSync(),
+  );
 
   String text(String path) => _entry(path).text;
 
@@ -32,22 +31,48 @@ class SourceCache {
       unit(path).lineInfo.getLocation(offset).lineNumber;
 
   String lineText(String path, int line) {
-    final u = unit(path);
-    final starts = u.lineInfo.lineStarts;
+    final starts = unit(path).lineInfo.lineStarts;
     if (line < 1 || line > starts.length) return '';
-    final start = starts[line - 1];
-    final end = line < starts.length ? starts[line] : text(path).length;
-    return text(path).substring(start, end).trim();
+    final text = this.text(path);
+    final end = line < starts.length ? starts[line] : text.length;
+    return text.substring(starts[line - 1], end).trim();
   }
 }
 
 class _Entry {
-  _Entry(this.stamp, this.text);
-  final String stamp;
+  _Entry(this.text);
   final String text;
-  CompilationUnit? _unit;
-  CompilationUnit get unit =>
-      _unit ??= parseString(content: text, throwIfDiagnostics: false).unit;
+  late final CompilationUnit unit = parseString(
+    content: text,
+    throwIfDiagnostics: false,
+  ).unit;
+}
+
+/// A use of an element, located and classified once.
+class Use {
+  Use(this.site, this.line, this.role, this.source, {required this.inTest});
+
+  final Site site;
+  final int line;
+  final String role;
+
+  /// The trimmed source line the use sits on.
+  final String source;
+  final bool inTest;
+
+  String get path => site.path;
+  String get location => '$path:$line';
+}
+
+Use classify(Site site, SourceCache sources) {
+  final line = sources.lineOf(site.path, site.offset);
+  return Use(
+    site,
+    line,
+    roleOf(site, sources),
+    sources.lineText(site.path, line),
+    inTest: isTestPath(site.path),
+  );
 }
 
 /// The innermost node covering [offset].
@@ -74,38 +99,44 @@ class _Finder extends GeneralizingAstVisitor<void> {
 /// How a use reads in context. Riverpod roles win over the analyzer's
 /// generic kinds because they are what a reader of provider code asks for.
 String roleOf(Site site, SourceCache sources) {
-  final AstNode? node;
-  try {
-    node = nodeAt(sources.unit(site.path), site.offset);
-  } catch (_) {
-    return _genericRole(site.kind, null);
-  }
+  final node = nodeAt(sources.unit(site.path), site.offset);
   AstNode? child = node;
   var parent = node?.parent;
-  var depth = 0;
-  while (parent != null && depth < 12) {
-    if (parent is Comment) return 'doc';
-    if (parent is ImportDirective || parent is ExportDirective) return 'import';
-    if (parent is Annotation) return 'annotation';
-    if (parent is ExtendsClause) return 'extend';
-    if (parent is ImplementsClause) return 'implement';
-    if (parent is WithClause) return 'mixin';
-    if (parent is MixinOnClause) return 'on';
-    if (parent is MethodInvocation) {
-      final name = parent.methodName.name;
-      if (child != null && parent.argumentList == child) {
-        final role = providerRoles[name];
-        if (role != null) return role;
-      }
-      if (name.startsWith('overrideWith') && parent.target == child) {
-        return 'override';
-      }
+  for (var depth = 0; parent != null && depth < 12; depth++) {
+    switch (parent) {
+      case Comment():
+        return 'doc';
+      case ImportDirective() || ExportDirective():
+        return 'import';
+      case Annotation():
+        return 'annotation';
+      case ExtendsClause():
+        return 'extend';
+      case ImplementsClause():
+        return 'implement';
+      case WithClause():
+        return 'mixin';
+      case MixinOnClause():
+        return 'on';
+      case MethodInvocation(
+        :final methodName,
+        :final argumentList,
+        :final target,
+      ):
+        final role = providerRoles[methodName.name];
+        if (role != null && argumentList == child) return role;
+        if (methodName.name.startsWith('overrideWith') && target == child) {
+          return 'override';
+        }
+      case InstanceCreationExpression() when depth <= 3:
+        return 'construct';
+      case Statement() || Declaration():
+        return _genericRole(site.kind, node);
+      default:
+        break;
     }
-    if (parent is InstanceCreationExpression && depth <= 3) return 'construct';
-    if (parent is Statement || parent is Declaration) break;
     child = parent;
     parent = parent.parent;
-    depth++;
   }
   return _genericRole(site.kind, node);
 }
@@ -149,4 +180,18 @@ const roleOrder = [
 int roleRank(String role) {
   final i = roleOrder.indexOf(role);
   return i < 0 ? roleOrder.length : i;
+}
+
+/// Uses grouped for display: library code before tests, then by role.
+List<((bool, String), List<Use>)> groupByRole(Iterable<Use> uses) {
+  final groups = <(bool, String), List<Use>>{};
+  for (final u in uses) {
+    (groups[(u.inTest, u.role)] ??= []).add(u);
+  }
+  final keys = groups.keys.toList()
+    ..sort((a, b) {
+      if (a.$1 != b.$1) return a.$1 ? 1 : -1;
+      return roleRank(a.$2).compareTo(roleRank(b.$2));
+    });
+  return [for (final k in keys) (k, groups[k]!)];
 }

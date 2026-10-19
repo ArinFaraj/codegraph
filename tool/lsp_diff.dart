@@ -4,7 +4,9 @@
 //   dart run tool/lsp_diff.dart <workspace> [--sample 200] [--settle 180]
 //
 // The language server answers early and incompletely while it is still
-// analyzing, so this waits until its answers stop changing.
+// analyzing, so this waits until its answers stop changing. Its reference
+// search reports `show`/`hide` combinators for some kinds and not for
+// getters, so codegraph may list combinators the server does not.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -66,11 +68,17 @@ Future<void> main(List<String> args) async {
   for (final (path, d) in picked) {
     final theirs = (await lsp.references(ws, path, d)).toSet();
     final r = await engine.refs('$path:${d.line}');
-    final ours = {
-      for (final u in (r.json['uses'] as List?) ?? const [])
-        '${(u as Map)['path']}:${u['line']}',
+    final uses = [
+      for (final u in (r.toJson()['uses'] as List?) ?? const [])
+        u as Map<String, dynamic>,
+    ];
+    final ours = {for (final u in uses) '${u['path']}:${u['line']}'};
+    final combinators = {
+      for (final u in uses)
+        if (u['role'] == 'import') '${u['path']}:${u['line']}',
     };
-    if (theirs.difference(ours).isEmpty && ours.difference(theirs).isEmpty) {
+    if (theirs.difference(ours).isEmpty &&
+        ours.difference(theirs).difference(combinators).isEmpty) {
       agree++;
     } else {
       disagreements.add(
@@ -125,7 +133,11 @@ class _Lsp {
   Future<List<String>> references(Workspace ws, String path, Decl d) async {
     final text = File('${ws.root}/$path').readAsLinesSync();
     final line = d.line - 1;
-    final col = text[line].indexOf(d.name);
+    final col =
+        RegExp(
+          '\\b${RegExp.escape(d.name)}\\b',
+        ).firstMatch(text[line])?.start ??
+        -1;
     if (col < 0) return const [];
     final result = await _request('textDocument/references', {
       'textDocument': {'uri': Uri.file('${ws.root}/$path').toString()},

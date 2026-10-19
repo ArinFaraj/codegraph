@@ -3,6 +3,48 @@
 The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
 
+## 4.1.0 - 2026-10-19
+
+A restructuring after a hard review of 4.0.0. The answers on a 3,380-file
+Flutter app are the same; several get much faster, and two JSON shapes
+change.
+
+### Changed
+
+- The resolved verbs work on elements end to end. Each use keeps the
+  analyzer's enclosing element, so `impact` finds dependents directly instead
+  of matching the outline by line and name and looking the result up again.
+  `impact` of a file went from 17.6s to 1.1s, of a symbol from 2.2s to 0.4s,
+  and a rename dry run from about 1.2s to 0.2s.
+- `path.dart:LINE` means the outermost declaration named on that line, read
+  from the resolved unit. A one-line `enum E { a, b }` resolves to the enum.
+- One declaration walker serves both the parse-only outline and the resolved
+  engine, so the two cannot disagree about what a file declares.
+- Every verb returns a typed answer that writes both its text and its JSON.
+  `impact --json` now reports `direct` and `secondStep` without test files
+  (they are under `tests`), matching the text. `show <provider> --json`
+  includes `readers`.
+- `show` and `impact` decide once, in the client, whether an argument is a
+  file, a directory or a symbol.
+- Transitive subtype lists stop at 500 and now say so with a `partial:` line.
+- The worker keeps one engine for its lifetime and refreshes the outline and
+  source cache from the analyzer's change list, instead of reloading the
+  outline from disk on each request.
+- Rename is a plan step and an apply step. Refusals are typed (`UNSAFE`,
+  `UNSUPPORTED`) and no longer travel as exceptions.
+
+### Internal
+
+- Paths are workspace-relative everywhere outside `analysis.dart`.
+- Riverpod knowledge lives in `riverpod.dart`.
+- The worker receives typed requests instead of re-parsing argv, which
+  removes the import cycle between the CLI and the worker.
+- The global test seams are gone: tests withhold an edit between planning and
+  applying a rename.
+- `tool/lsp_diff.dart` finds a declaration's column by word boundary, and
+  accepts `show`/`hide` combinators that codegraph lists and the language
+  server omits (it reports them for classes and variables, not getters).
+
 ## 4.0.0 - 2026-10-19
 
 A rewrite. codegraph stops generating files, gating CI and installing

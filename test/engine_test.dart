@@ -32,7 +32,7 @@ void main() {
     Directory('${root.path}.store').deleteSync(recursive: true);
   });
 
-  String text(Result r) => r.render(asJson: false, limit: null);
+  String text(Answer a) => a.render(asJson: false, limit: null);
 
   test('refs finds provider reads through a ref held in a field', () async {
     final r = await engine.refs('sessionProvider');
@@ -59,7 +59,7 @@ void main() {
 
   test('refs groups by role and counts files', () async {
     final r = await engine.refs('Wallets.sandbox');
-    final uses = r.json['uses'] as List;
+    final uses = r.toJson()['uses'] as List;
     expect(uses.map((u) => (u as Map)['path']).toSet(), {
       'lib/features/wallet_list.dart',
       'tool/shots.dart',
@@ -83,13 +83,30 @@ void main() {
     expect(out, contains('FakeStore.save  test/home_test.dart:8'));
   });
 
+  test('text and JSON come from the same answer', () async {
+    final impact = await engine.impact(SymbolSeed('sessionProvider'));
+    final json = impact.toJson();
+    final out = text(impact);
+    for (final path in (json['direct'] as Map).keys) {
+      expect(out, contains('  $path  ('));
+    }
+    final show = (await engine.showSymbol('sessionProvider')).toJson();
+    expect(
+      (show['readers'] as List).map((u) => (u as Map)['role']),
+      containsAll(['ref.watch', 'ref.read', 'ref.listen', 'ref.invalidate']),
+    );
+  });
+
   test('show of a provider lists readers by role', () async {
     final out = text(await engine.showSymbol('sessionProvider'));
     expect(
       out,
       startsWith('provider sessionProvider  lib/core/session.dart:8'),
     );
-    expect(out, contains('ref.watch (1 outside tests):'));
+    expect(
+      out,
+      contains('ref.watch (1):\n  lib/features/home/home_page.dart:9'),
+    );
     expect(out, contains('uses: '));
   });
 
@@ -120,15 +137,15 @@ void main() {
   });
 
   test('impact of a symbol walks uses, one step further, and tests', () async {
-    final r = await engine.impact('walletKey');
+    final r = await engine.impact(SymbolSeed('walletKey'));
     final out = text(r);
     expect(
       out,
       contains('uses it directly (1):\n  lib/features/home/home_page.dart'),
     );
-    expect(r.json['tests'], isEmpty);
-    final store = await engine.impact('Store');
-    expect(store.json['tests'], ['test/home_test.dart']);
+    expect(r.toJson()['tests'], isEmpty);
+    final store = await engine.impact(SymbolSeed('Store'));
+    expect(store.toJson()['tests'], ['test/home_test.dart']);
   });
 
   test('impact --diff seeds from the declarations a hunk touches', () async {
@@ -138,15 +155,15 @@ void main() {
       original.replaceFirst("'wallet.\$id'", "'wallet.\${id.trim()}'"),
     );
     try {
-      await analysis.sync();
-      final r = await engine.impact('', diff: true);
-      expect((r.json['seeds'] as List).map((s) => (s as Map)['name']), [
+      await engine.refresh();
+      final r = await engine.impact(DiffSeed(null));
+      expect((r.toJson()['seeds'] as List).map((s) => (s as Map)['name']), [
         'walletKey',
       ]);
       expect(text(r), contains('lib/features/home/home_page.dart'));
     } finally {
       file.writeAsStringSync(original);
-      await analysis.sync();
+      await engine.refresh();
     }
   });
 
@@ -156,13 +173,14 @@ void main() {
         "import 'package:app/core/keys.dart';\nString x() => walletKey('y');\n",
       );
     try {
-      expect(await analysis.sync(), contains(file.path));
+      expect(await analysis.sync(), contains('lib/core/extra.dart'));
+      engine.filesChanged(['lib/core/extra.dart']);
       final r = await engine.refs('walletKey');
       expect(text(r), contains('lib/core/extra.dart:2'));
     } finally {
       file.deleteSync();
     }
-    await analysis.sync();
+    await engine.refresh();
     expect(text(await engine.refs('walletKey')), isNot(contains('extra.dart')));
   });
 
@@ -184,7 +202,7 @@ void main() {
       ]) {
         final r = await engine.refs(name);
         final got = {
-          for (final u in r.json['uses'] as List)
+          for (final u in r.toJson()['uses'] as List)
             '${(u as Map)['path']}:${u['line']}',
         };
         expect(got, containsAll(expected[name] ?? <String>{}), reason: name);

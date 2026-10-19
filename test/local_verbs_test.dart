@@ -21,7 +21,7 @@ void main() {
 
   tearDownAll(() => root.deleteSync(recursive: true));
 
-  String text(Result r) => r.render(asJson: false, limit: null);
+  String text(Answer a) => a.render(asJson: false, limit: null);
 
   test(
     'the workspace is the outermost pubspec and honors analysis excludes',
@@ -73,7 +73,7 @@ void main() {
       final r = find(idx, 'store');
       final rows = text(r).split('\n').skip(1).toList();
       expect(rows.first, contains('class       Store  lib/core/store.dart'));
-      final json = r.json['declarations'] as List;
+      final json = r.toJson()['declarations'] as List;
       expect(
         json.map((d) => (d as Map)['name']),
         containsAll(['Store', 'DiskStore', 'FakeStore']),
@@ -105,7 +105,15 @@ void main() {
   });
 
   test('show area summarizes a directory and its outside consumers', () {
-    expect(areaCandidates(idx, 'home'), ['lib/features/home']);
+    expect(
+      (classifyArg(idx, 'home', directories: true) as DirArg).path,
+      'lib/features/home',
+    );
+    expect(classifyArg(idx, 'home', directories: false), isA<SymbolArg>());
+    expect(
+      (classifyArg(idx, 'session.dart', directories: true) as FileArg).path,
+      'lib/core/session.dart',
+    );
     final out = text(showArea(idx, 'lib/core'));
     expect(out, contains('lib/core  ('));
     expect(out, contains('sessionProvider'));

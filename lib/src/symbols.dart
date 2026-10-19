@@ -1,21 +1,23 @@
 import 'package:analyzer/dart/element/element.dart';
-import 'package:analyzer/dart/element/type.dart';
 
 import 'analysis.dart';
-import 'outline.dart';
+import 'declarations.dart';
+import 'riverpod.dart';
+import 'workspace.dart';
 
 /// A resolved element plus where it is declared.
 class Target {
-  Target(this.element, this.path, this.line, this.offset);
+  Target(this.element, this.at);
 
   final Element element;
+  final Location at;
 
-  /// Workspace-relative path of the declaring file.
-  final String path;
-  final int line;
-  final int offset;
-
+  String get path => at.path;
+  int get line => at.line;
+  int get offset => at.offset;
   String get name => element.displayName;
+  String get kind => kindOf(element);
+  String get location => '$path:$line';
 
   String get qualified {
     final owner = element.enclosingElement;
@@ -29,8 +31,17 @@ class Target {
     return element.displayName;
   }
 
-  String get kind => kindOf(element);
-  String get location => '$path:$line';
+  Map<String, Object?> toJson() => {
+    'name': qualified,
+    'kind': kind,
+    'path': path,
+    'line': line,
+  };
+}
+
+Target? targetOf(Analysis a, Element element) {
+  final at = a.locate(element);
+  return at == null ? null : Target(element.nonSynthetic, at);
 }
 
 String kindOf(Element e) {
@@ -59,199 +70,166 @@ String kindOf(Element e) {
   };
 }
 
-/// A top-level variable whose static type is a Riverpod provider.
-bool isProvider(Element e) {
-  if (e is! TopLevelVariableElement) return false;
-  final type = e.type;
-  if (type is! InterfaceType) return false;
-  for (final t in [type, ...type.element.allSupertypes]) {
-    final name = t.element.name ?? '';
-    final uri = t.element.library.uri.toString();
-    if (uri.contains('riverpod') &&
-        (name.endsWith('Provider') ||
-            name.endsWith('ProviderBase') ||
-            name.endsWith('ProviderListenable') ||
-            name.endsWith('ProviderFamily'))) {
-      return true;
+/// A non-static field, getter, setter or method of a class, mixin, enum or
+/// extension type: something an override or a dynamic call can reach.
+bool isInstanceMember(Element e) {
+  if (e.enclosingElement is! InterfaceElement) return false;
+  return switch (e) {
+    ConstructorElement() => false,
+    ExecutableElement(isStatic: true) => false,
+    FieldElement(isStatic: true) => false,
+    ExecutableElement() || FieldElement() => true,
+    _ => false,
+  };
+}
+
+/// The declaration a use sits in, at the level a reader thinks of as "the
+/// thing that uses it": a top-level declaration or a member.
+Element declarationOwning(Element e) {
+  var x = e;
+  while (true) {
+    final parent = x.enclosingElement;
+    if (parent == null ||
+        parent is LibraryElement ||
+        parent is InstanceElement) {
+      return x;
     }
+    x = parent;
   }
-  return false;
 }
 
-Target? targetOf(Analysis a, Element element) {
-  final e = element.nonSynthetic;
-  final fragment = e.firstFragment;
-  final lib = fragment.libraryFragment;
-  if (lib == null) return null;
-  final offset = fragment.nameOffset ?? fragment.offset;
-  final line = lib.lineInfo.getLocation(offset).lineNumber;
-  return Target(e, a.workspace.relative(lib.source.fullName), line, offset);
+sealed class Resolution {}
+
+class Resolved extends Resolution {
+  Resolved(this.target);
+  final Target target;
 }
 
-sealed class Lookup {}
-
-class Found extends Lookup {
-  Found(this.targets);
+class Ambiguous extends Resolution {
+  Ambiguous(this.targets);
   final List<Target> targets;
 }
 
-class NotFound extends Lookup {
-  NotFound(this.message);
+class Missing extends Resolution {
+  Missing(this.message);
   final String message;
 }
 
-/// Resolves what a user typed to elements. Accepts `Name`, `Owner.member`,
-/// `path.dart:name`, `path.dart:Owner.member` and `path.dart:line`.
-Future<Lookup> lookup(Analysis a, OutlineIndex outlines, String query) async {
+Resolution _of(List<Target> found, String missing) {
+  final seen = <String>{};
+  final unique = [
+    for (final t in found)
+      if (seen.add('${t.path}:${t.offset}')) t,
+  ]..sort((a, b) => a.location.compareTo(b.location));
+  return switch (unique.length) {
+    0 => Missing(missing),
+    1 => Resolved(unique.single),
+    _ => Ambiguous(unique),
+  };
+}
+
+/// Resolves what a user typed to one element. Accepts `Name`,
+/// `Owner.member`, `path.dart:name`, `path.dart:Owner.member` and
+/// `path.dart:LINE` (the outermost declaration named on that line).
+Future<Resolution> resolveSymbol(Analysis a, String query) async {
   final fileQuery = RegExp(r'^(.+\.dart):(.+)$').firstMatch(query);
   if (fileQuery != null) {
-    final file = resolveFile(outlines, fileQuery.group(1)!);
-    if (file == null)
-      return NotFound('no analyzed file matches "${fileQuery.group(1)}"');
+    final arg = fileQuery.group(1)!;
+    final files = fileCandidates(a.workspace, a.files, arg);
+    if (files.length != 1)
+      return Missing('no single analyzed file matches "$arg"');
+    final file = files.single;
+    final unit = await a.unit(file);
+    if (unit == null) return Missing('$file could not be resolved');
     final rest = fileQuery.group(2)!;
-    final outline = outlines.files[file]!;
     final lineNo = int.tryParse(rest);
-    var decls = lineNo != null
-        ? outline.decls.where((d) => d.line == lineNo).toList()
-        : outline.decls
-              .where((d) => d.qualified == rest || (d.name == rest))
-              .toList();
-    if (lineNo != null && decls.length > 1) {
-      final top = decls.where((d) => !d.isMember).toList();
-      if (top.length == 1) decls = top;
-    }
-    if (decls.isEmpty) {
-      return NotFound(
-        lineNo != null
-            ? 'nothing is declared on $file:$lineNo'
-            : 'no declaration named "$rest" in $file',
-      );
-    }
-    final lib = await a.library(file);
-    if (lib == null) return NotFound('$file could not be resolved');
-    final out = <Target>[];
-    for (final d in decls) {
-      for (final e in _elementsFor(lib.element, d.owner, d.name, file, a)) {
-        final t = targetOf(a, e);
-        if (t != null && !out.any((x) => x.element == t.element)) out.add(t);
-      }
-    }
-    if (out.isEmpty) return NotFound('could not resolve "$rest" in $file');
-    return Found(out);
+    final decls = declarationsOf(unit.unit);
+    int line(DeclNode d) => unit.lineInfo.getLocation(d.nameOffset).lineNumber;
+    final matches = lineNo != null
+        ? decls.where((d) => line(d) == lineNo).toList()
+        : decls.where((d) => d.qualified == rest || d.name == rest).toList();
+    final chosen = lineNo != null && matches.isNotEmpty
+        ? [matches.reduce((x, y) => x.isMember && !y.isMember ? y : x)]
+        : matches;
+    return _of(
+      [
+        for (final d in chosen)
+          if (d.element case final e?)
+            if (targetOf(a, e) case final t?) t,
+      ],
+      lineNo != null
+          ? 'nothing is declared on $file:$lineNo'
+          : 'no declaration named "$rest" in $file',
+    );
   }
 
   final dot = query.lastIndexOf('.');
   if (dot > 0 && dot < query.length - 1) {
     final owner = query.substring(0, dot);
     final member = query.substring(dot + 1);
-    final out = <Target>[];
-    for (final e in await a.classMembers(member)) {
-      if (e.enclosingElement?.name == owner) {
-        final t = targetOf(a, e);
-        if (t != null) out.add(t);
+    final found = <Target>[
+      for (final e in await a.classMembers(member))
+        if (e.enclosingElement?.name == owner)
+          if (targetOf(a, e) case final t?) t,
+    ];
+    for (final e in await a.topLevelElements(_exactly(owner))) {
+      if (e is! InterfaceElement) continue;
+      final ctor = e.getNamedConstructor(member);
+      if (ctor != null) found.addAll([?targetOf(a, ctor)]);
+      for (final f in e.fields) {
+        if (f.isEnumConstant && f.name == member)
+          found.addAll([?targetOf(a, f)]);
       }
     }
-    for (final e in await a.topLevelElements(
-      RegExp('^${RegExp.escape(owner)}\$'),
-    )) {
-      if (e is InterfaceElement) {
-        final c = e.getNamedConstructor(member);
-        if (c != null) {
-          final t = targetOf(a, c);
-          if (t != null) out.add(t);
-        }
-        for (final f in e.fields) {
-          if (f.isEnumConstant && f.name == member) {
-            final t = targetOf(a, f);
-            if (t != null && !out.any((x) => x.element == t.element))
-              out.add(t);
-          }
-        }
-      }
-    }
-    if (out.isNotEmpty) return Found(_dedupe(out));
-    return NotFound('no member "$member" declared on "$owner"');
+    return _of(found, 'no member "$member" declared on "$owner"');
   }
 
-  final top = <Target>[];
-  for (final e in await a.topLevelElements(
-    RegExp('^${RegExp.escape(query)}\$'),
-  )) {
-    final t = targetOf(a, e);
-    if (t != null) top.add(t);
-  }
-  if (top.isNotEmpty) return Found(_dedupe(top));
-  final members = <Target>[];
-  for (final e in await a.classMembers(query)) {
-    final t = targetOf(a, e);
-    if (t != null) members.add(t);
-  }
-  if (members.isNotEmpty) return Found(_dedupe(members));
-  return NotFound('no declaration named "$query"');
+  final top = [
+    for (final e in await a.topLevelElements(_exactly(query)))
+      if (targetOf(a, e) case final t?) t,
+  ];
+  if (top.isNotEmpty) return _of(top, '');
+  return _of([
+    for (final e in await a.classMembers(query))
+      if (targetOf(a, e) case final t?) t,
+  ], 'no declaration named "$query"');
 }
 
-List<Target> _dedupe(List<Target> targets) {
-  final seen = <String>{};
-  return [
-    for (final t in targets)
-      if (seen.add('${t.path}:${t.offset}')) t,
-  ]..sort((a, b) => a.location.compareTo(b.location));
-}
+RegExp _exactly(String name) => RegExp('^${RegExp.escape(name)}\$');
 
-Iterable<Element> _elementsFor(
-  LibraryElement lib,
-  String? owner,
-  String name,
-  String file,
+/// The resolved declaration of [target], for its signature and members.
+Future<(DeclNode, List<DeclNode>)?> declarationOf(
   Analysis a,
-) sync* {
-  bool inFile(Element e) {
-    final f = e.nonSynthetic.firstFragment.libraryFragment;
-    return f != null && a.workspace.relative(f.source.fullName) == file;
-  }
-
-  if (owner == null) {
-    for (final e in lib.children) {
-      if (e.name == name && inFile(e)) yield e;
-    }
-    for (final e in lib.topLevelVariables) {
-      if (e.name == name && inFile(e)) yield e;
-    }
-    return;
-  }
-  for (final o in lib.children) {
-    if (o.name != owner || !inFile(o)) continue;
-    if (o is InterfaceElement) {
-      if (owner == name) {
-        final c = o.unnamedConstructor;
-        if (c != null) yield c;
-      }
-      final named = o.getNamedConstructor(name);
-      if (named != null) yield named;
-    }
-    for (final m in o.children) {
-      if (m.name == name && m is! ConstructorElement) yield m.nonSynthetic;
+  Target target,
+) async {
+  final unit = await a.unit(target.path);
+  if (unit == null) return null;
+  final decls = declarationsOf(unit.unit);
+  for (final d in decls) {
+    if (d.nameOffset == target.offset) {
+      return (
+        d,
+        [
+          for (final m in decls)
+            if (m.ownerNode == d.node) m,
+        ],
+      );
     }
   }
+  return null;
 }
 
-/// Resolves a file argument: exact path, then unique basename, then unique
-/// substring. When several match, a single one under `lib/` wins.
-String? resolveFile(OutlineIndex outlines, String arg) {
-  final candidates = fileCandidates(outlines, arg);
-  return candidates.length == 1 ? candidates.single : null;
-}
-
-List<String> fileCandidates(OutlineIndex outlines, String arg) {
-  final rel = outlines.workspace.relative(outlines.workspace.absolute(arg));
-  if (outlines.files.containsKey(rel)) return [rel];
-  if (outlines.files.containsKey(arg)) return [arg];
-  final base =
-      outlines.files.keys.where((p) => p == arg || p.endsWith('/$arg')).toList()
-        ..sort();
+/// Files matching a file argument: exact path, then unique basename, then
+/// unique substring. When several match, a single one under `lib/` wins.
+List<String> fileCandidates(Workspace ws, Iterable<String> files, String arg) {
+  final all = files.toSet();
+  final rel = ws.relative(ws.absolute(arg));
+  if (all.contains(rel)) return [rel];
+  final base = all.where((p) => p == arg || p.endsWith('/$arg')).toList()
+    ..sort();
   final pool = base.isNotEmpty
       ? base
-      : (outlines.files.keys.where((p) => p.contains(arg)).toList()..sort());
+      : (all.where((p) => p.contains(arg)).toList()..sort());
   if (pool.length <= 1) return pool;
   final inLib = pool.where((p) => p.startsWith('lib/')).toList();
   return inLib.length == 1 ? inLib : pool;

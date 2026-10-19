@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'registry.dart' show processAlive;
 import 'version.dart';
 import 'worker.dart';
 import 'workspace.dart';
@@ -90,29 +91,13 @@ Future<void> stopWorker(Workspace ws) async {
 }
 
 Future<void> _waitForExit(int pid) async {
-  for (var i = 0; i < 50; i++) {
-    final r = await Process.run('kill', ['-0', '$pid']);
-    if (r.exitCode != 0) return;
+  for (var i = 0; i < 50 && processAlive(pid); i++) {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   }
 }
 
-/// Test seam: the command that starts a worker, as executable + arguments
-/// before `__worker <root>`.
-List<String>? workerCommandOverride;
-
 Future<void> _spawn(Workspace ws) async {
   Directory(ws.stateDir).createSync(recursive: true);
-  final override = workerCommandOverride;
-  if (override != null) {
-    await Process.start(
-      override.first,
-      [...override.skip(1), '__worker', ws.root],
-      mode: ProcessStartMode.detached,
-      workingDirectory: ws.root,
-    );
-    return;
-  }
   final exe = Platform.resolvedExecutable;
   final name = Uri.file(exe).pathSegments.last;
   final isVm = name == 'dart' || name == 'dart.exe' || name == 'dartvm';

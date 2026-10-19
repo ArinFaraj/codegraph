@@ -8,147 +8,49 @@ import 'result.dart';
 import 'symbols.dart';
 import 'workspace.dart';
 
-Result find(OutlineIndex idx, String query) {
-  final r = Result('find')..json['query'] = query;
-  final q = query.toLowerCase();
-  final isMemberQuery = query.contains('.') && !query.endsWith('.dart');
+/// What an argument names. Decided once, here, for every verb that takes
+/// "a file, a directory or a symbol".
+sealed class Arg {}
 
-  int tier(Decl d) {
-    final key = isMemberQuery ? d.qualified : d.name;
-    final k = key.toLowerCase();
-    if (k == q) return 0;
-    if (k.startsWith(q)) return 1;
-    if (k.contains(q)) return 2;
-    return -1;
-  }
-
-  final hits = <(int, int, Decl, String)>[];
-  for (final f in idx.files.values) {
-    for (final d in f.decls) {
-      if (d.kind == 'constructor' && d.name == d.owner) continue;
-      final t = tier(d);
-      if (t < 0) continue;
-      hits.add((t, 0, d, f.path));
-    }
-  }
-  int place(String path) => isTestPath(path)
-      ? 2
-      : path.startsWith('lib/') || path.contains('/lib/')
-      ? 0
-      : 1;
-  final ranked =
-      [
-        for (final (t, _, d, path) in hits)
-          (t, idx.mentions(d.name, exceptFile: path), d, path),
-      ]..sort((a, b) {
-        var c = a.$1.compareTo(b.$1);
-        if (c != 0) return c;
-        c = (a.$3.isMember ? 1 : 0).compareTo(b.$3.isMember ? 1 : 0);
-        if (c != 0) return c;
-        c = (a.$3.name == query ? 0 : 1).compareTo(b.$3.name == query ? 0 : 1);
-        if (c != 0) return c;
-        c = place(a.$4).compareTo(place(b.$4));
-        if (c != 0) return c;
-        c = b.$2.compareTo(a.$2);
-        if (c != 0) return c;
-        return '${a.$4}:${a.$3.line}'.compareTo('${b.$4}:${b.$3.line}');
-      });
-
-  final fileHits = query.length < 3
-      ? <String>[]
-      : (idx.files.keys.where((p) => p.toLowerCase().contains(q)).toList()
-          ..sort((a, b) {
-            final c = (isTestPath(a) ? 1 : 0).compareTo(isTestPath(b) ? 1 : 0);
-            return c != 0 ? c : a.compareTo(b);
-          }));
-
-  r.header(
-    'find "$query": ${plural(ranked.length, 'declaration')}'
-    '${fileHits.isEmpty ? '' : ', ${plural(fileHits.length, 'file')}'}',
-  );
-  if (ranked.isEmpty && fileHits.isEmpty) {
-    r.footer(
-      'nothing declared or named like that in '
-      '${plural(idx.files.length, 'analyzed file')}; '
-      'for string literals use rg',
-    );
-  }
-  for (final (_, mentions, d, path) in ranked) {
-    r.row(
-      '${d.kind.padRight(11)} ${d.qualified}  $path:${d.line}'
-      '  (${plural(mentions, 'file')} mention it)',
-    );
-  }
-  for (final p in fileHits) {
-    r.row('${'file'.padRight(11)} $p');
-  }
-  r.json['declarations'] = [
-    for (final (_, mentions, d, path) in ranked)
-      {
-        'kind': d.kind,
-        'name': d.qualified,
-        'path': path,
-        'line': d.line,
-        'mentionedBy': mentions,
-      },
-  ];
-  r.json['files'] = fileHits;
-  return r;
+class FileArg extends Arg {
+  FileArg(this.path);
+  final String path;
 }
 
-Result showFile(OutlineIndex idx, String rel) {
-  final f = idx.files[rel]!;
-  final r = Result('show')
-    ..json['kind'] = 'file'
-    ..json['path'] = rel
-    ..json['lines'] = f.lines;
-  r.header('$rel  (${f.lines} lines)');
-  r.section('outline:');
-  for (final d in f.decls) {
-    if (d.kind == 'provider' && d.sig.contains('@riverpod')) continue;
-    r.row('${d.isMember ? '    ' : '  '}${d.line}: ${d.sig}');
-  }
-  final deps = idx.dependencies(rel);
-  final external = f.directives
-      .where((d) => d.kind == 'import' && idx.resolveUri(rel, d.uri) == null)
-      .map((d) => d.uri)
-      .toList();
-  r.section(
-    'imports (${deps.length} in workspace, ${external.length} external):',
-  );
-  for (final (target, d) in deps) {
-    r.row('  ${d.line}: $target${d.kind == 'export' ? '  (export)' : ''}');
-  }
-  final importers = idx.importers(rel);
-  r.section('imported by (${importers.length}):');
-  for (final p in importers) {
-    r.row('  $p');
-  }
-  final providers = f.providers.toList();
-  if (providers.isNotEmpty) {
-    r.section('providers declared:');
-    for (final p in providers) {
-      r.row('  ${p.line}: ${p.sig}');
-    }
-  }
-  if (f.providerUses.isNotEmpty) {
-    r.section('provider uses:');
-    for (final u in f.providerUses) {
-      r.row('  ${u.line}: ${u.role}(${u.provider})');
-    }
-  }
-  r.json['declarations'] = [for (final d in f.decls) d.toJson()];
-  r.json['imports'] = [
-    for (final (t, d) in deps) {'path': t, 'line': d.line, 'kind': d.kind},
-  ];
-  r.json['externalImports'] = external;
-  r.json['importedBy'] = importers;
-  r.json['providerUses'] = [for (final u in f.providerUses) u.toJson()];
-  return r;
+class DirArg extends Arg {
+  DirArg(this.path);
+  final String path;
 }
 
-/// Directories that can be summarized as an area for [arg].
-List<String> areaCandidates(OutlineIndex idx, String arg) {
+class SymbolArg extends Arg {
+  SymbolArg(this.query);
+  final String query;
+}
+
+class ChoiceArg extends Arg {
+  ChoiceArg(this.candidates);
+  final List<String> candidates;
+}
+
+/// `x.dart` and anything with a `/` is a path; a bare word is a symbol, or a
+/// directory when [directories] is on and `lib/<w>`, `lib/features/<w>` or
+/// `packages/<w>` exists.
+Arg classifyArg(OutlineIndex idx, String arg, {required bool directories}) {
+  final files = fileCandidates(idx.workspace, idx.files.keys, arg);
+  final dirs = directories ? _dirCandidates(idx, arg) : const <String>[];
+  if (arg.endsWith('.dart')) {
+    return files.length == 1 ? FileArg(files.single) : ChoiceArg(files);
+  }
+  if (arg.contains('/')) {
+    if (dirs.length == 1) return DirArg(dirs.single);
+    return files.length == 1 ? FileArg(files.single) : ChoiceArg(files);
+  }
+  if (dirs.length == 1) return DirArg(dirs.single);
+  if (dirs.length > 1) return ChoiceArg(dirs);
+  return SymbolArg(arg);
+}
+
+List<String> _dirCandidates(OutlineIndex idx, String arg) {
   final clean = arg.endsWith('/') ? arg.substring(0, arg.length - 1) : arg;
   final rel = idx.workspace.relative(idx.workspace.absolute(clean));
   bool hasFiles(String dir) => idx.files.keys.any((p) => p.startsWith('$dir/'));
@@ -160,112 +62,340 @@ List<String> areaCandidates(OutlineIndex idx, String arg) {
   ];
 }
 
-Result showArea(OutlineIndex idx, String dir) {
-  final r = Result('show')
-    ..json['kind'] = 'area'
-    ..json['path'] = dir;
-  final inArea =
+class FindHit {
+  FindHit(this.decl, this.path, this.mentionedBy);
+  final Decl decl;
+  final String path;
+  final int mentionedBy;
+}
+
+class FindAnswer extends Answer {
+  FindAnswer(this.query, this.hits, this.files, this.analyzedFiles);
+
+  final String query;
+  final List<FindHit> hits;
+  final List<String> files;
+  final int analyzedFiles;
+
+  @override
+  String get verb => 'find';
+
+  @override
+  void write(TextOut out) {
+    out.header(
+      'find "$query": ${plural(hits.length, 'declaration')}'
+      '${files.isEmpty ? '' : ', ${plural(files.length, 'file')}'}',
+    );
+    if (hits.isEmpty && files.isEmpty) {
+      out.footer(
+        'nothing declared or named like that in '
+        '${plural(analyzedFiles, 'analyzed file')}; for string literals use rg',
+      );
+    }
+    for (final h in hits) {
+      out.row(
+        '${h.decl.kind.padRight(11)} ${h.decl.qualified}  ${h.path}:${h.decl.line}'
+        '  (${plural(h.mentionedBy, 'file')} mention it)',
+      );
+    }
+    for (final p in files) {
+      out.row('${'file'.padRight(11)} $p');
+    }
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'query': query,
+    'declarations': [
+      for (final h in hits)
+        {
+          'kind': h.decl.kind,
+          'name': h.decl.qualified,
+          'path': h.path,
+          'line': h.decl.line,
+          'mentionedBy': h.mentionedBy,
+        },
+    ],
+    'files': files,
+  };
+}
+
+FindAnswer find(OutlineIndex idx, String query) {
+  final q = query.toLowerCase();
+  final isMemberQuery = query.contains('.') && !query.endsWith('.dart');
+
+  int tier(Decl d) {
+    final k = (isMemberQuery ? d.qualified : d.name).toLowerCase();
+    if (k == q) return 0;
+    if (k.startsWith(q)) return 1;
+    if (k.contains(q)) return 2;
+    return -1;
+  }
+
+  int place(String path) => isTestPath(path)
+      ? 2
+      : path.startsWith('lib/') || path.contains('/lib/')
+      ? 0
+      : 1;
+
+  final ranked = <(int, FindHit)>[
+    for (final f in idx.files.values)
+      for (final d in f.decls)
+        if (!(d.kind == 'constructor' && d.name == d.owner) && tier(d) >= 0)
+          (
+            tier(d),
+            FindHit(d, f.path, idx.mentions(d.name, exceptFile: f.path)),
+          ),
+  ];
+  int byFlag(bool a, bool b) => (a ? 1 : 0).compareTo(b ? 1 : 0);
+  ranked.sort((a, b) {
+    final x = a.$2, y = b.$2;
+    for (final c in [
+      a.$1.compareTo(b.$1),
+      byFlag(x.decl.isMember, y.decl.isMember),
+      byFlag(x.decl.name != query, y.decl.name != query),
+      place(x.path).compareTo(place(y.path)),
+      y.mentionedBy.compareTo(x.mentionedBy),
+    ]) {
+      if (c != 0) return c;
+    }
+    return '${x.path}:${x.decl.line}'.compareTo('${y.path}:${y.decl.line}');
+  });
+
+  final files = query.length < 3
+      ? <String>[]
+      : (idx.files.keys.where((p) => p.toLowerCase().contains(q)).toList()
+          ..sort((a, b) {
+            final c = byFlag(isTestPath(a), isTestPath(b));
+            return c != 0 ? c : a.compareTo(b);
+          }));
+  return FindAnswer(
+    query,
+    [for (final r in ranked) r.$2],
+    files,
+    idx.files.length,
+  );
+}
+
+class ShowFileAnswer extends Answer {
+  ShowFileAnswer(this.outline, this.imports, this.external, this.importers);
+
+  final FileOutline outline;
+  final List<(String, UriDirective)> imports;
+  final List<String> external;
+  final List<String> importers;
+
+  @override
+  String get verb => 'show';
+
+  Iterable<Decl> get _shown => outline.decls.where((d) => !d.generated);
+
+  @override
+  void write(TextOut out) {
+    out.header('${outline.path}  (${outline.lines} lines)');
+    out.section('outline:');
+    for (final d in _shown) {
+      out.row('${d.isMember ? '    ' : '  '}${d.line}: ${d.sig}');
+    }
+    out.section(
+      'imports (${imports.length} in workspace, ${external.length} external):',
+    );
+    for (final (target, d) in imports) {
+      out.row('  ${d.line}: $target${d.kind == 'export' ? '  (export)' : ''}');
+    }
+    out.section('imported by (${importers.length}):');
+    for (final p in importers) {
+      out.row('  $p');
+    }
+    final providers = outline.providers.toList();
+    if (providers.isNotEmpty) {
+      out.section('providers declared:');
+      for (final p in providers) {
+        out.row('  ${p.line}: ${p.sig}');
+      }
+    }
+    if (outline.providerUses.isNotEmpty) {
+      out.section('provider uses:');
+      for (final u in outline.providerUses) {
+        out.row('  ${u.line}: ${u.role}(${u.provider})');
+      }
+    }
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'kind': 'file',
+    'path': outline.path,
+    'lines': outline.lines,
+    'declarations': [for (final d in _shown) d.toJson()],
+    'imports': [
+      for (final (t, d) in imports) {'path': t, 'line': d.line, 'kind': d.kind},
+    ],
+    'externalImports': external,
+    'importedBy': importers,
+    'providers': [for (final p in outline.providers) p.toJson()],
+    'providerUses': [for (final u in outline.providerUses) u.toJson()],
+  };
+}
+
+ShowFileAnswer showFile(OutlineIndex idx, String rel) {
+  final f = idx.files[rel]!;
+  return ShowFileAnswer(f, idx.dependencies(rel), [
+    for (final d in f.directives)
+      if (d.kind == 'import' && idx.resolveUri(rel, d.uri) == null) d.uri,
+  ], idx.importers(rel));
+}
+
+class ShowAreaAnswer extends Answer {
+  ShowAreaAnswer({
+    required this.dir,
+    required this.files,
+    required this.pages,
+    required this.providers,
+    required this.usedOutside,
+    required this.consumed,
+    required this.notesPath,
+    required this.notes,
+  });
+
+  final String dir;
+  final int files;
+  final List<(Decl, String)> pages;
+
+  /// Provider, file, number of other files mentioning it.
+  final List<(Decl, String, int)> providers;
+  final List<(Decl, String, int)> usedOutside;
+
+  /// Provider name to the file declaring it, outside this area.
+  final Map<String, String> consumed;
+  final String? notesPath;
+  final List<String> notes;
+
+  @override
+  String get verb => 'show';
+
+  @override
+  void write(TextOut out) {
+    out.header(
+      '$dir  (${plural(files, 'file')}, ${plural(providers.length, 'provider')})',
+    );
+    if (pages.isNotEmpty) {
+      out.section('pages:');
+      for (final (d, path) in pages) {
+        out.row('  ${d.name}  $path:${d.line}');
+      }
+    }
+    if (providers.isNotEmpty) {
+      out.section('providers (by files mentioning them):');
+      for (final (p, path, n) in providers) {
+        out.row('  ${p.name}  $path:${p.line}  ($n)');
+      }
+    }
+    if (usedOutside.isNotEmpty) {
+      out.section('most used outside $dir (files mentioning them):');
+      for (final (d, path, n) in usedOutside) {
+        out.row('  ${d.kind} ${d.name}  $path:${d.line}  ($n)');
+      }
+    }
+    if (consumed.isNotEmpty) {
+      out.section('providers used from other areas:');
+      for (final e in consumed.entries) {
+        out.row('  ${e.key}  ${e.value}');
+      }
+    }
+    if (notesPath != null) {
+      out.footer('notes ($notesPath, ${notes.length} lines):');
+      for (final l in notes.take(40)) {
+        out.footer('  $l');
+      }
+      if (notes.length > 40) out.footer('  ... read the file for the rest');
+    }
+  }
+
+  @override
+  Map<String, Object?> toJson() {
+    Map<String, Object?> decl(Decl d, String path, [int? n]) => {
+      'name': d.name,
+      'kind': d.kind,
+      'path': path,
+      'line': d.line,
+      'mentionedBy': ?n,
+    };
+    return {
+      'kind': 'area',
+      'path': dir,
+      'files': files,
+      'pages': [for (final (d, p) in pages) decl(d, p)],
+      'providers': [for (final (d, p, n) in providers) decl(d, p, n)],
+      'usedOutside': [for (final (d, p, n) in usedOutside) decl(d, p, n)],
+      'consumed': consumed,
+      'notes': ?notesPath,
+    };
+  }
+}
+
+ShowAreaAnswer showArea(OutlineIndex idx, String dir) {
+  final lib =
       idx.files.values
-          .where((f) => f.path.startsWith('$dir/') && !isGeneratedFile(f.path))
+          .where(
+            (f) =>
+                f.path.startsWith('$dir/') &&
+                !isGeneratedFile(f.path) &&
+                !isTestPath(f.path),
+          )
           .toList()
         ..sort((a, b) => a.path.compareTo(b.path));
-  final lib = inArea.where((f) => !isTestPath(f.path)).toList();
+
+  int outside(String name) => idx.files.values
+      .where((f) => !f.path.startsWith('$dir/') && f.identifiers.contains(name))
+      .length;
+
   final providers = [
     for (final f in lib)
-      for (final p in f.providers) (p, f.path),
-  ];
-  r.header(
-    '$dir  (${plural(lib.length, 'file')}, '
-    '${plural(providers.length, 'provider')})',
-  );
-
-  final pages = [
-    for (final f in lib)
-      for (final d in f.topLevel)
-        if (d.kind == 'class' &&
-            !d.name.startsWith('_') &&
-            (d.name.endsWith('Page') || d.name.endsWith('Screen')))
-          (d, f.path),
-  ];
-  if (pages.isNotEmpty) {
-    r.section('pages:');
-    for (final (d, path) in pages) {
-      r.row('  ${d.name}  $path:${d.line}');
-    }
-  }
-
-  int outside(String name) {
-    var n = 0;
-    for (final f in idx.files.values) {
-      if (!f.path.startsWith('$dir/') && f.identifiers.contains(name)) n++;
-    }
-    return n;
-  }
-
-  if (providers.isNotEmpty) {
-    final ranked = [
-      for (final (p, path) in providers)
-        (p, path, idx.mentions(p.name, exceptFile: path)),
-    ]..sort((a, b) => b.$3.compareTo(a.$3));
-    r.section('providers (by files mentioning them):');
-    for (final (p, path, n) in ranked) {
-      r.row('  ${p.name}  $path:${p.line}  ($n)');
-    }
-  }
-
-  final symbols = [
-    for (final f in lib)
-      for (final d in f.topLevel)
-        if (!d.name.startsWith('_') && d.kind != 'provider')
-          (d, f.path, outside(d.name)),
+      for (final p in f.providers)
+        (p, f.path, idx.mentions(p.name, exceptFile: f.path)),
   ]..sort((a, b) => b.$3.compareTo(a.$3));
-  final used = symbols.where((s) => s.$3 > 0).take(15).toList();
-  if (used.isNotEmpty) {
-    r.section('most used outside $dir (files mentioning them):');
-    for (final (d, path, n) in used) {
-      r.row('  ${d.kind} ${d.name}  $path:${d.line}  ($n)');
-    }
-  }
-
-  final declaredHere = {for (final (p, _) in providers) p.name};
-  final providerHome = <String, String>{
+  final declaredHere = {for (final (p, _, _) in providers) p.name};
+  final providerHome = {
     for (final f in idx.files.values)
       for (final p in f.providers) p.name: f.path,
   };
   final consumed = SplayTreeMap<String, String>();
   for (final f in lib) {
     for (final u in f.providerUses) {
-      if (declaredHere.contains(u.provider)) continue;
       final home = providerHome[u.provider];
-      if (home != null) consumed[u.provider] = home;
+      if (home != null && !declaredHere.contains(u.provider)) {
+        consumed[u.provider] = home;
+      }
     }
   }
-  if (consumed.isNotEmpty) {
-    r.section('providers used from other areas:');
-    for (final e in consumed.entries) {
-      r.row('  ${e.key}  ${e.value}');
-    }
-  }
-
   final notes = _notesFor(idx.workspace, dir);
-  if (notes != null) {
-    final lines = File(notes).readAsLinesSync();
-    r.footer(
-      'notes (${idx.workspace.relative(notes)}, ${lines.length} lines):',
-    );
-    for (final l in lines.take(40)) {
-      r.footer('  $l');
-    }
-    if (lines.length > 40) r.footer('  ... read the file for the rest');
-    r.json['notes'] = idx.workspace.relative(notes);
-  }
-  r.json['files'] = lib.length;
-  r.json['providers'] = [
-    for (final (p, path) in providers)
-      {'name': p.name, 'path': path, 'line': p.line},
-  ];
-  r.json['consumed'] = consumed;
-  return r;
+  return ShowAreaAnswer(
+    dir: dir,
+    files: lib.length,
+    pages: [
+      for (final f in lib)
+        for (final d in f.topLevel)
+          if (d.kind == 'class' &&
+              !d.name.startsWith('_') &&
+              (d.name.endsWith('Page') || d.name.endsWith('Screen')))
+            (d, f.path),
+    ],
+    providers: providers,
+    usedOutside:
+        ([
+                for (final f in lib)
+                  for (final d in f.topLevel)
+                    if (!d.name.startsWith('_') && d.kind != 'provider')
+                      (d, f.path, outside(d.name)),
+              ].where((s) => s.$3 > 0).toList()
+              ..sort((a, b) => b.$3.compareTo(a.$3)))
+            .take(15)
+            .toList(),
+    consumed: consumed,
+    notesPath: notes == null ? null : idx.workspace.relative(notes),
+    notes: notes == null ? const [] : File(notes).readAsLinesSync(),
+  );
 }
 
 String? _notesFor(Workspace ws, String dir) {
@@ -279,27 +409,61 @@ String? _notesFor(Workspace ws, String dir) {
   return null;
 }
 
-Result why(OutlineIndex idx, String fromArg, String toArg) {
-  final r = Result('why');
-  final from = resolveFile(idx, fromArg);
-  final to = resolveFile(idx, toArg);
-  for (final (arg, value) in [(fromArg, from), (toArg, to)]) {
-    if (value == null) {
-      final c = fileCandidates(idx, arg);
-      r.exit = c.isEmpty ? Exit.failed : Exit.ambiguous;
-      r.header(
-        c.isEmpty
-            ? 'no analyzed file matches "$arg"'
-            : '"$arg" matches ${plural(c.length, 'file')}:',
-      );
-      for (final p in c.take(20)) {
-        r.row('  $p');
-      }
-      return r;
+/// One step of an import path: the importing file, the directive kind and
+/// its line, and the file it reaches.
+typedef WhyStep = ({String from, String kind, int line, String to});
+
+class WhyAnswer extends Answer {
+  WhyAnswer(this.from, this.to, this.steps, {required this.reversed});
+
+  final String from;
+  final String to;
+
+  /// Null when the files are not connected.
+  final List<WhyStep>? steps;
+  final bool reversed;
+
+  @override
+  String get verb => 'why';
+
+  @override
+  void write(TextOut out) {
+    final s = steps;
+    if (s == null) {
+      out.header('$from and $to are not connected by imports or exports');
+      return;
+    }
+    out.header(
+      '${s.first.from} reaches ${s.last.to} in ${plural(s.length, 'step')}'
+      '${reversed ? ' (the reverse of what you asked)' : ''}',
+    );
+    out.row(s.first.from);
+    for (final step in s) {
+      out.row('  ${step.from}:${step.line} ${step.kind}s ${step.to}');
     }
   }
-  List<(String, String, int)>? search(String a, String b) {
-    final prev = <String, (String, String, int)>{};
+
+  @override
+  Map<String, Object?> toJson() {
+    final s = steps;
+    return {
+      'from': from,
+      'to': to,
+      'reversed': reversed,
+      if (s != null) 'path': [s.first.from, for (final step in s) step.to],
+    };
+  }
+}
+
+Answer why(OutlineIndex idx, String fromArg, String toArg) {
+  final files = idx.files.keys;
+  final from = fileCandidates(idx.workspace, files, fromArg);
+  if (from.length != 1) return FileChoiceAnswer('why', fromArg, from);
+  final to = fileCandidates(idx.workspace, files, toArg);
+  if (to.length != 1) return FileChoiceAnswer('why', toArg, to);
+
+  List<WhyStep>? search(String a, String b) {
+    final prev = <String, WhyStep>{};
     final queue = Queue<String>()..add(a);
     final seen = {a};
     while (queue.isNotEmpty) {
@@ -307,48 +471,23 @@ Result why(OutlineIndex idx, String fromArg, String toArg) {
       if (cur == b) break;
       for (final (next, d) in idx.dependencies(cur)) {
         if (seen.add(next)) {
-          prev[next] = (cur, d.kind, d.line);
+          prev[next] = (from: cur, kind: d.kind, line: d.line, to: next);
           queue.add(next);
         }
       }
     }
     if (!seen.contains(b)) return null;
-    final path = <(String, String, int)>[];
-    var cur = b;
-    while (cur != a) {
-      final (p, kind, line) = prev[cur]!;
-      path.add((p, kind, line));
-      cur = p;
+    final path = <WhyStep>[];
+    for (var cur = b; cur != a; cur = prev[cur]!.from) {
+      path.add(prev[cur]!);
     }
     return path.reversed.toList();
   }
 
-  var chain = search(from!, to!);
-  var reversed = false;
-  if (chain == null) {
-    chain = search(to, from);
-    reversed = chain != null;
+  final forward = search(from.single, to.single);
+  if (forward != null) {
+    return WhyAnswer(from.single, to.single, forward, reversed: false);
   }
-  if (chain == null) {
-    r.header('$from and $to are not connected by imports or exports');
-    return r;
-  }
-  final start = reversed ? to : from;
-  final end = reversed ? from : to;
-  r.header(
-    '$start reaches $end in ${plural(chain.length, 'step')}'
-    '${reversed ? ' (the reverse of what you asked)' : ''}',
-  );
-  r.row(start);
-  for (var i = 0; i < chain.length; i++) {
-    final (file, kind, line) = chain[i];
-    final next = i + 1 < chain.length ? chain[i + 1].$1 : end;
-    r.row('  $file:$line ${kind}s $next');
-  }
-  r.json['path'] = [
-    start,
-    for (var i = 1; i < chain.length; i++) chain[i].$1,
-    end,
-  ];
-  return r;
+  final back = search(to.single, from.single);
+  return WhyAnswer(from.single, to.single, back, reversed: back != null);
 }
