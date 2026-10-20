@@ -4,6 +4,29 @@ The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
 and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
 
+## 4.7.0 - 2026-10-20
+
+### Fixed
+
+- Editing `analysis_options.yaml` checked nothing: `check` with that file,
+  as the hook passes it, now covers every file under its directory, as a
+  pubspec edit does.
+- A failed restore after a move that broke the build surfaced as a worker
+  error; it is reported with the paths to recover, as for a rename.
+
+### Changed
+
+- A move is one transaction: the new file, the deleted old one and every
+  rewritten import are staged and installed together, and rolled back
+  together, through the same apply-and-check path as a rename.
+- The client sends the worker the command as typed, and one table of verbs
+  checks arguments on the client and answers on the worker. A worker from an
+  earlier version is replaced on the next call, as before.
+- Line lookups no longer parse the file, and `show <dir>` resolves the
+  area's files in parallel.
+- Applying edits copies each file instead of running `chmod` twice per
+  file.
+
 ## 4.6.1 - 2026-10-20
 
 ### Fixed

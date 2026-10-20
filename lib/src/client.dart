@@ -6,7 +6,7 @@ import 'dart:io';
 
 import 'protocol.dart';
 import 'registry.dart';
-import 'request.dart';
+import 'commands.dart';
 import 'version.dart';
 import 'workspace.dart';
 
@@ -16,7 +16,7 @@ import 'workspace.dart';
 Future<Map<String, dynamic>?> _send(
   WorkerRecord worker,
   WorkerCall call, {
-  WorkerRequest? request,
+  Command? command,
   void Function(String)? onProgress,
   Duration connectTimeout = const Duration(seconds: 2),
 }) async {
@@ -30,7 +30,7 @@ Future<Map<String, dynamic>?> _send(
   } catch (_) {
     return null;
   }
-  socket.writeln(jsonEncode(callJson(call, request)));
+  socket.writeln(jsonEncode(callJson(call, command)));
   await socket.flush();
   Map<String, dynamic>? last;
   await for (final line
@@ -72,16 +72,16 @@ Future<WorkerStatus?> workerStatus(
   }
 }
 
-/// Runs [request] on [worker]. Null when the worker stopped before answering.
+/// Runs [command] on [worker]. Null when the worker stopped before answering.
 Future<RunReply?> runOnWorker(
   WorkerRecord worker,
-  WorkerRequest request, {
+  Command command, {
   void Function(String)? onProgress,
 }) async {
   final j = await _send(
     worker,
     WorkerCall.run,
-    request: request,
+    command: command,
     onProgress: onProgress,
   );
   return j == null ? null : RunReply.fromJson(j);

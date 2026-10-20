@@ -48,8 +48,8 @@ codegraph doctor [--warm|--stop|--restart]
 ```
 
 Symbols are written `Name`, `Owner.member`, `path/to/file.dart:name` or
-`path/to/file.dart:LINE` (the outermost declaration named on that line). Every verb takes `--json`, `--limit N` (40 rows by
-default) and `--all`.
+`path/to/file.dart:LINE` (the outermost declaration named on that line).
+Every verb takes `--json`, `--limit N` (40 rows by default) and `--all`.
 
 ```text
 $ codegraph refs sessionProvider
@@ -172,8 +172,9 @@ were made by scripts and `sed`, not by the Edit tool.
 ## Rename
 
 A dry run lists every edit. `--apply` stages and installs the edits, then
-re-analyzes the edited files and their importers; if any has an error it did
-not have before, every file is restored and the errors are printed.
+re-analyzes the edited files and everything depending on them,
+transitively; if any has an error it did not have before, every file is
+restored and the errors are printed.
 
 The edit set follows the analyzer's element model: a method's whole override
 set (test fakes included), a field together with its getter, setter, `this.x`

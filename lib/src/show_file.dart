@@ -277,8 +277,9 @@ Future<ShowAreaAnswer> showArea(Engine engine, String dir) async {
 
   final declared = <Target>[];
   final consumed = SplayTreeMap<String, String>();
-  for (final f in lib) {
-    final (here, reads) = await providersIn(engine, f.path);
+  for (final (here, reads) in await Future.wait([
+    for (final f in lib) providersIn(engine, f.path),
+  ])) {
     declared.addAll(here);
     for (final (_, provider) in reads) {
       if (!inside(provider.path)) consumed[provider.name] = provider.path;

@@ -1,6 +1,8 @@
 // `show <symbol>`: a declaration's source, its place in the type hierarchy,
 // and how it is used. Providers list their readers by role. A `show` that
-// names a file or directory is answered from the outline instead.
+// names a file or directory is answered by show_file.dart.
+import 'dart:math';
+
 import 'package:analyzer/dart/element/element.dart';
 
 import 'classify.dart';
@@ -8,11 +10,13 @@ import 'declarations.dart';
 import 'engine.dart';
 import 'kinds.dart';
 import 'refs.dart';
-import 'request.dart';
 import 'result.dart';
 import 'riverpod.dart';
 import 'show_file.dart';
 import 'symbols.dart';
+
+Future<Answer> show(Engine engine, String query) async =>
+    await showPath(engine, query) ?? await showSymbol(engine, query);
 
 Future<Answer> showSymbol(
   Engine engine,
@@ -58,16 +62,15 @@ Future<Answer> showSymbol(
 const sourceLines = 60;
 
 /// The declaration's source lines, numbered.
-SourceExcerpt? _source(Engine engine, String path, DeclNode d) {
+SourceExcerpt _source(Engine engine, String path, DeclNode d) {
   final (start, end) = sourceSpan(d);
-  final lines = engine.sources.unit(path).lineInfo;
-  final first = lines.getLocation(start).lineNumber;
-  final last = lines.getLocation(end).lineNumber;
-  final text = engine.sources.text(path).split('\n');
-  if (last > text.length) return null;
-  return SourceExcerpt(first, last, [
-    for (var n = first; n <= last && n < first + sourceLines; n++) text[n - 1],
-  ]);
+  final first = engine.sources.lineOf(path, start);
+  final last = engine.sources.lineOf(path, end);
+  return SourceExcerpt(
+    first,
+    last,
+    engine.sources.lines(path, first, min(last, first + sourceLines - 1)),
+  );
 }
 
 class SourceExcerpt {
@@ -80,29 +83,6 @@ class SourceExcerpt {
   final List<String> lines;
 
   bool get complete => first + lines.length - 1 == last;
-}
-
-class ShowRequest extends WorkerRequest {
-  ShowRequest(this.query, {required super.json, required super.limit});
-
-  ShowRequest.fromJson(Map<String, dynamic> j)
-    : this(
-        j['query'] as String,
-        json: j['json'] as bool,
-        limit: j['limit'] as int?,
-      );
-
-  final String query;
-
-  @override
-  String get verb => 'show';
-
-  @override
-  Map<String, Object?> get fields => {'query': query};
-
-  @override
-  Future<Answer> run(Engine engine) async =>
-      await showPath(engine, query) ?? await showSymbol(engine, query);
 }
 
 class ShowSymbolAnswer extends Answer {

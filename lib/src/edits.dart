@@ -1,3 +1,6 @@
+// Several file changes applied together: every output is computed and staged
+// before any target is touched, each target is checked unchanged just before
+// it is replaced, and a failure puts back what was already replaced.
 import 'dart:convert';
 import 'dart:io';
 
@@ -35,6 +38,17 @@ class AtomicEditException implements Exception {
 class PreparedTextEdits {
   PreparedTextEdits(this.files);
   final List<PreparedTextFile> files;
+
+  /// The same changes undone: what was written is replaced by what was there,
+  /// a created file is deleted and a deleted one recreated.
+  PreparedTextEdits get reversed => PreparedTextEdits([
+    for (final f in files)
+      PreparedTextFile(
+        path: f.path,
+        originalBytes: f.updatedBytes,
+        updatedBytes: f.originalBytes,
+      ),
+  ]);
 }
 
 class PreparedTextFile {
@@ -42,58 +56,70 @@ class PreparedTextFile {
     required this.path,
     required this.originalBytes,
     required this.updatedBytes,
-    required this.mode,
   });
 
   final String path;
-  final List<int> originalBytes;
-  final List<int> updatedBytes;
-  final int mode;
+
+  /// Null when the file does not exist before the change.
+  final List<int>? originalBytes;
+
+  /// Null when the change deletes the file.
+  final List<int>? updatedBytes;
   String? stagedPath;
   String? backupPath;
+
+  /// Directories made to hold a created file, outermost first.
+  final List<Directory> createdDirs = [];
 }
 
-/// Validates every edit and computes every output before any filesystem write.
-PreparedTextEdits prepareTextEdits(List<AtomicTextEdit> edits) {
+/// Validates every change and computes every output before any filesystem
+/// write: span [edits] in existing files, files to [create] with their text,
+/// and files to [delete] with the text they must still have.
+PreparedTextEdits prepareTextEdits(
+  List<AtomicTextEdit> edits, {
+  Map<String, String> create = const {},
+  Map<String, String> delete = const {},
+}) {
   final byCanonicalPath = <String, List<AtomicTextEdit>>{};
   final requestedPath = <String, String>{};
-  for (final edit in edits) {
-    final type = FileSystemEntity.typeSync(edit.file, followLinks: false);
+  void claim(String canonical, String requested) {
+    final previous = requestedPath[canonical];
+    if (previous != null && previous != requested) {
+      throw AtomicEditException(
+        'multiple paths refer to the same edit target',
+        details: [previous, requested],
+      );
+    }
+    requestedPath[canonical] = requested;
+  }
+
+  String existing(String path) {
+    final type = FileSystemEntity.typeSync(path, followLinks: false);
     if (type == FileSystemEntityType.link) {
       throw AtomicEditException(
         'refusing to edit a symbolic link',
-        details: [edit.file],
+        details: [path],
       );
     }
     if (type != FileSystemEntityType.file) {
       throw AtomicEditException(
         'edit target is not a regular file',
-        details: [edit.file],
+        details: [path],
       );
     }
-    final canonical = File(edit.file).resolveSymbolicLinksSync();
-    final previous = requestedPath[canonical];
-    if (previous != null && previous != edit.file) {
-      throw AtomicEditException(
-        'multiple paths refer to the same edit target',
-        details: [previous, edit.file],
-      );
-    }
-    requestedPath[canonical] = edit.file;
-    byCanonicalPath.putIfAbsent(canonical, () => []).add(edit);
+    final canonical = File(path).resolveSymbolicLinksSync();
+    claim(canonical, path);
+    return canonical;
+  }
+
+  for (final edit in edits) {
+    byCanonicalPath.putIfAbsent(existing(edit.file), () => []).add(edit);
   }
 
   final prepared = <PreparedTextFile>[];
   for (final entry in byCanonicalPath.entries) {
-    final file = File(entry.key);
-    final originalBytes = file.readAsBytesSync();
-    final hasBom =
-        originalBytes.length >= 3 &&
-        originalBytes[0] == 0xef &&
-        originalBytes[1] == 0xbb &&
-        originalBytes[2] == 0xbf;
-    final body = hasBom ? originalBytes.sublist(3) : originalBytes;
-    final original = utf8.decode(body);
+    final originalBytes = File(entry.key).readAsBytesSync();
+    final (bom, original) = _decode(originalBytes);
     final sorted = [...entry.value]
       ..sort((a, b) => a.offset.compareTo(b.offset));
     AtomicTextEdit? previous;
@@ -137,11 +163,46 @@ PreparedTextEdits prepareTextEdits(List<AtomicTextEdit> edits) {
       PreparedTextFile(
         path: entry.key,
         originalBytes: originalBytes,
-        updatedBytes: [
-          if (hasBom) ...const [0xef, 0xbb, 0xbf],
-          ...utf8.encode(updated),
-        ],
-        mode: file.statSync().mode,
+        updatedBytes: [...bom, ...utf8.encode(updated)],
+      ),
+    );
+  }
+
+  for (final MapEntry(key: path, value: text) in delete.entries) {
+    final canonical = existing(path);
+    if (byCanonicalPath.containsKey(canonical)) {
+      throw AtomicEditException(
+        'a file is both edited and deleted',
+        details: [path],
+      );
+    }
+    final originalBytes = File(canonical).readAsBytesSync();
+    if (_decode(originalBytes).$2 != text) {
+      throw AtomicEditException(
+        'source changed since it was analyzed',
+        details: [path],
+      );
+    }
+    prepared.add(
+      PreparedTextFile(
+        path: canonical,
+        originalBytes: originalBytes,
+        updatedBytes: null,
+      ),
+    );
+  }
+
+  for (final MapEntry(key: path, value: text) in create.entries) {
+    if (FileSystemEntity.typeSync(path, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      throw AtomicEditException('$path already exists', details: [path]);
+    }
+    claim(path, path);
+    prepared.add(
+      PreparedTextFile(
+        path: path,
+        originalBytes: null,
+        updatedBytes: utf8.encode(text),
       ),
     );
   }
@@ -151,25 +212,27 @@ PreparedTextEdits prepareTextEdits(List<AtomicTextEdit> edits) {
 
 /// Stages every output beside its target, revalidates every original, then
 /// installs the staged files. A failed install restores every attempted target
-/// from a sibling backup in reverse order. Portable filesystems cannot provide
-/// one atomic operation across multiple paths; this is transaction-like,
-/// rollback-backed application with recovery paths retained on rollback error.
-List<String> applyPreparedTextEdits(PreparedTextEdits prepared) {
+/// in reverse order; a backup that could not be put back is named in the
+/// exception's recovery paths.
+void applyPreparedTextEdits(PreparedTextEdits prepared) {
   try {
     for (var i = 0; i < prepared.files.length; i++) {
       final item = prepared.files[i];
-      item.stagedPath = _uniqueSibling(item.path, 'stage', i);
-      _writeExclusive(item.stagedPath!, item.updatedBytes, item.mode);
-      item.backupPath = _uniqueSibling(item.path, 'backup', i);
-      _writeExclusive(item.backupPath!, item.originalBytes, item.mode);
+      if (item.originalBytes == null) {
+        item.createdDirs.addAll(_missingDirs(File(item.path).parent));
+        File(item.path).parent.createSync(recursive: true);
+      }
+      if (item.updatedBytes case final bytes?) {
+        item.stagedPath = _uniqueSibling(item.path, 'stage', i);
+        _writeLike(item.stagedPath!, bytes, item);
+      }
+      if (item.originalBytes case final bytes?) {
+        item.backupPath = _uniqueSibling(item.path, 'backup', i);
+        _writeLike(item.backupPath!, bytes, item);
+      }
     }
     for (final item in prepared.files) {
-      if (!_bytesEqual(File(item.path).readAsBytesSync(), item.originalBytes)) {
-        throw AtomicEditException(
-          'source changed while the edit was being staged',
-          details: [item.path],
-        );
-      }
+      _checkUnchanged(item, 'source changed while the edit was being staged');
     }
   } catch (error) {
     _cleanupUncommitted(prepared.files);
@@ -179,29 +242,30 @@ List<String> applyPreparedTextEdits(PreparedTextEdits prepared) {
 
   final attempted = <PreparedTextFile>[];
   try {
-    for (var i = 0; i < prepared.files.length; i++) {
-      final item = prepared.files[i];
-      // Revalidate immediately before each replacement, not only once before
-      // the install loop. If a later target changes while earlier targets are
-      // being installed, rollback the earlier work without overwriting the
-      // concurrent edit to this target.
-      if (!_bytesEqual(File(item.path).readAsBytesSync(), item.originalBytes)) {
-        throw AtomicEditException(
-          'source changed just before the edit was installed',
-          details: [item.path],
-        );
-      }
+    for (final item in prepared.files) {
+      _checkUnchanged(
+        item,
+        'source changed just before the edit was installed',
+      );
       attempted.add(item);
-      File(item.stagedPath!).renameSync(item.path);
-      item.stagedPath = null;
+      if (item.stagedPath case final staged?) {
+        File(staged).renameSync(item.path);
+        item.stagedPath = null;
+      } else {
+        File(item.path).deleteSync();
+      }
     }
   } catch (error) {
     final recovery = <String>[];
-    for (var i = attempted.length - 1; i >= 0; i--) {
-      final item = attempted[i];
+    for (final item in attempted.reversed) {
       try {
-        File(item.backupPath!).renameSync(item.path);
-        item.backupPath = null;
+        if (item.backupPath case final backup?) {
+          File(backup).renameSync(item.path);
+          item.backupPath = null;
+        } else {
+          _deleteIfPresent(item.path);
+          _removeCreatedDirs(item);
+        }
       } catch (_) {
         if (item.backupPath case final backup?) recovery.add(backup);
       }
@@ -216,38 +280,58 @@ List<String> applyPreparedTextEdits(PreparedTextEdits prepared) {
     );
   }
 
-  final retainedBackups = <String>[];
   for (final item in prepared.files) {
-    final backup = item.backupPath;
-    if (backup == null) continue;
     try {
-      _deleteIfPresent(backup);
-      item.backupPath = null;
+      _deleteIfPresent(item.backupPath);
     } on FileSystemException {
-      // The edit is already installed successfully. Reporting this as an
-      // apply failure would be actively misleading, so retain and return the
-      // recovery artifact for the caller to disclose as cleanup work.
-      retainedBackups.add(backup);
+      continue;
     }
+    item.backupPath = null;
+    if (item.updatedBytes == null) _removeCreatedDirs(item);
   }
-  return retainedBackups;
 }
 
-void _writeExclusive(String path, List<int> bytes, int mode) {
-  final file = File(path)..createSync(exclusive: true);
-  final handle = file.openSync(mode: FileMode.write);
-  try {
-    handle.writeFromSync(bytes);
-    handle.flushSync();
-  } finally {
-    handle.closeSync();
+/// Puts back what [prepared] changed, with the same stage-then-rename
+/// install. Used when an applied change turns out to break the build.
+void restorePreparedTextEdits(PreparedTextEdits prepared) {
+  final undo = prepared.reversed;
+  for (var i = 0; i < undo.files.length; i++) {
+    undo.files[i].createdDirs.addAll(prepared.files[i].createdDirs);
   }
-  if (!Platform.isWindows) {
-    final permission = (mode & 0xfff).toRadixString(8);
-    final result = Process.runSync('chmod', [permission, path]);
-    if (result.exitCode != 0) {
-      throw FileSystemException('could not preserve file mode', path);
-    }
+  applyPreparedTextEdits(undo);
+}
+
+(List<int>, String) _decode(List<int> bytes) {
+  final hasBom =
+      bytes.length >= 3 &&
+      bytes[0] == 0xef &&
+      bytes[1] == 0xbb &&
+      bytes[2] == 0xbf;
+  return (
+    hasBom ? const [0xef, 0xbb, 0xbf] : const [],
+    utf8.decode(hasBom ? bytes.sublist(3) : bytes),
+  );
+}
+
+void _checkUnchanged(PreparedTextFile item, String message) {
+  final file = File(item.path);
+  final unchanged = switch (item.originalBytes) {
+    null => !file.existsSync(),
+    final bytes =>
+      file.existsSync() && _bytesEqual(file.readAsBytesSync(), bytes),
+  };
+  if (!unchanged) throw AtomicEditException(message, details: [item.path]);
+}
+
+/// Writes [bytes] to the new file [path]. A copy of an existing target keeps
+/// its permissions, which a fresh file would not.
+void _writeLike(String path, List<int> bytes, PreparedTextFile item) {
+  if (item.originalBytes != null) {
+    File(item.path).copySync(path);
+    File(path).writeAsBytesSync(bytes, flush: true);
+  } else {
+    final file = File(path)..createSync(exclusive: true);
+    file.writeAsBytesSync(bytes, flush: true);
   }
 }
 
@@ -264,12 +348,28 @@ String _uniqueSibling(String target, String kind, int index) {
   throw FileSystemException('could not allocate sibling staging path', target);
 }
 
+/// [dir] and the ancestors of it that do not exist yet, outermost first.
+List<Directory> _missingDirs(Directory dir) {
+  final out = <Directory>[];
+  for (var d = dir; !d.existsSync(); d = d.parent) {
+    out.insert(0, d);
+  }
+  return out;
+}
+
+void _removeCreatedDirs(PreparedTextFile item) {
+  for (final d in item.createdDirs.reversed) {
+    if (d.existsSync() && d.listSync().isEmpty) d.deleteSync();
+  }
+}
+
 void _cleanupUncommitted(Iterable<PreparedTextFile> files) {
   for (final item in files) {
     _deleteIfPresent(item.stagedPath);
     _deleteIfPresent(item.backupPath);
     item.stagedPath = null;
     item.backupPath = null;
+    _removeCreatedDirs(item);
   }
 }
 
@@ -280,12 +380,11 @@ void _cleanupAfterRollback(
   for (final item in files) {
     _deleteIfPresent(item.stagedPath);
     item.stagedPath = null;
-    if (item.backupPath case final backup?) {
-      if (!recovery.contains(backup)) {
-        _deleteIfPresent(backup);
-        item.backupPath = null;
-      }
+    if (item.backupPath case final backup? when !recovery.contains(backup)) {
+      _deleteIfPresent(backup);
+      item.backupPath = null;
     }
+    if (item.originalBytes == null) _removeCreatedDirs(item);
   }
 }
 
@@ -301,19 +400,4 @@ bool _bytesEqual(List<int> a, List<int> b) {
     if (a[i] != b[i]) return false;
   }
   return true;
-}
-
-/// Puts back the bytes [prepared] replaced, with the same stage-then-rename
-/// install. Used when an applied edit turns out to break the build.
-List<String> restorePreparedTextEdits(PreparedTextEdits prepared) {
-  final reverse = PreparedTextEdits([
-    for (final f in prepared.files)
-      PreparedTextFile(
-        path: f.path,
-        originalBytes: f.updatedBytes,
-        updatedBytes: f.originalBytes,
-        mode: f.mode,
-      ),
-  ]);
-  return applyPreparedTextEdits(reverse);
 }

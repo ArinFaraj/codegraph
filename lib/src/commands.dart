@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'check.dart';
-import 'move.dart';
+import 'engine.dart';
 import 'find.dart';
+import 'move.dart';
 import 'refs.dart';
 import 'rename.dart';
-import 'request.dart';
+import 'result.dart';
 import 'show.dart';
 
 /// What the user typed, with flags separated from arguments.
@@ -22,7 +25,25 @@ class Command {
     this.all = false,
     this.hook = false,
     this.error,
+    this.cwd = '',
+    this.since,
   });
+
+  /// The part of a command the worker needs to answer it.
+  factory Command.fromJson(Map<String, dynamic> j) => Command(
+    j['verb'] as String,
+    (j['args'] as List).cast<String>(),
+    json: j['json'] as bool,
+    limit: j['limit'] as int?,
+    apply: j['apply'] as bool,
+    context: j['context'] as int,
+    all: j['all'] as bool,
+    cwd: j['cwd'] as String,
+    since: switch (j['since']) {
+      final int t => DateTime.fromMicrosecondsSinceEpoch(t),
+      _ => null,
+    },
+  );
 
   factory Command.parse(List<String> argv) {
     var verb = '';
@@ -95,6 +116,7 @@ class Command {
       all: all,
       hook: hook,
       error: error,
+      cwd: Directory.current.path,
     );
   }
 
@@ -117,16 +139,77 @@ class Command {
   /// `check --hook`: read a coding agent's hook input on stdin.
   final bool hook;
   final String? error;
+
+  /// The directory the command was typed in; relative file arguments of
+  /// `check` are read from it.
+  final String cwd;
+
+  /// For `check`: also every analyzed file modified at or after this time.
+  final DateTime? since;
+
+  Map<String, Object?> toJson() => {
+    'verb': verb,
+    'args': args,
+    'json': json,
+    'limit': limit,
+    'apply': apply,
+    'context': context,
+    'all': all,
+    'cwd': cwd,
+    'since': since?.microsecondsSinceEpoch,
+  };
 }
 
-/// Rebuilds a request on the worker side. One line per verb; each request
-/// knows its own fields.
-WorkerRequest decodeRequest(Map<String, dynamic> j) => switch (j['verb']) {
-  'check' => CheckRequest.fromJson(j),
-  'find' => FindRequest.fromJson(j),
-  'refs' => RefsRequest.fromJson(j),
-  'show' => ShowRequest.fromJson(j),
-  'rename' => RenameRequest.fromJson(j),
-  'move' => MoveRequest.fromJson(j),
-  final v => throw FormatException('unknown worker verb $v'),
+/// A verb the worker answers: its usage line, whether a command's arguments
+/// fit it, and how the worker answers it.
+class Verb {
+  const Verb(this.usage, this.accepts, this.run);
+
+  final String usage;
+  final bool Function(Command c) accepts;
+  final Future<Answer> Function(Engine engine, Command c) run;
+}
+
+bool _one(Command c) => c.args.length == 1;
+
+final workerVerbs = <String, Verb>{
+  'check': Verb(
+    'codegraph check [files...] or codegraph check --all',
+    (c) => !c.all || c.args.isEmpty,
+    (engine, c) => c.all
+        ? checkAll(engine)
+        : check(
+            engine,
+            paths: [
+              for (final p in c.args) p.startsWith('/') ? p : '${c.cwd}/$p',
+            ],
+            since: c.since,
+          ),
+  ),
+  'find': Verb(
+    'codegraph find <name>',
+    _one,
+    (engine, c) async => find(engine.outline, c.args.single),
+  ),
+  'show': Verb(
+    'codegraph show <file|dir|symbol>',
+    _one,
+    (engine, c) => show(engine, c.args.single),
+  ),
+  'refs': Verb(
+    'codegraph refs <symbol>',
+    _one,
+    (engine, c) => refs(engine, c.args.single, context: c.context),
+  ),
+  'rename': Verb(
+    'codegraph rename <symbol> <newName> [--apply], or '
+    'rename <file.dart> <new/path.dart> [--apply]',
+    (c) => c.args.length == 2,
+    (engine, c) {
+      final [from, to] = c.args;
+      return from.endsWith('.dart') && to.endsWith('.dart')
+          ? move(engine, from, to, apply: c.apply)
+          : rename(engine, from, to, apply: c.apply);
+    },
+  ),
 };

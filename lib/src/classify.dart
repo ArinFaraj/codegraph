@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
+import 'package:analyzer/source/line_info.dart';
 
 import 'analysis.dart';
 import 'kinds.dart';
@@ -29,20 +31,39 @@ class SourceCache {
   CompilationUnit unit(String path) => _entry(path).unit;
 
   int lineOf(String path, int offset) =>
-      unit(path).lineInfo.getLocation(offset).lineNumber;
+      _entry(path).lines.getLocation(offset).lineNumber;
 
+  /// Lines [first] to [last] of [path], numbered from 1, clipped to the file.
+  List<String> lines(String path, int first, int last) {
+    final e = _entry(path);
+    final starts = e.lines.lineStarts;
+    return [
+      for (var n = max(first, 1); n <= min(last, starts.length); n++)
+        e.text
+            .substring(
+              starts[n - 1],
+              n < starts.length ? starts[n] : e.text.length,
+            )
+            .replaceFirst(_lineEnd, ''),
+    ];
+  }
+
+  /// The trimmed text of [line] in [path]; empty when the file is gone.
   String lineText(String path, int line) {
-    final starts = unit(path).lineInfo.lineStarts;
-    if (line < 1 || line > starts.length) return '';
-    final text = this.text(path);
-    final end = line < starts.length ? starts[line] : text.length;
-    return text.substring(starts[line - 1], end).trim();
+    try {
+      return lines(path, line, line).firstOrNull?.trim() ?? '';
+    } on FileSystemException {
+      return '';
+    }
   }
 }
+
+final _lineEnd = RegExp(r'\r?\n$');
 
 class _Entry {
   _Entry(this.text);
   final String text;
+  late final LineInfo lines = LineInfo.fromContent(text);
   late final CompilationUnit unit = parseString(
     content: text,
     throwIfDiagnostics: false,

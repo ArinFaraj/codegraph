@@ -1,13 +1,13 @@
 // What the client and a worker say to each other over a local socket: one
 // JSON object per line. A call is answered by one final line; `run` sends
 // progress lines before it.
-import 'request.dart';
+import 'commands.dart';
 
 enum WorkerCall { status, stop, run }
 
-Map<String, Object?> callJson(WorkerCall call, [WorkerRequest? request]) => {
+Map<String, Object?> callJson(WorkerCall call, [Command? command]) => {
   'type': call.name,
-  if (request != null) 'request': request.toJson(),
+  if (command != null) 'command': command.toJson(),
 };
 
 WorkerCall? callOf(Map<String, dynamic> message) =>

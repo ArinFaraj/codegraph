@@ -27,12 +27,26 @@ import 'files.dart';
 import 'sdk.dart';
 import 'workspace.dart';
 
+/// Something at a position in a workspace file.
+abstract interface class Placed {
+  String get path;
+  int get offset;
+}
+
+/// Orders by file, then by position in it.
+int byPlace(Placed a, Placed b) {
+  final c = a.path.compareTo(b.path);
+  return c != 0 ? c : a.offset.compareTo(b.offset);
+}
+
 /// One use of an element: a span in an analyzed file. Paths outside this
 /// file are always workspace-relative.
-class Site {
+class Site implements Placed {
   Site(this.path, this.offset, this.length, this.kind);
 
+  @override
   final String path;
+  @override
   final int offset;
   final int length;
 
@@ -55,7 +69,7 @@ class Location {
 
 /// A diagnostic as `dart analyze` reports it: after the analysis options of
 /// its file have raised, lowered or silenced it.
-class Problem {
+class Problem implements Placed {
   Problem(
     this.path,
     this.offset,
@@ -67,7 +81,9 @@ class Problem {
   );
 
   /// Workspace-relative.
+  @override
   final String path;
+  @override
   final int offset;
   final int line;
   final int column;
@@ -239,10 +255,10 @@ class Analysis {
 
   AnalysisDriver? _driverFor(String path) => _owner[path];
 
-  /// Every use of [element] across every context, deduplicated, restricted
-  /// to analyzed files.
-  Future<List<Site>> references(Element element) =>
-      _sites((s) => s.references(element));
+  /// Every use of any of [elements] across every context, deduplicated,
+  /// restricted to analyzed files.
+  Future<List<Site>> references(Iterable<Element> elements) =>
+      _sites((s) async => [for (final e in elements) ...await s.references(e)]);
 
   /// Uses of a member name whose receiver the analyzer could not resolve:
   /// dynamic calls, and calls on types that do not declare it.
@@ -285,7 +301,7 @@ class Analysis {
         if (_site(r) case final site?) out.putIfAbsent(site.key, () => site);
       }
     }
-    return _sorted(out.values);
+    return out.values.toList()..sort(byPlace);
   }
 
   /// [query] run in every context, keeping elements declared in analyzed
@@ -412,12 +428,6 @@ class Analysis {
     if (path == null) return null;
     return Site(path, r.offset, r.length, r.kind.name);
   }
-
-  List<Site> _sorted(Iterable<Site> sites) => sites.toList()
-    ..sort((a, b) {
-      final c = a.path.compareTo(b.path);
-      return c != 0 ? c : a.offset.compareTo(b.offset);
-    });
 
   Future<void> dispose() => _collection.dispose();
 }

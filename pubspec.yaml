@@ -3,7 +3,7 @@ description: >-
   Exact code navigation and safe renames for Dart and Flutter repositories,
   answered by a resident analyzer worker. Built for AI coding agents and the
   people working next to them.
-version: 4.6.1
+version: 4.7.0
 homepage: https://github.com/ArinFaraj/codegraph
 repository: https://github.com/ArinFaraj/codegraph
 issue_tracker: https://github.com/ArinFaraj/codegraph/issues

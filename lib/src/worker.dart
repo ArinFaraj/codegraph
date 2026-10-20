@@ -144,65 +144,50 @@ Future<int> runWorker(String root) async {
 
   final host = AnalyzerHost(ws, say);
   unawaited(host.ready());
+  final worker = _Server(ws, host, say);
+  server.listen(worker.handle);
 
-  final done = Completer<void>();
-  void stop() {
-    if (!done.isCompleted) done.complete();
+  await worker.done;
+  await server.close();
+  Registry.unregister(ws.root, pid);
+  await host.dispose();
+  say('stopped');
+  await log.close();
+  lock.closeSync();
+  return 0;
+}
+
+/// Answers calls one at a time, and stops when asked to or after
+/// [idleTimeout] without one.
+class _Server {
+  _Server(this.workspace, this.host, this.say) {
+    _resetIdle();
   }
 
-  Timer? idle;
-  void resetIdle() {
-    idle?.cancel();
-    idle = Timer(idleTimeout(), () {
+  final Workspace workspace;
+  final AnalyzerHost host;
+  final void Function(String) say;
+  final _done = Completer<void>();
+  Timer? _idle;
+  var _queue = Future<void>.value();
+
+  Future<void> get done => _done.future;
+
+  void _stop() {
+    _idle?.cancel();
+    if (!_done.isCompleted) _done.complete();
+  }
+
+  void _resetIdle() {
+    _idle?.cancel();
+    _idle = Timer(idleTimeout(), () {
       say('idle; exiting');
-      stop();
+      _stop();
     });
   }
 
-  resetIdle();
-  var queue = Future<void>.value();
-
-  Future<void> run(
-    void Function(Map<String, Object?>) send,
-    Map<String, dynamic> message,
-  ) async {
-    final request = decodeRequest(message['request'] as Map<String, dynamic>);
-    Registry.touch(ws.root);
-    Timer? ticker;
-    if (!host.isReady) {
-      void progress() =>
-          send(progressJson('waiting for the analyzer: ${host.phase}'));
-      progress();
-      ticker = Timer.periodic(const Duration(seconds: 5), (_) => progress());
-    }
-    try {
-      final engine = await host.ready();
-      if (engine == null) {
-        send(
-          RunReply(
-            Exit.cannotAnalyze,
-            'the analyzer failed to start: ${host.error}',
-          ).toJson(),
-        );
-        return;
-      }
-      final answer = await request.run(engine);
-      send(
-        RunReply(
-          answer.exit,
-          answer.render(asJson: request.json, limit: request.limit),
-        ).toJson(),
-      );
-    } catch (e, st) {
-      say('request ${jsonEncode(message)} failed: $e\n$st');
-      send(RunReply(Exit.failed, 'codegraph worker error: $e').toJson());
-    } finally {
-      ticker?.cancel();
-    }
-  }
-
-  server.listen((socket) {
-    resetIdle();
+  void handle(Socket socket) {
+    _resetIdle();
     void send(Map<String, Object?> m) {
       try {
         socket.writeln(jsonEncode(m));
@@ -229,26 +214,57 @@ Future<int> runWorker(String root) async {
             case WorkerCall.stop:
               send({'ok': true});
               socket.close();
-              stop();
+              _stop();
             case WorkerCall.run:
-              queue = queue
-                  .then((_) => run(send, message))
+              _queue = _queue
+                  .then((_) => _run(send, message))
                   .whenComplete(() {
-                    resetIdle();
+                    _resetIdle();
                     socket.close();
                   })
                   .catchError((Object _) {});
           }
         }, onError: (Object _) {});
-  });
+  }
 
-  await done.future;
-  idle?.cancel();
-  await server.close();
-  Registry.unregister(ws.root, pid);
-  await host.dispose();
-  say('stopped');
-  await log.close();
-  lock.closeSync();
-  return 0;
+  Future<void> _run(
+    void Function(Map<String, Object?>) send,
+    Map<String, dynamic> message,
+  ) async {
+    final command = Command.fromJson(
+      message['command'] as Map<String, dynamic>,
+    );
+    Registry.touch(workspace.root);
+    Timer? ticker;
+    if (!host.isReady) {
+      void progress() =>
+          send(progressJson('waiting for the analyzer: ${host.phase}'));
+      progress();
+      ticker = Timer.periodic(const Duration(seconds: 5), (_) => progress());
+    }
+    try {
+      final engine = await host.ready();
+      if (engine == null) {
+        send(
+          RunReply(
+            Exit.cannotAnalyze,
+            'the analyzer failed to start: ${host.error}',
+          ).toJson(),
+        );
+        return;
+      }
+      final answer = await workerVerbs[command.verb]!.run(engine, command);
+      send(
+        RunReply(
+          answer.exit,
+          answer.render(asJson: command.json, limit: command.limit),
+        ).toJson(),
+      );
+    } catch (e, st) {
+      say('request ${jsonEncode(message)} failed: $e\n$st');
+      send(RunReply(Exit.failed, 'codegraph worker error: $e').toJson());
+    } finally {
+      ticker?.cancel();
+    }
+  }
 }

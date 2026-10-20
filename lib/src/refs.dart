@@ -1,7 +1,8 @@
 // `refs`: every use of one declaration, grouped by role.
+import 'dart:math';
+
 import 'classify.dart';
 import 'engine.dart';
-import 'request.dart';
 import 'result.dart';
 import 'symbols.dart';
 
@@ -15,49 +16,22 @@ Future<Answer> refs(Engine engine, String query, {int context = 0}) =>
         context: {
           if (context > 0)
             for (final u in uses)
-              u.location: _around(engine.sources.text(u.path), u.line, context),
+              u.location: _around(engine.sources, u.path, u.line, context),
         },
       );
     });
 
-/// Lines [line] - [n] to [line] + [n], numbered, with [line] marked.
-String _around(String text, int line, int n) {
-  final lines = text.split('\n');
-  final last = (line + n).clamp(1, lines.length);
-  final width = '$last'.length;
+/// Lines [line] - [n] to [line] + [n] of [path], numbered, with [line]
+/// marked.
+String _around(SourceCache sources, String path, int line, int n) {
+  final first = max(1, line - n);
+  final lines = sources.lines(path, first, line + n);
+  final width = '${first + lines.length - 1}'.length;
   return [
-    for (var i = (line - n).clamp(1, lines.length); i <= last; i++)
-      '    ${i == line ? '>' : ' '} ${'$i'.padLeft(width)}  ${lines[i - 1]}',
+    for (var i = 0; i < lines.length; i++)
+      '    ${first + i == line ? '>' : ' '} '
+          '${'${first + i}'.padLeft(width)}  ${lines[i]}',
   ].join('\n');
-}
-
-class RefsRequest extends WorkerRequest {
-  RefsRequest(
-    this.query, {
-    this.context = 0,
-    required super.json,
-    required super.limit,
-  });
-
-  RefsRequest.fromJson(Map<String, dynamic> j)
-    : this(
-        j['query'] as String,
-        context: j['context'] as int? ?? 0,
-        json: j['json'] as bool,
-        limit: j['limit'] as int?,
-      );
-
-  final String query;
-  final int context;
-
-  @override
-  String get verb => 'refs';
-
-  @override
-  Map<String, Object?> get fields => {'query': query, 'context': context};
-
-  @override
-  Future<Answer> run(Engine engine) => refs(engine, query, context: context);
 }
 
 class RefsAnswer extends Answer {

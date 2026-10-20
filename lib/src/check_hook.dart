@@ -6,8 +6,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'check.dart';
 import 'client.dart';
+import 'commands.dart';
 import 'result.dart';
 import 'workspace.dart';
 
@@ -45,64 +45,60 @@ Future<int> checkHook(Workspace ws, {Stream<List<int>>? input}) async {
   }
 }
 
-/// Writes that hook calls could not check yet because the worker was not
-/// ready: the earliest time window and the named files.
+/// The `check` that hook calls could not run yet because the worker was not
+/// ready, kept as one command covering all of them.
 abstract final class Pending {
   static File _file(Workspace ws) => File('${ws.stateDir}/pending-check.json');
 
-  static void add(Workspace ws, CheckRequest request) {
-    final (since, paths) = _read(ws);
-    final earliest = [?since, ?request.since]..sort((a, b) => a.compareTo(b));
+  static void add(Workspace ws, Command check) {
     final file = _file(ws);
     file.parent.createSync(recursive: true);
+    final merged = switch (_read(ws)) {
+      final pending? => _merge(pending, check),
+      null => check,
+    };
     File('${file.path}.$pid.tmp')
-      ..writeAsStringSync(
-        jsonEncode({
-          'since': earliest.isEmpty
-              ? null
-              : earliest.first.microsecondsSinceEpoch,
-          'paths': {...paths, ...request.paths}.toList(),
-        }),
-      )
+      ..writeAsStringSync(jsonEncode(merged.toJson()))
       ..renameSync(file.path);
   }
 
-  /// [request] widened by what is pending, which is then cleared.
-  static CheckRequest takeInto(Workspace ws, CheckRequest request) {
-    final (since, paths) = _read(ws);
-    if (since == null && paths.isEmpty) return request;
+  /// [check] widened by what is pending, which is then cleared.
+  static Command takeInto(Workspace ws, Command check) {
+    final pending = _read(ws);
+    if (pending == null) return check;
     try {
       _file(ws).deleteSync();
     } on FileSystemException {
-      return request;
+      return check;
     }
-    final earliest = [?since, ?request.since]..sort((a, b) => a.compareTo(b));
-    return CheckRequest(
-      paths: {...request.paths, ...paths}.toList(),
-      since: earliest.isEmpty ? null : earliest.first,
-      json: request.json,
-      limit: request.limit,
-    );
+    return _merge(pending, check);
   }
 
-  static (DateTime?, List<String>) _read(Workspace ws) {
+  static Command? _read(Workspace ws) {
     try {
-      final j =
-          jsonDecode(_file(ws).readAsStringSync()) as Map<String, dynamic>;
-      final since = j['since'] as int?;
-      return (
-        since == null ? null : DateTime.fromMicrosecondsSinceEpoch(since),
-        (j['paths'] as List).cast<String>(),
+      return Command.fromJson(
+        jsonDecode(_file(ws).readAsStringSync()) as Map<String, dynamic>,
       );
     } catch (_) {
-      return (null, const []);
+      return null;
     }
+  }
+
+  static Command _merge(Command a, Command b) {
+    final times = [?a.since, ?b.since]..sort();
+    return Command(
+      'check',
+      {...a.args, ...b.args}.toList(),
+      limit: b.limit,
+      cwd: b.cwd,
+      since: times.firstOrNull,
+    );
   }
 }
 
 /// The check a hook call asks for, or null when the tool cannot have written
 /// anything codegraph checks.
-CheckRequest? hookRequest(Object? hook, DateTime now) {
+Command? hookRequest(Object? hook, DateTime now) {
   if (hook is! Map) return null;
   final tool = hook['tool_name'];
   if (_fileTools.contains(tool)) {
@@ -111,14 +107,14 @@ CheckRequest? hookRequest(Object? hook, DateTime now) {
         ? input['file_path'] ?? input['notebook_path']
         : null;
     if (path is! String || !_checked(path)) return null;
-    return CheckRequest(paths: [path], json: false, limit: 30);
+    return Command('check', [path], limit: 30);
   }
   if (tool == 'Bash') {
     final ran = hook['duration_ms'];
     final window = Duration(
       milliseconds: (ran is num ? ran.toInt() : 10000) + 2000,
     );
-    return CheckRequest(since: now.subtract(window), json: false, limit: 30);
+    return Command('check', const [], limit: 30, since: now.subtract(window));
   }
   return null;
 }

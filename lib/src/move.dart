@@ -8,43 +8,10 @@ import 'package:analyzer/dart/ast/ast.dart';
 
 import 'edits.dart';
 import 'engine.dart';
-import 'rename.dart' show Refusal, RefusalAnswer, RefusalKind;
-import 'request.dart';
+import 'rename_rules.dart';
 import 'result.dart';
 import 'symbols.dart';
 import 'verify.dart';
-
-class MoveRequest extends WorkerRequest {
-  MoveRequest(
-    this.from,
-    this.to, {
-    required this.apply,
-    required super.json,
-    required super.limit,
-  });
-
-  MoveRequest.fromJson(Map<String, dynamic> j)
-    : this(
-        j['from'] as String,
-        j['to'] as String,
-        apply: j['apply'] as bool,
-        json: j['json'] as bool,
-        limit: j['limit'] as int?,
-      );
-
-  final String from;
-  final String to;
-  final bool apply;
-
-  @override
-  String get verb => 'move';
-
-  @override
-  Map<String, Object?> get fields => {'from': from, 'to': to, 'apply': apply};
-
-  @override
-  Future<Answer> run(Engine engine) => move(engine, from, to, apply: apply);
-}
 
 /// One URI string literal to rewrite.
 class UriEdit {
@@ -227,22 +194,13 @@ String _dir(String path) => path.substring(0, path.lastIndexOf('/'));
 
 Future<Applied> applyMove(Engine engine, MovePlan plan) async {
   final ws = engine.workspace;
-  final fromFile = File(ws.absolute(plan.from));
-  final toFile = File(ws.absolute(plan.to));
-  final rewritten = plan.rewrittenFiles;
-  final baseline = await ErrorBaseline.take(engine, [plan.from, ...rewritten]);
-
-  if (fromFile.readAsStringSync() != plan.text) {
-    return NotApplied('source changed since it was analyzed', [plan.from]);
-  }
   var moved = plan.text;
   for (final e in plan.own.toList()..sort((a, b) => b.offset - a.offset)) {
     moved = moved.replaceRange(e.offset, e.offset + e.before.length, e.after);
   }
-
-  final PreparedTextEdits prepared;
-  try {
-    prepared = prepareTextEdits([
+  final applied = await applyChecked(
+    engine,
+    [
       for (final e in plan.importers)
         AtomicTextEdit(
           file: ws.absolute(e.path),
@@ -251,52 +209,17 @@ Future<Applied> applyMove(Engine engine, MovePlan plan) async {
           expected: e.before,
           replacement: e.after,
         ),
-    ]);
-  } on AtomicEditException catch (e) {
-    return NotApplied(e.message, e.details);
-  }
-
-  final createdDirs = _missingDirs(toFile.parent);
-  void undoCreate() {
-    if (toFile.existsSync()) toFile.deleteSync();
-    for (final d in createdDirs.reversed) {
-      if (d.existsSync() && d.listSync().isEmpty) d.deleteSync();
-    }
-  }
-
-  try {
-    toFile.parent.createSync(recursive: true);
-    toFile.createSync(exclusive: true);
-    toFile.writeAsStringSync(moved);
-    applyPreparedTextEdits(prepared);
-  } on Object catch (e) {
-    undoCreate();
-    return NotApplied('the move could not be written: $e', const []);
-  }
-  fromFile.deleteSync();
-
-  Future<RolledBack> rollBack(List<String> why) async {
-    fromFile.writeAsStringSync(plan.text);
-    undoCreate();
-    restorePreparedTextEdits(prepared);
-    await engine.refresh();
-    return RolledBack(why);
-  }
-
-  await engine.refresh();
-  if (!engine.analysis.isAnalyzed(plan.to)) {
-    return rollBack([
-      '${plan.to} is not analyzed (excluded, or outside a package), so the '
-          'move could not be checked',
-    ]);
-  }
-  final introduced = await baseline.introduced(
-    engine,
+    ],
+    scope: [plan.from, ...plan.rewrittenFiles],
+    create: {ws.absolute(plan.to): moved},
+    delete: {ws.absolute(plan.from): plan.text},
     renamed: {plan.from: plan.to},
+    mustAnalyze: [plan.to],
   );
-  if (introduced.isNotEmpty) return rollBack(introduced);
-  _removeEmptyDirs(fromFile.parent, ws.root);
-  return AppliedClean(baseline.fileCount);
+  if (applied is AppliedClean) {
+    _removeEmptyDirs(File(ws.absolute(plan.from)).parent, ws.root);
+  }
+  return applied;
 }
 
 /// Deletes [dir] and its parents while they are empty, stopping at [root].
@@ -305,15 +228,6 @@ void _removeEmptyDirs(Directory dir, String root) {
     if (!d.existsSync() || d.listSync().isNotEmpty) return;
     d.deleteSync();
   }
-}
-
-/// [dir] and the ancestors of it that do not exist yet, outermost first.
-List<Directory> _missingDirs(Directory dir) {
-  final out = <Directory>[];
-  for (var d = dir; !d.existsSync(); d = d.parent) {
-    out.insert(0, d);
-  }
-  return out;
 }
 
 class MoveAnswer extends Answer {

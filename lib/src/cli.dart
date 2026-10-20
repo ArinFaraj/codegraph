@@ -3,15 +3,9 @@ import 'dart:io';
 import 'client.dart';
 import 'commands.dart';
 import 'doctor.dart';
-import 'move.dart';
-import 'refs.dart';
-import 'rename.dart';
-import 'request.dart';
-import 'show.dart';
 import 'native_install.dart' as native_install;
 import 'outline.dart';
 import 'result.dart';
-import 'check.dart';
 import 'check_hook.dart';
 import 'find.dart';
 import 'version.dart';
@@ -131,88 +125,25 @@ Future<int> runCli(List<String> argv) async {
     return Exit.cannotAnalyze;
   }
 
-  int print(Answer a) {
-    stdout.writeln(a.render(asJson: c.json, limit: c.limit));
-    return a.exit;
+  if (c.verb == 'doctor') {
+    return doctor(ws, warm: c.warm, stop: c.stop, restart: c.restart);
   }
-
-  switch (c.verb) {
-    case 'check':
-      if (c.hook) return checkHook(ws);
-      if (c.all && c.args.isNotEmpty) {
-        return _usage('codegraph check [files...] or codegraph check --all');
-      }
-      return _ask(
-        ws,
-        CheckRequest(
-          paths: [for (final p in c.args) File(p).absolute.path],
-          all: c.all,
-          json: c.json,
-          limit: c.limit,
-        ),
-      );
-    case 'find' || 'show':
-      if (c.args.length != 1) {
-        return _usage(
-          c.verb == 'find'
-              ? 'codegraph find <name>'
-              : 'codegraph show <file|dir|symbol>',
-        );
-      }
-      final arg = c.args.single;
-      if (c.verb == 'show') {
-        return _ask(ws, ShowRequest(arg, json: c.json, limit: c.limit));
-      }
-      if (await readyWorker(ws) != null) {
-        return _ask(ws, FindRequest(arg, json: c.json, limit: c.limit));
-      }
-      return print(find(OutlineIndex.load(ws), arg));
-    case 'refs':
-      if (c.args.length != 1) return _usage('codegraph refs <symbol>');
-      return _ask(
-        ws,
-        RefsRequest(
-          c.args.single,
-          context: c.context,
-          json: c.json,
-          limit: c.limit,
-        ),
-      );
-    case 'rename':
-      if (c.args.length != 2) {
-        return _usage(
-          'codegraph rename <symbol> <newName> [--apply], or '
-          'rename <file.dart> <new/path.dart> [--apply]',
-        );
-      }
-      final [from, to] = c.args;
-      return _ask(
-        ws,
-        from.endsWith('.dart') && to.endsWith('.dart')
-            ? MoveRequest(
-                from,
-                to,
-                apply: c.apply,
-                json: c.json,
-                limit: c.limit,
-              )
-            : RenameRequest(
-                from,
-                to,
-                apply: c.apply,
-                json: c.json,
-                limit: c.limit,
-              ),
-      );
-    case 'doctor':
-      return doctor(ws, warm: c.warm, stop: c.stop, restart: c.restart);
+  if (c.verb == 'check' && c.hook) return checkHook(ws);
+  final verb = workerVerbs[c.verb];
+  if (verb == null)
+    return _usage('unknown verb "${c.verb}"; run codegraph help');
+  if (!verb.accepts(c)) return _usage(verb.usage);
+  if (c.verb == 'find' && await readyWorker(ws) == null) {
+    final answer = find(OutlineIndex.load(ws), c.args.single);
+    stdout.writeln(answer.render(asJson: c.json, limit: c.limit));
+    return answer.exit;
   }
-  return _usage('unknown verb "${c.verb}"; run codegraph help');
+  return _ask(ws, c);
 }
 
-/// Sends [request] to this checkout's worker, starting it when needed, and
+/// Sends [command] to this checkout's worker, starting it when needed, and
 /// prints its answer. Progress goes to stderr, at most every four seconds.
-Future<int> _ask(Workspace ws, WorkerRequest request) async {
+Future<int> _ask(Workspace ws, Command command) async {
   final reason = ws.unresolvableReason;
   if (reason != null) {
     stderr.writeln(reason);
@@ -229,7 +160,7 @@ Future<int> _ask(Workspace ws, WorkerRequest request) async {
   var lastProgress = DateTime(0);
   final reply = await runOnWorker(
     worker,
-    request,
+    command,
     onProgress: (p) {
       final now = DateTime.now();
       if (now.difference(lastProgress) > const Duration(seconds: 4)) {

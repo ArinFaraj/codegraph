@@ -1,36 +1,18 @@
-// `rename` in two steps. [planRename] resolves the target, checks whether a
-// rename is safe, and computes the edit set from the element model.
+// `rename` in two steps. [planRename] resolves the target, asks
+// rename_rules.dart whether a rename is safe, and computes the edit set from
+// the element model.
 // [applyRename] installs a plan, re-analyzes what it touched, and restores
 // every file if an error appeared.
-import 'dart:async';
-
 import 'package:analyzer/dart/element/element.dart';
 
+import 'analysis.dart';
 import 'edits.dart';
 import 'engine.dart';
-import 'request.dart';
+import 'rename_rules.dart';
 import 'result.dart';
 import 'symbols.dart';
 import 'verify.dart';
 import 'workspace.dart';
-
-enum RefusalKind {
-  /// Renaming could break code codegraph cannot see or change.
-  unsafe('UNSAFE'),
-
-  /// codegraph does not compute this kind of rename yet.
-  unsupported('UNSUPPORTED');
-
-  const RefusalKind(this.label);
-  final String label;
-}
-
-class Refusal {
-  Refusal(this.kind, this.reason, [this.details = const []]);
-  final RefusalKind kind;
-  final String reason;
-  final List<String> details;
-}
 
 class RenamePlan {
   RenamePlan(this.target, this.newName, List<RenameEdit> edits, this.warnings)
@@ -118,15 +100,15 @@ Future<Planning> planRename(Engine engine, String query, String newName) async {
       ),
     );
   }
-  final candidate = _Candidate(
+  final candidate = RenameCandidate(
     engine,
     subject,
     target,
     await engine.overrideSet(subject),
     newName,
   );
-  for (final rule in _rules) {
-    if (await rule(candidate) case final refusal?) return PlanRefused(refusal);
+  if (await refusalOf(candidate) case final refusal?) {
+    return PlanRefused(refusal);
   }
 
   final elements = await _renameSet(candidate);
@@ -173,13 +155,8 @@ Future<Planning> planRename(Engine engine, String query, String newName) async {
   );
 }
 
-Future<Applied> applyRename(Engine engine, RenamePlan plan) async {
-  final files = plan.edits.map((e) => e.path).toSet().toList()..sort();
-  final baseline = await ErrorBaseline.take(engine, files);
-
-  final PreparedTextEdits prepared;
-  try {
-    prepared = prepareTextEdits([
+Future<Applied> applyRename(Engine engine, RenamePlan plan) =>
+    applyChecked(engine, [
       for (final e in plan.edits)
         AtomicTextEdit(
           file: engine.workspace.absolute(e.path),
@@ -188,27 +165,7 @@ Future<Applied> applyRename(Engine engine, RenamePlan plan) async {
           expected: plan.oldName,
           replacement: plan.newName,
         ),
-    ]);
-    applyPreparedTextEdits(prepared);
-  } on AtomicEditException catch (e) {
-    return NotApplied(e.message, [...e.details, ...e.recoveryPaths]);
-  }
-  await filesWritten(engine, files);
-
-  final introduced = await baseline.introduced(engine);
-  if (introduced.isEmpty) return AppliedClean(baseline.fileCount);
-  try {
-    restorePreparedTextEdits(prepared);
-  } on AtomicEditException catch (e) {
-    return NotApplied(
-      'the rename introduced errors and restoring the files failed: '
-      '${e.message}',
-      [...e.details, ...e.recoveryPaths, ...introduced],
-    );
-  }
-  await filesWritten(engine, files);
-  return RolledBack(introduced);
-}
+    ], scope: plan.edits.map((e) => e.path).toSet());
 
 /// The element a rename of [e] actually renames: a `this.x` parameter
 /// renames its field, a `super.x` parameter the parameter it forwards to.
@@ -238,205 +195,11 @@ Refusal? _unsupported(Element e) => switch (e) {
   _ => null,
 };
 
-/// What every refusal rule looks at.
-class _Candidate {
-  _Candidate(
-    this.engine,
-    this.element,
-    this.target,
-    this.members,
-    this.newName,
-  );
-
-  final Engine engine;
-  final Element element;
-  final Target target;
-
-  /// The override set, with whether a subtype walk behind it stopped early.
-  final Bounded<Element> members;
-  final String newName;
-
-  String get oldName => element.name!;
-}
-
-typedef _Rule = FutureOr<Refusal?> Function(_Candidate c);
-
-/// Each rule names one way a rename could break code codegraph cannot see
-/// or change. The first that applies refuses the rename.
-const List<_Rule> _rules = [
-  _privacyChange,
-  _incompleteHierarchy,
-  _overridesOutside,
-  _codeGeneration,
-  _publishedApi,
-  _dynamicUses,
-  _collision,
-];
-
-Refusal? _privacyChange(_Candidate c) {
-  final e = c.element;
-  if (e.isPrivate == c.newName.startsWith('_') ||
-      e is FormalParameterElement ||
-      e is LocalVariableElement) {
-    return null;
-  }
-  return Refusal(
-    RefusalKind.unsafe,
-    'renaming ${c.target.qualified} to ${c.newName} changes its library privacy',
-  );
-}
-
-Refusal? _incompleteHierarchy(_Candidate c) => c.members.truncated
-    ? Refusal(
-        RefusalKind.unsafe,
-        'the class hierarchy around ${c.target.qualified} has more than '
-        '${Engine.subtypeCap} subtypes, so its override set may be incomplete',
-      )
-    : null;
-
-Refusal? _overridesOutside(_Candidate c) {
-  final analysis = c.engine.analysis;
-  for (final m in c.members.items) {
-    if (analysis.locate(m) == null) {
-      return Refusal(
-        RefusalKind.unsafe,
-        '${c.target.qualified} overrides or is overridden by '
-        '${m.enclosingElement?.displayName ?? '?'}.${c.oldName}, declared '
-        'outside the workspace (${analysis.sourceOf(m)})',
-      );
-    }
-  }
-  return null;
-}
-
-Refusal? _codeGeneration(_Candidate c) {
-  for (final m in {c.element, ...c.members.items}) {
-    if (_codegenAnnotation(m) case (final on, final name)?) {
-      return Refusal(
-        RefusalKind.unsafe,
-        '$on is annotated @$name: generated code and anything it serializes '
-        'derive names from this declaration. Rename by hand, rerun '
-        'build_runner, then check stored and wire formats',
-      );
-    }
-  }
-  return null;
-}
-
-Refusal? _publishedApi(_Candidate c) {
-  final root = _publishedRoot(c.engine.workspace, c.element, c.target);
-  return root == null
-      ? null
-      : Refusal(
-          RefusalKind.unsafe,
-          '${c.target.qualified} is public API of $root, whose pubspec does '
-          'not say publish_to: none, so consumers outside this repository may '
-          'use it',
-        );
-}
-
-Future<Refusal?> _dynamicUses(_Candidate c) async {
-  final e = c.element;
-  if (!isInstanceMember(e) && e.enclosingElement is! ExtensionElement) {
-    return null;
-  }
-  final uses = await c.engine.analysis.unresolvedMemberReferences(c.oldName);
-  if (uses.isEmpty) return null;
-  return Refusal(
-    RefusalKind.unsafe,
-    '${plural(uses.length, 'call')} to .${c.oldName} could not be resolved '
-    'to a declaration (dynamic receivers or missing types); they may be uses '
-    'of this member',
-    [
-      for (final s in uses.take(10))
-        '${s.path}:${c.engine.sources.lineOf(s.path, s.offset)}',
-    ],
-  );
-}
-
-const _codegenAnnotations = {
-  'riverpod',
-  'Riverpod',
-  'freezed',
-  'Freezed',
-  'unfreezed',
-  'JsonSerializable',
-  'JsonEnum',
-  'HiveType',
-  'HiveField',
-  'RestApi',
-  'injectable',
-  'Injectable',
-  'singleton',
-  'lazySingleton',
-  'TypedGoRoute',
-  'TypedShellRoute',
-  'CopyWith',
-  'MappableClass',
-};
-
-/// The declaration carrying a code generation annotation, [e] or its owner.
-(String, String)? _codegenAnnotation(Element e) {
-  for (final candidate in [e, e.enclosingElement]) {
-    if (candidate == null) continue;
-    for (final a in candidate.metadata.annotations) {
-      final ae = a.element;
-      final name = ae is ConstructorElement
-          ? ae.enclosingElement.name
-          : ae?.name;
-      if (name != null && _codegenAnnotations.contains(name)) {
-        return (candidate == e ? 'it' : candidate.displayName, name);
-      }
-    }
-  }
-  return null;
-}
-
-/// The publishable package [e] is public API of, or null.
-String? _publishedRoot(Workspace ws, Element e, Target target) {
-  final owner = e.enclosingElement;
-  if (e.isPrivate ||
-      (owner != null && owner is! LibraryElement && owner.isPrivate) ||
-      e is LocalVariableElement ||
-      e is LocalFunctionElement ||
-      (e is FormalParameterElement && !e.isNamed)) {
-    return null;
-  }
-  for (final root in ws.publishablePackageRoots().map(ws.relative)) {
-    if (target.path.startsWith('$root/lib/')) return root;
-  }
-  return null;
-}
-
-Refusal? _collision(_Candidate c) {
-  final e = c.element;
-  for (final o in {
-    for (final m in {e, ...c.members.items}) ?m.enclosingElement,
-  }) {
-    if (o is InstanceElement && e is! FormalParameterElement) {
-      final members = [...o.fields, ...o.getters, ...o.setters, ...o.methods];
-      if (members.any((m) => m.name == c.newName)) {
-        return Refusal(
-          RefusalKind.unsafe,
-          '${o.displayName} already has a member named ${c.newName}',
-        );
-      }
-    }
-    if (o is LibraryElement && o.children.any((x) => x.name == c.newName)) {
-      return Refusal(
-        RefusalKind.unsafe,
-        '${c.target.path} already declares a top-level ${c.newName}',
-      );
-    }
-  }
-  return null;
-}
-
 /// Every element whose name a rename of [e] must change: the override set
 /// with each member's getter, setter and field, the `this.x` and `super.x`
 /// parameters that stand for a renamed field, and a named parameter's
 /// counterparts across the override set.
-Future<Bounded<Element>> _renameSet(_Candidate c) async {
+Future<Bounded<Element>> _renameSet(RenameCandidate c) async {
   final engine = c.engine;
   final e = c.element;
   final out = {for (final m in c.members.items) ...engine.propertyFamily(m)};
@@ -492,11 +255,12 @@ Future<Bounded<Element>> _renameSet(_Candidate c) async {
   return Bounded(out.toList(), truncated: truncated);
 }
 
-class _Span {
+class _Span implements Placed {
   _Span(this.path, this.offset);
+  @override
   final String path;
+  @override
   final int offset;
-  String get key => '$path:$offset';
 }
 
 /// The declaration names and use sites of [elements], plus the type name of
@@ -518,9 +282,6 @@ Future<List<_Span>> _spans(
       final path = analysis.workspace.relativeOrNull(lib.source.fullName);
       if (path != null && analysis.isAnalyzed(path)) add(path, at);
     }
-    for (final s in await analysis.references(e)) {
-      if (s.length > 0) add(s.path, s.offset);
-    }
     if (e is InterfaceElement) {
       for (final c in e.constructors) {
         for (final f in c.fragments) {
@@ -534,10 +295,10 @@ Future<List<_Span>> _spans(
       }
     }
   }
-  return spans.values.toList()..sort((a, b) {
-    final c = a.path.compareTo(b.path);
-    return c != 0 ? c : a.offset.compareTo(b.offset);
-  });
+  for (final s in await analysis.references(elements)) {
+    if (s.length > 0) add(s.path, s.offset);
+  }
+  return spans.values.toList()..sort(byPlace);
 }
 
 bool _holds(Engine engine, _Span s, String oldName) {
@@ -594,77 +355,6 @@ const _reserved = {
   'for', 'if', 'in', 'is', 'new', 'null', 'rethrow', 'return', 'super',
   'switch', 'this', 'throw', 'true', 'try', 'var', 'void', 'while', 'with',
 };
-
-class RenameRequest extends WorkerRequest {
-  RenameRequest(
-    this.query,
-    this.newName, {
-    required this.apply,
-    required super.json,
-    required super.limit,
-  });
-
-  RenameRequest.fromJson(Map<String, dynamic> j)
-    : this(
-        j['query'] as String,
-        j['newName'] as String,
-        apply: j['apply'] as bool,
-        json: j['json'] as bool,
-        limit: j['limit'] as int?,
-      );
-
-  final String query;
-  final String newName;
-  final bool apply;
-
-  @override
-  String get verb => 'rename';
-
-  @override
-  Map<String, Object?> get fields => {
-    'query': query,
-    'newName': newName,
-    'apply': apply,
-  };
-
-  @override
-  Future<Answer> run(Engine engine) =>
-      rename(engine, query, newName, apply: apply);
-}
-
-class RefusalAnswer extends Answer {
-  RefusalAnswer(this.refusal);
-  final Refusal refusal;
-
-  @override
-  String get verb => 'rename';
-
-  @override
-  int get exit => Exit.refused;
-
-  @override
-  void write(TextOut out) {
-    out.header('${refusal.kind.label}: ${refusal.reason}');
-    for (final d in refusal.details) {
-      out.row('  $d');
-    }
-    if (refusal.kind == RefusalKind.unsupported) {
-      out.footer(
-        'codegraph cannot compute this rename yet. Renaming by hand is fine; '
-        'run `codegraph check` afterwards.',
-      );
-    }
-  }
-
-  @override
-  Map<String, Object?> toJson() => {
-    'refused': {
-      'kind': refusal.kind.label,
-      'reason': refusal.reason,
-      'details': refusal.details,
-    },
-  };
-}
 
 class RenameAnswer extends Answer {
   RenameAnswer(this.plan, this.applied);

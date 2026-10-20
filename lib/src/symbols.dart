@@ -199,10 +199,8 @@ Future<Resolution> resolveSymbol(Analysis a, String query) async {
   ], 'no declaration named "$query"');
 }
 
-/// Whether [d] is declared under [name]. An unnamed constructor carries its
-/// class's name but is not what that name refers to.
 bool _named(DeclNode d, String name) =>
-    d.name == name && !(d.kind == DeclKind.constructor && d.name == d.owner);
+    d.name == name && !isUnnamedConstructor(d.kind, d.name, d.owner);
 
 RegExp _exactly(String name) => RegExp('^${RegExp.escape(name)}\$');
 

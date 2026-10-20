@@ -1,7 +1,6 @@
 // The resolved state one worker keeps warm, and the element queries every
-// resolved verb shares. Verbs live in their own files (refs, show, impact,
-// rename); [Engine.refresh] runs before each request so answers reflect the
-// disk.
+// resolved verb shares. Verbs live in their own files; [Engine.refresh] runs
+// before each request so answers reflect the disk.
 import 'package:analyzer/dart/element/element.dart';
 
 import 'analysis.dart';
@@ -45,6 +44,15 @@ class Engine {
     final delta = lastDelta = await analysis.sync();
     filesChanged(delta.all);
     return delta;
+  }
+
+  /// Tells the analyzer about files this process just wrote, created or
+  /// deleted.
+  Future<void> written(Iterable<String> paths) async {
+    final list = paths.toList();
+    await analysis.notifyChanged(list);
+    filesChanged(list);
+    await refresh();
   }
 
   late final translations = Translations(this);
@@ -98,20 +106,10 @@ class Engine {
     _ => {e},
   };
 
-  Future<List<Use>> usesOf(Element e) async {
-    final sites = <String, Site>{};
-    for (final member in propertyFamily(e)) {
-      for (final s in await analysis.references(member)) {
-        sites.putIfAbsent(s.key, () => s);
-      }
-    }
-    final sorted = sites.values.toList()
-      ..sort((a, b) {
-        final c = a.path.compareTo(b.path);
-        return c != 0 ? c : a.offset.compareTo(b.offset);
-      });
-    return [for (final s in sorted) classify(s, sources)];
-  }
+  Future<List<Use>> usesOf(Element e) async => [
+    for (final s in await analysis.references(propertyFamily(e)))
+      classify(s, sources),
+  ];
 
   static const subtypeCap = 500;
 

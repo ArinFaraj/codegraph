@@ -10,7 +10,6 @@ import 'analysis.dart';
 import 'classify.dart';
 import 'engine.dart';
 import 'problem_counts.dart';
-import 'request.dart';
 import 'result.dart';
 import 'workspace.dart';
 
@@ -127,21 +126,24 @@ Future<List<(String, List<Problem>)>> problemsOf(
         .then((problems) => (p, problems)),
 ]);
 
+/// Every current problem, known or not.
+Future<Answer> checkAll(Engine engine) async {
+  final found = await problemsOf(engine, checkedFiles(engine));
+  return AllProblemsAnswer(
+    [for (final (_, ps) in found) ...ps],
+    found.length,
+    engine.sources,
+    engine.analysis.analyzerPlugins(),
+  );
+}
+
+/// New problems from the files written: the named [paths] and the analyzed
+/// files modified since [since]. With neither, new problems anywhere.
 Future<Answer> check(
   Engine engine, {
   List<String> paths = const [],
   DateTime? since,
-  bool all = false,
 }) async {
-  if (all) {
-    final found = await problemsOf(engine, checkedFiles(engine));
-    return AllProblemsAnswer(
-      [for (final (_, ps) in found) ...ps],
-      found.length,
-      engine.sources,
-      engine.analysis.analyzerPlugins(),
-    );
-  }
   final ledger = engine.ledger;
   if (ledger == null) return NotReadyAnswer();
 
@@ -154,32 +156,37 @@ Future<Answer> check(
   final removed = since == null
       ? const <String>[]
       : engine.lastDelta?.removed ?? const [];
-  final List<String> scope;
-  if (paths.isEmpty && since == null) {
-    scope = checkedFiles(engine);
-  } else {
-    final yamls = written.where((p) => p.endsWith('pubspec.yaml')).toList();
-    scope = [
-      ...engine.outline.affectedBy(written, removed: removed),
-      for (final y in yamls)
-        if (pubspecs(engine).contains(y)) y,
-      for (final y in yamls)
-        ...engine.analysis.files.where(
-          (f) => y == 'pubspec.yaml' || f.startsWith(_dirOf(y)),
-        ),
-    ];
-  }
+  final scope = paths.isEmpty && since == null
+      ? checkedFiles(engine).toSet()
+      : _scopeOf(engine, written, removed);
   final found = <Problem>[];
-  for (final (path, problems) in await problemsOf(engine, scope.toSet())) {
+  for (final (path, problems) in await problemsOf(engine, scope)) {
     found.addAll(ledger.acknowledge(path, problems));
   }
   ledger.save(ws);
   return CheckAnswer(
     written: [...written, ...removed]..sort(),
-    checked: scope.toSet().length,
+    checked: scope.length,
     problems: found,
     sources: engine.sources,
   );
+}
+
+/// The files whose problems [written] and [removed] can change: their
+/// dependents, and for a pubspec or analysis options file, every file it
+/// governs and the pubspec itself.
+Set<String> _scopeOf(Engine engine, Set<String> written, List<String> removed) {
+  final configs = written.where(
+    (p) => p.endsWith('pubspec.yaml') || p.endsWith('analysis_options.yaml'),
+  );
+  final checkedPubspecs = configs.isEmpty ? const <String>[] : pubspecs(engine);
+  return {
+    ...engine.outline.affectedBy(written, removed: removed),
+    for (final c in configs) ...[
+      if (checkedPubspecs.contains(c)) c,
+      ...engine.analysis.files.where((f) => f.startsWith(_dirOf(c))),
+    ],
+  };
 }
 
 /// The commit checked out in [ws], or null outside git.
@@ -192,15 +199,6 @@ String? gitHead(Workspace ws) {
     return r.exitCode == 0 ? (r.stdout as String).trim() : null;
   } on ProcessException {
     return null;
-  }
-}
-
-String _lineText(SourceCache sources, String path, int line) {
-  try {
-    final lines = sources.text(path).split('\n');
-    return line >= 1 && line <= lines.length ? lines[line - 1].trim() : '';
-  } on FileSystemException {
-    return '';
   }
 }
 
@@ -223,16 +221,11 @@ String _realPath(String path) {
 String _dirOf(String rel) => rel.substring(0, rel.lastIndexOf('/') + 1);
 
 void _writeProblems(TextOut out, List<Problem> problems, SourceCache sources) {
-  final sorted = [...problems]
-    ..sort((a, b) {
-      final c = a.path.compareTo(b.path);
-      return c != 0 ? c : a.offset.compareTo(b.offset);
-    });
-  for (final p in sorted) {
+  for (final p in [...problems]..sort(byPlace)) {
     out.row(
       '${p.path}:${p.line}:${p.column}  ${p.severity}  ${p.code}  ${p.message}',
     );
-    final line = _lineText(sources, p.path, p.line);
+    final line = sources.lineText(p.path, p.line);
     if (line.isNotEmpty) out.row('    $line');
   }
 }
@@ -335,43 +328,4 @@ class NotReadyAnswer extends Answer {
 
   @override
   Map<String, Object?> toJson() => {'ready': false};
-}
-
-class CheckRequest extends WorkerRequest {
-  CheckRequest({
-    this.paths = const [],
-    this.since,
-    this.all = false,
-    required super.json,
-    required super.limit,
-  });
-
-  CheckRequest.fromJson(Map<String, dynamic> j)
-    : this(
-        paths: (j['paths'] as List).cast<String>(),
-        since: j['since'] == null
-            ? null
-            : DateTime.fromMicrosecondsSinceEpoch(j['since'] as int),
-        all: j['all'] as bool,
-        json: j['json'] as bool,
-        limit: j['limit'] as int?,
-      );
-
-  final List<String> paths;
-  final DateTime? since;
-  final bool all;
-
-  @override
-  String get verb => 'check';
-
-  @override
-  Map<String, Object?> get fields => {
-    'paths': paths,
-    'since': since?.microsecondsSinceEpoch,
-    'all': all,
-  };
-
-  @override
-  Future<Answer> run(Engine engine) =>
-      check(engine, paths: paths, since: since, all: all);
 }

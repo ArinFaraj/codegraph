@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:codegraph/src/analysis.dart';
 import 'package:codegraph/src/check.dart';
 import 'package:codegraph/src/check_hook.dart';
+import 'package:codegraph/src/commands.dart';
 import 'package:codegraph/src/engine.dart';
 import 'package:codegraph/src/result.dart';
 import 'package:codegraph/src/workspace.dart';
@@ -122,7 +123,7 @@ class Kit {}
 
   test('check --all lists every problem dart analyze would', () async {
     await engine.refresh();
-    final a = await check(engine, all: true);
+    final a = await checkAll(engine);
     expect(a.exit, Exit.failed);
     final text = a.render(asJson: false, limit: null);
     expect(text, contains('lib/unused.dart:1:8  warning  unused_import'));
@@ -211,23 +212,37 @@ class Kit {}
   test('writes noted while the worker warms up join the next check', () {
     final ws = Workspace.find(root)!;
     final t0 = DateTime(2026, 10, 20, 12);
-    Pending.add(ws, CheckRequest(since: t0, json: false, limit: 30));
-    Pending.add(
-      ws,
-      CheckRequest(paths: ['/r/lib/a.dart'], json: false, limit: 30),
-    );
+    Pending.add(ws, Command('check', const [], limit: 30, since: t0));
+    Pending.add(ws, Command('check', ['/r/lib/a.dart'], limit: 30));
     final next = Pending.takeInto(
       ws,
-      CheckRequest(
-        since: t0.add(const Duration(minutes: 1)),
-        json: false,
+      Command(
+        'check',
+        const [],
         limit: 30,
+        since: t0.add(const Duration(minutes: 1)),
       ),
     );
     expect(next.since, t0);
-    expect(next.paths, ['/r/lib/a.dart']);
-    final after = CheckRequest(since: t0, json: false, limit: 30);
+    expect(next.args, ['/r/lib/a.dart']);
+    final after = Command('check', const [], limit: 30, since: t0);
     expect(identical(Pending.takeInto(ws, after), after), isTrue);
+  });
+
+  test('an analysis options edit checks the files it governs', () async {
+    write(
+      'analysis_options.yaml',
+      'analyzer:\n  exclude:\n    - vendor/**\n'
+          'linter:\n  rules:\n    - camel_case_types\n',
+    );
+    write('lib/d.dart', 'class lower_case {}\n');
+    await checkNow(paths: ['lib/d.dart']);
+    write('lib/d.dart', 'class lower_case {}\n');
+    final a = await checkNow(paths: ['analysis_options.yaml']);
+    expect(a.checked, greaterThan(1));
+    write('analysis_options.yaml', 'analyzer:\n  exclude:\n    - vendor/**\n');
+    File('$root/lib/d.dart').deleteSync();
+    await checkNow(paths: ['analysis_options.yaml']);
   });
 
   test('hook input picks the files a tool call could have written', () {
@@ -236,7 +251,7 @@ class Kit {}
       hookRequest({
         'tool_name': 'Edit',
         'tool_input': {'file_path': '/r/lib/a.dart'},
-      }, now)?.paths,
+      }, now)?.args,
       ['/r/lib/a.dart'],
     );
     expect(

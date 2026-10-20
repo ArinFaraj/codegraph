@@ -1,6 +1,7 @@
 // What an applied change did to the build: the errors a set of files had
 // before, compared with after. Rename and move both refuse to keep a change
 // that introduced one.
+import 'edits.dart';
 import 'engine.dart';
 import 'problem_counts.dart';
 import 'result.dart';
@@ -113,8 +114,55 @@ class ErrorBaseline {
   }
 }
 
-/// Tells the analyzer and the engine's caches about files this process wrote.
-Future<void> filesWritten(Engine engine, List<String> files) async {
-  await engine.analysis.notifyChanged(files);
-  engine.filesChanged(files);
+/// Applies span [edits], file creations and deletions as one change, then
+/// keeps it only when no file in [scope] (and its dependents) gained an error
+/// and every path in [mustAnalyze] is analyzed; otherwise every file is put
+/// back. [renamed] maps an old path in [scope] to its new one.
+Future<Applied> applyChecked(
+  Engine engine,
+  List<AtomicTextEdit> edits, {
+  required Iterable<String> scope,
+  Map<String, String> create = const {},
+  Map<String, String> delete = const {},
+  Map<String, String> renamed = const {},
+  Iterable<String> mustAnalyze = const [],
+}) async {
+  final PreparedTextEdits prepared;
+  try {
+    prepared = prepareTextEdits(edits, create: create, delete: delete);
+  } on AtomicEditException catch (e) {
+    return NotApplied(e.message, e.details);
+  }
+  final baseline = await ErrorBaseline.take(engine, scope);
+  final written = [
+    for (final f in prepared.files) engine.workspace.relative(f.path),
+  ];
+  try {
+    applyPreparedTextEdits(prepared);
+  } on AtomicEditException catch (e) {
+    return NotApplied(e.message, [...e.details, ...e.recoveryPaths]);
+  }
+  await engine.written(written);
+
+  final unchecked = [
+    for (final p in mustAnalyze)
+      if (!engine.analysis.isAnalyzed(p))
+        '$p is not analyzed (excluded, or outside a package), so the change '
+            'could not be checked',
+  ];
+  final introduced = unchecked.isNotEmpty
+      ? unchecked
+      : await baseline.introduced(engine, renamed: renamed);
+  if (introduced.isEmpty) return AppliedClean(baseline.fileCount);
+  try {
+    restorePreparedTextEdits(prepared);
+  } on AtomicEditException catch (e) {
+    return NotApplied(
+      'the change introduced errors and restoring the files failed: '
+      '${e.message}',
+      [...e.details, ...e.recoveryPaths, ...introduced],
+    );
+  }
+  await engine.written(written);
+  return RolledBack(introduced);
 }

@@ -34,7 +34,7 @@ plugins:
       Directory('${root.path}.store').deleteSync(recursive: true);
     });
     await analysis.warmUp();
-    final a = await check(Engine(analysis), all: true);
+    final a = await checkAll(Engine(analysis));
     expect(
       a.render(asJson: false, limit: null),
       endsWith(

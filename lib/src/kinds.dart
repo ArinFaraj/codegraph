@@ -31,6 +31,11 @@ enum DeclKind {
   String toString() => label;
 }
 
+/// An unnamed constructor: it carries its class's name, but is not what
+/// that name refers to.
+bool isUnnamedConstructor(DeclKind kind, String name, String? owner) =>
+    kind == DeclKind.constructor && name == owner;
+
 enum DirectiveKind {
   import('import'),
   export('export'),
