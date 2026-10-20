@@ -274,28 +274,28 @@ class Analysis {
   Future<List<Element>> topLevelElements(RegExp pattern) =>
       _elements((s) => s.topLevelElements(pattern));
 
-  /// [search] run in every context, as use sites in analyzed files,
+  /// [query] run in every context, as use sites in analyzed files,
   /// deduplicated and sorted.
   Future<List<Site>> _sites(
-    Future<List<search.SearchResult>> Function(search.Search) search,
+    Future<List<search.SearchResult>> Function(search.Search) query,
   ) async {
     final out = <String, Site>{};
     for (final d in _drivers) {
-      for (final r in await search(d.search)) {
+      for (final r in await query(d.search)) {
         if (_site(r) case final site?) out.putIfAbsent(site.key, () => site);
       }
     }
     return _sorted(out.values);
   }
 
-  /// [search] run in every context, keeping elements declared in analyzed
+  /// [query] run in every context, keeping elements declared in analyzed
   /// files, once each.
   Future<List<Element>> _elements(
-    Future<Iterable<Element>> Function(search.Search) search,
+    Future<Iterable<Element>> Function(search.Search) query,
   ) async {
     final out = <String, Element>{};
     for (final d in _drivers) {
-      for (final e in await search(d.search)) {
+      for (final e in await query(d.search)) {
         if (locate(e) case final at?) {
           out.putIfAbsent('${at.path}:${at.offset}', () => e);
         }

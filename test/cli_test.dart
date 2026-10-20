@@ -1,8 +1,10 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:codegraph/src/version.dart';
 import 'package:test/test.dart';
 
 import 'fixture.dart';
@@ -88,19 +90,69 @@ void main() {
     expect(r.stderr, contains('no pubspec.yaml'));
   });
 
-  test('instant verbs need no worker', () async {
+  File record(Directory root) => File(
+    '${tmp.path}/registry/'
+    '${root.path.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_')}.json',
+  );
+
+  Future<int> closedPort() async {
+    final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = s.port;
+    await s.close();
+    return port;
+  }
+
+  void writeRecord(Directory root, int pid, {String? version}) {
+    record(root)
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync(
+        jsonEncode({
+          'root': root.path,
+          'pid': pid,
+          'port': 1,
+          'version': ?version,
+          'lastUsed': DateTime.now().toIso8601String(),
+        }),
+      );
+  }
+
+  test('find needs no worker', () async {
     final root = fixture();
     final find = await run(root, ['find', 'Store']);
     expect(find.exitCode, 0);
     expect(find.stdout, contains('class       Store  lib/core/store.dart:1'));
-    final show = await run(root, ['show', 'lib/core/session.dart']);
-    expect(show.stdout, contains('imported by (2):'));
     final json = await run(root, ['find', 'Store', '--json']);
     expect(json.stdout, contains('"verb": "find"'));
-    expect(
-      File('${root.path}/.dart_tool/codegraph/worker.json').existsSync(),
-      isFalse,
-    );
+    expect(record(root).existsSync(), isFalse);
+  });
+
+  test('a record from an earlier version is replaced, and the process it '
+      'names is never killed', () async {
+    final root = fixture();
+    final other = await Process.start('sleep', ['120']);
+    addTearDown(other.kill);
+    writeRecord(root, other.pid);
+    final j = jsonDecode(record(root).readAsStringSync()) as Map;
+    j['port'] = await closedPort();
+    record(root).writeAsStringSync(jsonEncode(j));
+
+    final r = await run(root, ['refs', 'walletKey']);
+    expect(r.exitCode, 0, reason: '${r.stderr}');
+    final now = jsonDecode(record(root).readAsStringSync()) as Map;
+    expect(now['version'], codegraphVersion);
+    expect(now['pid'], isNot(other.pid));
+    expect(Process.runSync('kill', ['-0', '${other.pid}']).exitCode, 0);
+  });
+
+  test('the record of a dead worker is dropped and a new one starts', () async {
+    final root = fixture();
+    final gone = await Process.start('true', []);
+    await gone.exitCode;
+    writeRecord(root, gone.pid, version: codegraphVersion);
+    final r = await run(root, ['refs', 'walletKey']);
+    expect(r.exitCode, 0, reason: '${r.stderr}');
+    final now = jsonDecode(record(root).readAsStringSync()) as Map;
+    expect(now['pid'], isNot(gone.pid));
   });
 
   test('the worker answers, stays fresh after edits, and stops', () async {
@@ -142,6 +194,12 @@ void main() {
     expect(found.stdout, isNot(contains('mention')));
     final file = await run(root, ['show', 'store.dart']);
     expect(file.stdout, startsWith('lib/core/store.dart  ('));
+    final session = await run(root, ['show', 'lib/core/session.dart']);
+    expect(
+      session.stdout,
+      contains('imported by (3):\n  lib/core/late.dart'),
+      reason: '${session.stdout}${session.stderr}',
+    );
 
     final stop = await run(root, ['doctor', '--stop']);
     expect(stop.stdout, contains('worker stopped'));

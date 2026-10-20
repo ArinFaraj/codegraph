@@ -87,46 +87,69 @@ Future<RunReply?> runOnWorker(
   return j == null ? null : RunReply.fromJson(j);
 }
 
-/// Asks [worker] to stop, kills it when it cannot be reached, and waits for
-/// its process to end.
+/// Asks [worker] to stop and waits for its process to end. A worker that
+/// cannot be reached serves no one, so its record is dropped instead; it is
+/// never killed by pid, because a dead worker's pid may belong to another
+/// program by now.
 Future<void> stopWorker(WorkerRecord worker) async {
   final answered = await _send(
     worker,
     WorkerCall.stop,
     connectTimeout: const Duration(seconds: 1),
-  );
-  if (answered == null) Process.killPid(worker.pid);
+  ).timeout(const Duration(seconds: 5), onTimeout: () => null);
+  if (answered == null) {
+    Registry.unregister(worker.root, worker.pid);
+    return;
+  }
   for (var i = 0; i < 50 && processAlive(worker.pid); i++) {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   }
 }
 
-/// This checkout's worker when its process is alive and runs this codegraph
-/// version. A worker of another version is stopped, so a new one can start.
-Future<WorkerRecord?> _current(Workspace ws) async {
+/// How far a caller needs a worker to be along.
+enum WorkerNeed {
+  /// Its process exists. Asking a starting worker more can stall: it does not
+  /// answer while it opens the analyzer.
+  alive,
+
+  /// It answers calls, waiting for it to if it is busy.
+  answering,
+
+  /// It has finished warming up.
+  ready,
+}
+
+/// This checkout's worker at this codegraph version, when it meets [need].
+/// A worker of another version is stopped, and the record of a dead one
+/// dropped, so a new worker can take their place.
+Future<WorkerRecord?> workerFor(Workspace ws, WorkerNeed need) async {
   final w = Registry.entry(ws.root);
   if (w == null) return null;
   if (w.version != codegraphVersion) {
     await stopWorker(w);
     return null;
   }
-  return processAlive(w.pid) ? w : null;
+  if (!processAlive(w.pid)) {
+    Registry.unregister(w.root, w.pid);
+    return null;
+  }
+  final usable = switch (need) {
+    WorkerNeed.alive => true,
+    WorkerNeed.answering => await workerStatus(w) != null,
+    WorkerNeed.ready =>
+      (await workerStatus(
+            w,
+            connect: const Duration(milliseconds: 300),
+            reply: const Duration(milliseconds: 500),
+          ))?.ready ??
+          false,
+  };
+  return usable ? w : null;
 }
 
-/// The worker for [ws] when one at this version has finished warming up;
-/// never starts or stops one.
-Future<WorkerRecord?> readyWorker(Workspace ws) async {
-  final w = Registry.entry(ws.root);
-  if (w == null || w.version != codegraphVersion) return null;
-  final status = await workerStatus(
-    w,
-    connect: const Duration(milliseconds: 300),
-    reply: const Duration(milliseconds: 500),
-  );
-  return status != null && status.ready && status.version == codegraphVersion
-      ? w
-      : null;
-}
+/// The worker for [ws] when it has finished warming up; never starts one.
+Future<WorkerRecord?> readyWorker(Workspace ws) =>
+    workerFor(ws, WorkerNeed.ready);
 
 /// A running worker for [ws] at this version, starting one if needed. Null
 /// when none answered within [wait].
@@ -134,24 +157,20 @@ Future<WorkerRecord?> ensureWorker(
   Workspace ws, {
   Duration wait = const Duration(seconds: 60),
 }) async {
-  if (await _current(ws) case final w?) {
-    if (await workerStatus(w) != null) return w;
-  }
+  if (await workerFor(ws, WorkerNeed.answering) case final w?) return w;
   await _spawn(ws);
   final deadline = DateTime.now().add(wait);
   while (DateTime.now().isBefore(deadline)) {
     await Future<void>.delayed(const Duration(milliseconds: 100));
-    final w = Registry.entry(ws.root);
-    if (w == null || w.version != codegraphVersion) continue;
-    if (await workerStatus(w) != null) return w;
+    if (await workerFor(ws, WorkerNeed.answering) case final w?) return w;
   }
   return null;
 }
 
-/// Starts a worker for [ws] in the background unless one at this version is
-/// alive. Does not wait for it.
+/// Starts a worker for [ws] in the background unless one is alive. Does not
+/// wait for it.
 Future<void> startWorker(Workspace ws) async {
-  if (await _current(ws) != null) return;
+  if (await workerFor(ws, WorkerNeed.alive) != null) return;
   await _spawn(ws);
 }
 

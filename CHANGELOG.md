@@ -4,6 +4,22 @@ The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
 and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
 
+## 4.6.1 - 2026-10-20
+
+### Fixed
+
+- Stopping a worker that could not be reached killed its recorded pid. A
+  dead worker's pid can belong to another program by then, and eviction,
+  `doctor --stop` and replacing an older version all took that path. An
+  unreachable worker's record is now dropped instead; nothing is killed.
+- The record of a dead worker is dropped when it is found, so the next call
+  starts a new worker instead of waiting on the dead one.
+
+### Changed
+
+- One check decides whether this checkout's worker is usable, by how far it
+  is along (alive, answering, ready), for every caller.
+
 ## 4.6.0 - 2026-10-20
 
 ### Changed

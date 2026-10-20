@@ -313,19 +313,25 @@ Future<ShowAreaAnswer> showArea(Engine engine, String dir) async {
             (d, f.path),
     ],
     providers: providers,
-    importedFromOutside:
-        ([
-              for (final f in lib)
-                (f.path, idx.importers(f.path).where((p) => !inside(p)).length),
-            ].where((e) => e.$2 > 0).toList()..sort(
-              (a, b) => b.$2.compareTo(a.$2),
-            ))
-            .take(15)
-            .toList(),
+    importedFromOutside: _importedFromOutside(idx, lib, inside),
     consumed: consumed,
     notesPath: notes == null ? null : idx.workspace.relative(notes),
     notes: notes == null ? const [] : File(notes).readAsLinesSync(),
   );
+}
+
+/// The area's files that files outside it import, with how many do, most
+/// imported first.
+List<(String, int)> _importedFromOutside(
+  OutlineIndex idx,
+  List<FileOutline> area,
+  bool Function(String path) inside,
+) {
+  final counted = [
+    for (final f in area)
+      (f.path, idx.importers(f.path).where((p) => !inside(p)).length),
+  ].where((e) => e.$2 > 0).toList()..sort((a, b) => b.$2.compareTo(a.$2));
+  return counted.take(15).toList();
 }
 
 String? _notesFor(Workspace ws, String dir) {
