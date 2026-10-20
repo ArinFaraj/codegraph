@@ -118,8 +118,28 @@ class AmbiguousAnswer extends Answer {
   };
 }
 
+/// An answer made of its own header lines followed by other answers, each
+/// rendered in full with its own line limit.
+abstract class ComposedAnswer extends Answer {
+  List<Answer> get parts;
+
+  /// What separates the header and each part.
+  String get separator => '\n\n';
+
+  @override
+  String render({required bool asJson, required int? limit}) {
+    if (asJson) return super.render(asJson: true, limit: limit);
+    final head = TextOut();
+    write(head);
+    return [
+      head.build(null),
+      for (final a in parts) a.render(asJson: false, limit: limit),
+    ].join(separator);
+  }
+}
+
 /// One answer per declaration, for a name that matches a few of them.
-class EachAnswer extends Answer {
+class EachAnswer extends ComposedAnswer {
   EachAnswer(this.verb, this.query, this.answers);
 
   @override
@@ -138,15 +158,7 @@ class EachAnswer extends Answer {
   );
 
   @override
-  String render({required bool asJson, required int? limit}) {
-    if (asJson) return super.render(asJson: true, limit: limit);
-    final head = TextOut();
-    write(head);
-    return [
-      head.build(null),
-      for (final a in answers) a.render(asJson: false, limit: limit),
-    ].join('\n\n');
-  }
+  List<Answer> get parts => answers;
 
   @override
   Map<String, Object?> toJson() => {

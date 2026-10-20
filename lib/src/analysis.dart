@@ -12,6 +12,8 @@ import 'package:analyzer/source/error_processor.dart';
 import 'package:analyzer/source/file_source.dart';
 import 'package:analyzer/source/line_info.dart';
 // ignore_for_file: implementation_imports
+import 'package:analyzer/src/analysis_options/analysis_options.dart'
+    show AnalysisOptionsImpl;
 import 'package:analyzer/src/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart';
 import 'package:analyzer/src/dart/analysis/experiments.dart';
@@ -352,6 +354,18 @@ class Analysis {
       analysisOptions: _optionsFor(abs),
     );
     return _processed(path, abs, diagnostics, LineInfo.fromContent(text));
+  }
+
+  /// Analyzer plugins the workspace root's analysis options enable, with
+  /// includes applied. `check` does not run them; `dart analyze` does.
+  List<String> analyzerPlugins() {
+    final options = _optionsFor('${workspace.root}/pubspec.yaml');
+    if (options is! AnalysisOptionsImpl) return const [];
+    return {
+      for (final c in options.pluginConfigurations)
+        if (c.isEnabled) c.name,
+      ...options.enabledLegacyPluginNames,
+    }.toList();
   }
 
   AnalysisOptions? _optionsFor(String abs) {

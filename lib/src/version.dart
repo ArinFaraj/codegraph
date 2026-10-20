@@ -1,1 +1,1 @@
-const codegraphVersion = '4.5.1';
+const codegraphVersion = '4.5.2';

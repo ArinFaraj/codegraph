@@ -160,7 +160,7 @@ Future<Answer> check(
       [for (final (_, ps) in found) ...ps],
       found.length,
       engine.sources,
-      engine.workspace.analyzerPlugins(),
+      engine.analysis.analyzerPlugins(),
     );
   }
   final ledger = engine.ledger;

@@ -66,18 +66,20 @@ a rename refusal; `check` does not run analyzer plugins, `dart analyze` does.
 
 The first starts the worker when a session starts, which hides the analyzer
 warm-up. The second reports what each tool call broke. Both print nothing
-when there is nothing to say:
+when there is nothing to say, do nothing on a machine without codegraph, and
+need no script in the repository. When the Dart package sits below the
+project root, `cd` into it (`cd "$CLAUDE_PROJECT_DIR/app"`):
 
 ```json
 {
   "hooks": {
     "SessionStart": [
-      {"hooks": [{"type": "command", "command": "codegraph doctor --warm >/dev/null 2>&1 &"}]}
+      {"hooks": [{"type": "command", "command": "PATH=\"$HOME/.local/bin:$PATH\"; command -v codegraph >/dev/null || exit 0; cd \"$CLAUDE_PROJECT_DIR\" && (codegraph doctor --warm >/dev/null 2>&1 &)"}]}
     ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|Bash",
-        "hooks": [{"type": "command", "command": "codegraph check --hook", "timeout": 20}]
+        "hooks": [{"type": "command", "command": "PATH=\"$HOME/.local/bin:$PATH\"; command -v codegraph >/dev/null || exit 0; cd \"$CLAUDE_PROJECT_DIR\" && exec codegraph check --hook", "timeout": 20}]
       }
     ]
   }

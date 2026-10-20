@@ -28,6 +28,8 @@ void main() {
 input_directory: lib/i18n/yaml
 input_file_pattern: .yaml
 output_directory: lib/i18n
+base_locale: 1
+key_case: camel
 translation_overrides: true
 ''');
     write('lib/i18n/yaml/en.yaml', r'''
@@ -35,6 +37,7 @@ home:
   title: Home
   greet: Hi ${name}
   unused: Never shown
+  sign_out: Sign out
 ''');
     write('lib/i18n/yaml/ar.yaml', r'''
 home:
@@ -71,6 +74,9 @@ class TranslationsHomeEn {
   String get unused =>
       TranslationOverrides.string(_root.$meta, 'home.unused', {}) ??
       'Never shown';
+  String get signOut =>
+      TranslationOverrides.string(_root.$meta, 'home.signOut', {}) ??
+      'Sign out';
 }
 ''');
     write('lib/features/home/home_title.dart', '''
@@ -144,5 +150,21 @@ String welcome(String name) => t.home.greet(name: name);
     final a = await refs(engine, 'home.nothing');
     expect(a.exit, Exit.failed);
     expect(text(a), isNot(contains('translation key')));
+  });
+
+  test('a key slang camel-cased is found under its YAML spelling', () async {
+    final out = text(await refs(engine, 'home.signOut'));
+    expect(out, startsWith('translation key home.signOut, missing in ar\n'));
+    expect(out, contains('  en   lib/i18n/yaml/en.yaml:5  Sign out'));
+  });
+
+  test('slang added after the first query is picked up', () async {
+    final slang = File('${root.path}/slang.yaml');
+    final kept = slang.readAsStringSync();
+    slang.deleteSync();
+    expect((await refs(engine, 'home.title')).exit, Exit.failed);
+    slang.writeAsStringSync(kept);
+    final out = text(await refs(engine, 'home.title'));
+    expect(out, startsWith('translation key home.title\n'));
   });
 }

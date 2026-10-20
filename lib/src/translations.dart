@@ -28,26 +28,42 @@ class SlangConfig {
   static SlangConfig? read(Workspace ws) {
     final file = File('${ws.root}/slang.yaml');
     if (!file.existsSync()) return null;
+    final Object? parsed;
     try {
-      final y = loadYaml(file.readAsStringSync());
-      if (y is! Map) return null;
-      final input = (y['input_directory'] as String?) ?? 'lib/i18n';
-      final output = (y['output_directory'] as String?) ?? input;
-      final pattern = (y['input_file_pattern'] as String?) ?? '.i18n.json';
-      final base = (y['base_locale'] as String?) ?? 'en';
-      final name = (y['output_file_name'] as String?) ?? 'strings.g.dart';
-      final stem = name.substring(0, name.length - '.g.dart'.length);
-      final split = '$output/${stem}_$base.g.dart';
-      return SlangConfig(
-        input,
-        pattern,
-        File('${ws.root}/$split').existsSync() ? split : '$output/$name',
-        base,
-      );
+      parsed = loadYaml(file.readAsStringSync());
     } on Exception {
       return null;
     }
+    if (parsed is! Map) return null;
+    final y = parsed;
+    String option(String key, String fallback) => switch (y[key]) {
+      final String s => s,
+      _ => fallback,
+    };
+    final input = option('input_directory', 'lib/i18n');
+    final output = option('output_directory', input);
+    final base = option('base_locale', 'en');
+    final name = option('output_file_name', 'strings.g.dart');
+    final stem = name.replaceFirst(RegExp(r'(\.g)?\.dart$'), '');
+    final split = '$output/${stem}_$base.g.dart';
+    return SlangConfig(
+      input,
+      option('input_file_pattern', '.i18n.json'),
+      File('${ws.root}/$split').existsSync() ? split : '$output/$name',
+      base,
+    );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      other is SlangConfig &&
+      other.inputDir == inputDir &&
+      other.pattern == pattern &&
+      other.baseFile == baseFile &&
+      other.baseLocale == baseLocale;
+
+  @override
+  int get hashCode => Object.hash(inputDir, pattern, baseFile, baseLocale);
 
   /// Locale to its workspace-relative YAML file, base locale first.
   Map<String, String> localeFiles(Workspace ws) {
@@ -80,11 +96,11 @@ class TranslationIndex {
   final SlangConfig config;
   final Map<String, Element> keys;
 
-  static Future<TranslationIndex?> build(Engine engine) async {
-    final config = SlangConfig.read(engine.workspace);
-    if (config == null || !engine.analysis.isAnalyzed(config.baseFile)) {
-      return null;
-    }
+  static Future<TranslationIndex?> build(
+    Engine engine,
+    SlangConfig config,
+  ) async {
+    if (!engine.analysis.isAnalyzed(config.baseFile)) return null;
     final unit = await engine.analysis.unit(config.baseFile);
     if (unit == null) return null;
     final keys = <String, Element>{};
@@ -187,7 +203,7 @@ MapEntry<Object?, YamlNode>? _child(YamlMap map, String segment) {
 
 /// A verb's answer for the getter serving a translation key, preceded by the
 /// key's line in each locale.
-class TranslationAnswer extends Answer {
+class TranslationAnswer extends ComposedAnswer {
   TranslationAnswer(this.key, this.locales, this.inner);
 
   final String key;
@@ -199,6 +215,12 @@ class TranslationAnswer extends Answer {
 
   @override
   int get exit => inner.exit;
+
+  @override
+  List<Answer> get parts => [inner];
+
+  @override
+  String get separator => '\n';
 
   @override
   void write(TextOut out) {
@@ -218,14 +240,6 @@ class TranslationAnswer extends Answer {
   }
 
   @override
-  String render({required bool asJson, required int? limit}) {
-    if (asJson) return super.render(asJson: true, limit: limit);
-    final head = TextOut();
-    write(head);
-    return '${head.build(null)}\n${inner.render(asJson: false, limit: limit)}';
-  }
-
-  @override
   Map<String, Object?> toJson() => {
     'key': key,
     'locales': [
@@ -241,21 +255,44 @@ String _clip(String s) {
   return one.length <= 90 ? one : '${one.substring(0, 87)}...';
 }
 
-/// [body] run on the getter serving the translation key [query] names, or
-/// null when it names no key.
-Future<Answer?> translationAnswer(
-  Engine engine,
-  String query,
-  Future<Answer> Function(Target target) body,
-) async {
-  final index = await engine.translations();
-  final key = index?.keyFor(query);
-  if (index == null || key == null) return null;
-  final target = targetOf(engine.analysis, index.keys[key]!);
-  if (target == null) return null;
-  return TranslationAnswer(
-    key,
-    localeLines(engine.workspace, index.config, key),
-    await body(target),
-  );
+/// Translation keys as `refs` and `show` see them. The index is built on
+/// first use and kept while `slang.yaml` reads the same and the generated base
+/// file is unchanged; a build that finds nothing is not kept, so a project
+/// that adds slang or finishes indexing is picked up on the next query.
+class Translations {
+  Translations(this._engine);
+
+  final Engine _engine;
+  TranslationIndex? _index;
+
+  void filesChanged(Iterable<String> paths) {
+    if (_index case final i? when paths.contains(i.config.baseFile)) {
+      _index = null;
+    }
+  }
+
+  /// [body] run on the getter serving the key [query] names, or null when it
+  /// names no key.
+  Future<Answer?> answer(
+    String query,
+    Future<Answer> Function(Target target) body,
+  ) async {
+    final index = await _current();
+    final key = index?.keyFor(query);
+    if (index == null || key == null) return null;
+    final target = targetOf(_engine.analysis, index.keys[key]!);
+    if (target == null) return null;
+    return TranslationAnswer(
+      key,
+      localeLines(_engine.workspace, index.config, key),
+      await body(target),
+    );
+  }
+
+  Future<TranslationIndex?> _current() async {
+    final config = SlangConfig.read(_engine.workspace);
+    if (config == null) return _index = null;
+    if (_index case final i? when i.config == config) return i;
+    return _index = await TranslationIndex.build(_engine, config);
+  }
 }

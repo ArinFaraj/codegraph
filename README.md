@@ -150,12 +150,18 @@ was down is still new to it.
     "PostToolUse": [
       {
         "matcher": "Edit|Write|Bash",
-        "hooks": [{"type": "command", "command": "codegraph check --hook", "timeout": 20}]
+        "hooks": [{"type": "command", "command": "PATH=\"$HOME/.local/bin:$PATH\"; command -v codegraph >/dev/null || exit 0; cd \"$CLAUDE_PROJECT_DIR\" && exec codegraph check --hook", "timeout": 20}]
       }
     ]
   }
 }
 ```
+
+The command puts `~/.local/bin`, where `install-native` writes the binary,
+ahead of the slower pub wrapper, does nothing on a machine without codegraph,
+and runs from the project directory, because the hook runs in whatever
+directory the session is in. When the Dart package sits below the project
+root, `cd` into it instead (`cd "$CLAUDE_PROJECT_DIR/app"`).
 
 Shell commands matter: in the sessions this was built from, most Dart edits
 were made by scripts and `sed`, not by the Edit tool.

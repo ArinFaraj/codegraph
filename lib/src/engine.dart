@@ -47,22 +47,11 @@ class Engine {
     return delta;
   }
 
-  Future<TranslationIndex?>? _translations;
-  String? _translationsFile;
-
-  /// The slang translation index, rebuilt when the generated base file
-  /// changes.
-  Future<TranslationIndex?> translations() =>
-      _translations ??= TranslationIndex.build(this).then((index) {
-        _translationsFile = index?.config.baseFile;
-        return index;
-      });
+  late final translations = Translations(this);
 
   void filesChanged(Iterable<String> paths) {
     final list = paths.toList();
-    if (_translationsFile != null && list.contains(_translationsFile)) {
-      _translations = null;
-    }
+    translations.filesChanged(list);
     sources.invalidate(list);
     outline.refresh(list, sources.text);
   }
@@ -96,8 +85,7 @@ class Engine {
     Ambiguous(:final targets) when targets.length <= eachTargetCap =>
       EachAnswer(verb, query, [for (final t in targets) await body(t)]),
     final Missing m =>
-      await translationAnswer(this, query, body) ??
-          lookupFailure(verb, query, m),
+      await translations.answer(query, body) ?? lookupFailure(verb, query, m),
     final Unresolved u => lookupFailure(verb, query, u),
   };
 

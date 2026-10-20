@@ -4,6 +4,28 @@ The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
 and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
 
+## 4.5.2 - 2026-10-20
+
+### Fixed
+
+- A worker that answered a query before `slang.yaml` existed, or before the
+  generated strings file was indexed, never found translation keys until it
+  restarted. A build that finds nothing is no longer kept, and the index is
+  rebuilt when `slang.yaml` reads differently.
+- A non-string value in `slang.yaml` made the query fail instead of falling
+  back to slang's default.
+- `check --all` missed analyzer plugins enabled through an `include:`. The
+  names now come from the analyzer's own merged options.
+
+### Changed
+
+- The suggested hooks are one-line commands with no script in the
+  repository: they skip machines without codegraph and run from the project
+  directory. They carry no version check, so they keep working across major
+  versions.
+- Translation keys are one object the engine forwards to, instead of state
+  and branches inside the engine.
+
 ## 4.5.1 - 2026-10-20
 
 ### Fixed
