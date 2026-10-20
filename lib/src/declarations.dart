@@ -235,3 +235,22 @@ List<DeclNode> declarationsOf(CompilationUnit unit) {
   }
   return out;
 }
+
+/// Where [d]'s source starts and ends: from its annotations (after its doc
+/// comment), and for a field or variable from its `final`/`var`/type, through
+/// the end of the declaration.
+(int, int) sourceSpan(DeclNode d) {
+  AstNode node = d.node;
+  if (node is VariableDeclaration) {
+    final whole = node.parent?.parent;
+    if (whole is FieldDeclaration || whole is TopLevelVariableDeclaration) {
+      node = whole!;
+    }
+  }
+  final start = node is AnnotatedNode
+      ? (node.metadata.isNotEmpty
+            ? node.metadata.first.offset
+            : node.firstTokenAfterCommentAndMetadata.offset)
+      : node.offset;
+  return (start, node.end);
+}

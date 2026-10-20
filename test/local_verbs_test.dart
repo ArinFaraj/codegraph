@@ -5,7 +5,6 @@ import 'package:codegraph/src/result.dart';
 import 'package:codegraph/src/args.dart';
 import 'package:codegraph/src/find.dart';
 import 'package:codegraph/src/show_file.dart';
-import 'package:codegraph/src/why.dart';
 import 'package:codegraph/src/workspace.dart';
 import 'package:test/test.dart';
 
@@ -121,23 +120,6 @@ void main() {
     expect(out, contains('lib/core  ('));
     expect(out, contains('sessionProvider'));
     expect(out, contains('most used outside lib/core'));
-  });
-
-  test('why prints the import path, in either direction', () {
-    final r = why(
-      idx,
-      'lib/features/home/home_page.dart',
-      'lib/core/session.dart',
-    );
-    expect(text(r), contains('reaches lib/core/session.dart in 1 step'));
-    final back = why(idx, 'session.dart', 'home_page.dart');
-    expect(text(back), contains('the reverse of what you asked'));
-    final none = why(
-      idx,
-      'lib/core/keys.dart',
-      'packages/app_ui/lib/button.dart',
-    );
-    expect(text(none), contains('not connected'));
   });
 
   test('the outline cache is reused and refreshed when a file changes', () {

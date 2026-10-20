@@ -6,7 +6,6 @@ import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:codegraph/src/analysis.dart';
 import 'package:codegraph/src/engine.dart';
-import 'package:codegraph/src/impact.dart';
 import 'package:codegraph/src/refs.dart';
 import 'package:codegraph/src/show.dart';
 import 'package:codegraph/src/result.dart';
@@ -87,11 +86,11 @@ void main() {
   });
 
   test('text and JSON come from the same answer', () async {
-    final answer = await impact(engine, SymbolSeed('sessionProvider'));
-    final json = answer.toJson();
+    final answer = await refs(engine, 'sessionProvider');
     final out = text(answer);
-    for (final path in (json['direct'] as Map).keys) {
-      expect(out, contains('  $path  ('));
+    for (final use in answer.toJson()['uses'] as List) {
+      final u = use as Map;
+      expect(out, contains('  ${u['path']}:${u['line']}  '));
     }
     final show = (await showSymbol(engine, 'sessionProvider')).toJson();
     expect(
@@ -113,13 +112,52 @@ void main() {
     expect(out, contains('uses: '));
   });
 
-  test('an ambiguous name lists its candidates', () async {
+  test('a name shared by a few declarations is answered for each', () async {
     final r = await refs(engine, 'save');
-    expect(r.exit, Exit.ambiguous);
-    expect(text(r), contains('Store.save  lib/core/store.dart:2'));
+    expect(r.exit, Exit.ok);
+    final out = text(r);
+    expect(out, startsWith('"save" names 3 declarations; each is answered'));
+    expect(out, contains('refs Store.save (method, lib/core/store.dart:2)'));
+    expect(out, contains('refs DiskStore.save (method'));
+    expect(
+      out,
+      contains('refs FakeStore.save (method, test/home_test.dart:8)'),
+    );
+    expect((r.toJson()['answers'] as List).length, 3);
     final missing = await refs(engine, 'noSuchThing');
     expect(missing.exit, Exit.failed);
     expect(text(missing), contains('no declaration named "noSuchThing"'));
+  });
+
+  test('show prints the declaration\'s source with line numbers', () async {
+    final provider = text(await showSymbol(engine, 'sessionProvider'));
+    expect(
+      provider,
+      contains(
+        '8  final sessionProvider = Provider<Session>((ref) => Session(\'t\'));',
+      ),
+    );
+    final type = text(await showSymbol(engine, 'Deps'));
+    expect(
+      type,
+      contains('  Holds a ref so feature code can read providers later.'),
+    );
+    expect(type, contains('13  class Deps {\n14    Deps(this.ref);'));
+    expect(type, isNot(contains('members:')));
+    final json = (await showSymbol(engine, 'Deps')).toJson();
+    expect((json['source'] as Map)['firstLine'], 13);
+  });
+
+  test('refs -C prints numbered context around each use', () async {
+    final ctx = text(await refs(engine, 'Wallets.sandbox', context: 1));
+    expect(
+      ctx,
+      contains(
+        '  lib/features/wallet_list.dart:3\n'
+        '      2  \n'
+        '    > 3  int walletCount() => Wallets.sandbox.length;',
+      ),
+    );
   });
 
   test('symbols can be named by file and line or file and name', () async {
@@ -138,37 +176,6 @@ void main() {
       'lib/features/labels.dart:Wallets.sandbox',
     );
     expect(text(byName), startsWith('refs Wallets.sandbox (field'));
-  });
-
-  test('impact of a symbol walks uses, one step further, and tests', () async {
-    final r = await impact(engine, SymbolSeed('walletKey'));
-    final out = text(r);
-    expect(
-      out,
-      contains('uses it directly (1):\n  lib/features/home/home_page.dart'),
-    );
-    expect(r.toJson()['tests'], isEmpty);
-    final store = await impact(engine, SymbolSeed('Store'));
-    expect(store.toJson()['tests'], ['test/home_test.dart']);
-  });
-
-  test('impact --diff seeds from the declarations a hunk touches', () async {
-    final file = File('${root.path}/lib/core/keys.dart');
-    final original = file.readAsStringSync();
-    file.writeAsStringSync(
-      original.replaceFirst("'wallet.\$id'", "'wallet.\${id.trim()}'"),
-    );
-    try {
-      await engine.refresh();
-      final r = await impact(engine, DiffSeed(null));
-      expect((r.toJson()['seeds'] as List).map((s) => (s as Map)['name']), [
-        'walletKey',
-      ]);
-      expect(text(r), contains('lib/features/home/home_page.dart'));
-    } finally {
-      file.writeAsStringSync(original);
-      await engine.refresh();
-    }
   });
 
   test('sync picks up edits, new files and deletions', () async {

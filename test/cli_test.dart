@@ -132,8 +132,16 @@ void main() {
     final show = await run(root, ['show', 'FeatureKey']);
     expect(show.stdout, contains('enum Backend'));
 
-    final ambiguous = await run(root, ['refs', 'save']);
-    expect(ambiguous.exitCode, 2);
+    final each = await run(root, ['refs', 'save']);
+    expect(each.exitCode, 0);
+    expect(each.stdout, contains('"save" names 3 declarations'));
+
+    final found = await run(root, ['find', 'Store']);
+    expect(found.exitCode, 0);
+    expect(found.stdout, contains('class       Store  lib/core/store.dart:1'));
+    expect(found.stdout, isNot(contains('mention')));
+    final file = await run(root, ['show', 'store.dart']);
+    expect(file.stdout, startsWith('lib/core/store.dart  ('));
 
     final stop = await run(root, ['doctor', '--stop']);
     expect(stop.stdout, contains('worker stopped'));

@@ -70,6 +70,7 @@ class AnalyzerHost {
   }
 
   Future<Engine?> _start({Ledger? ledger}) async {
+    ledger ??= Ledger.load(workspace);
     phase = 'starting the analyzer';
     try {
       final analysis = await Analysis.open(workspace, fineDeps: fineDeps);
@@ -78,6 +79,7 @@ class AnalyzerHost {
       unawaited(
         analysis.warmUp(progress: (m) => phase = m).then((_) async {
           engine.ledger ??= await Ledger.build(engine);
+          await engine.resolve('codegraphWarmUpLookup');
           phase = 'ready';
           say(
             'warm: ${analysis.fileCount} files in '
@@ -114,6 +116,7 @@ class AnalyzerHost {
   }
 
   Future<void> dispose() async {
+    _engine?.ledger?.save(workspace);
     try {
       await _engine?.analysis.dispose();
     } catch (_) {}

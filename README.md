@@ -30,21 +30,18 @@ codegraph check [files...]          new problems these files cause, in them
 codegraph check --all               every problem `dart analyze` reports,
                                     except analyzer plugins
 codegraph check --hook              for an agent's after-tool hook (below)
-codegraph find <name>               where something is declared (instant)
+codegraph find <name>               where something is declared
 codegraph show <file|dir|symbol>    outline of a file, digest of a directory,
-                                    or a symbol: signature, subtypes,
+                                    or a symbol: its source, subtypes,
                                     overrides, use counts; providers list
                                     their readers by role
-codegraph refs <symbol>             every use, path:line, grouped by role
-codegraph impact <symbol|file>      what uses it, one step further, and the
-codegraph impact --diff [--base R]  tests that reach it; --diff seeds from
-                                    the working tree or the branch since R
+codegraph refs <symbol> [-C N]      every use, path:line, grouped by role;
+                                    -C N adds N lines of source around each
 codegraph rename <symbol> <new>     dry run of a complete rename; --apply
                                     writes it, re-analyzes the affected
                                     files, and rolls back on new errors
 codegraph rename <a.dart> <b.dart>  moves a file and rewrites every import,
                                     export and conditional import of it
-codegraph why <fileA> <fileB>       the import path from one file to another
 codegraph doctor [--warm|--stop|--restart]
 ```
 
@@ -62,23 +59,31 @@ ref.read (1):
 ...
 ```
 
-Exit codes: 0 answered, 1 not found or failed, 2 ambiguous (candidates
-listed), 3 rename refused or rolled back, 64 usage, 66 cannot analyze (no
-`pubspec.yaml`, or no `.dart_tool/package_config.json`: run `pub get`).
+A name shared by up to five declarations is answered for each of them by
+`show` and `refs`; with more, the candidates are listed (exit 2). `show`
+prints a declaration's source up to 60 lines; a longer type shows its members
+instead, a longer function its first 60 lines.
+
+Exit codes: 0 answered, 1 not found, failed, or `check` found problems, 2
+ambiguous (candidates listed), 3 rename refused or rolled back, 64 usage, 66
+cannot analyze (no `pubspec.yaml`, or no `.dart_tool/package_config.json`:
+run `pub get`).
 
 ## How it works
 
-- `find`, `show <file>`, `show <dir>` and `why` parse source files. They are
+- `find`, `show <file>` and `show <dir>` read a parse-only outline. They are
   exact about what a file declares and imports, never about what a name
-  resolves to, and they answer in a fraction of a second without the worker.
-  Their cache lives in `.dart_tool/codegraph/outline.json`.
-- `check`, `refs`, `impact`, `rename` and `show <symbol>` go to the worker: one
+  resolves to. A ready worker answers them from memory in under 0.1s;
+  without one, the client reads the outline cache in
+  `.dart_tool/codegraph/outline.json`, which takes about a second on a large
+  app.
+- `check`, `refs`, `rename` and `show <symbol>` go to the worker: one
   background process per checkout that holds the Dart analyzer with its
   search index. Before every answer it checks every analyzed file for
   changes. Its answers cover exactly what `dart analyze` covers, including
   `test/`, `integration_test/`, `tool/` and path packages, and honor
   `analysis_options.yaml` excludes.
-- The first answer after the worker starts waits for analysis: about 30
+- The first answer after the worker starts waits for analysis: about 25
   seconds on a 3,000-file Flutter app with a warm cache, a few minutes the
   first time ever. Progress is printed to stderr. After that, answers take
   milliseconds, and an edit is reflected within a second.
@@ -115,8 +120,12 @@ modification time falls inside the command's run. It prints nothing and
 exits 0 unless something new broke, and then it prints the problems on
 stderr and exits 2, which Claude Code shows to the agent next to the tool
 result. A shell command that wrote nothing costs about 60ms; a check after an
-edit takes under a second, after an API change a few seconds. It gives up
-silently after 15 seconds, and while the worker is still warming up.
+edit takes under a second, after an API change a few seconds. It never waits
+for a worker to start: when none is ready, it notes what the call may have
+written, starts the worker in the background and returns, and the first call
+after warm-up checks those writes too. The worker saves its ledger when it
+stops and reloads it on the same commit, so a problem introduced while it
+was down is still new to it.
 
 ```json
 {

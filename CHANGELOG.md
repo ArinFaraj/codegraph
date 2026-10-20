@@ -4,6 +4,37 @@ The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
 and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
 
+## 4.4.0 - 2026-10-20
+
+### Added
+
+- `show <symbol>` prints the declaration's source with line numbers, up to 60
+  lines. Half of all lookups in the reference app's agent sessions were
+  followed by reading the file they found.
+- `show` and `refs` answer each declaration when a name matches up to five,
+  instead of exiting 2 with a list.
+- `refs -C N` prints N lines of source around each use.
+- The worker saves its `check` ledger when it stops and reloads it on the
+  same commit, within a day.
+
+### Changed
+
+- `find`, `show <file>` and `show <dir>` are answered by a ready worker from
+  memory (0.1s on the reference app, against 0.8s from the cache).
+- `find` no longer prints "N files mention it": the count was by name, so
+  every field called `gate` showed the same number.
+- `check --hook` never waits for a worker to start. It notes the call's
+  writes, starts the worker in the background and returns; the first call
+  after warm-up checks them. A cold hook call took up to 11s before.
+- Warm-up runs one symbol lookup before reporting ready, which moves about 5s
+  off the first `refs` or `show` of a session.
+
+### Removed
+
+- `why` and `impact`, used about ten times each in the reference app's
+  sessions. `show <file>` lists imports and importers, `refs` lists uses,
+  `check` says what a change broke; calling either names the replacement.
+
 ## 4.3.0 - 2026-10-20
 
 ### Added

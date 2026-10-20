@@ -3,7 +3,6 @@ import 'dart:io';
 import 'client.dart';
 import 'commands.dart';
 import 'doctor.dart';
-import 'impact.dart';
 import 'move.dart';
 import 'refs.dart';
 import 'rename.dart';
@@ -11,13 +10,11 @@ import 'request.dart';
 import 'show.dart';
 import 'native_install.dart' as native_install;
 import 'outline.dart';
+import 'outline_request.dart';
 import 'result.dart';
-import 'args.dart';
 import 'check.dart';
 import 'check_hook.dart';
 import 'find.dart';
-import 'show_file.dart';
-import 'why.dart';
 import 'version.dart';
 import 'worker.dart';
 import 'workspace.dart';
@@ -39,17 +36,14 @@ codegraph $codegraphVersion - exact answers about a Dart or Flutter repository
                                       or a symbol: signature, subtypes,
                                       overrides, use counts; providers list
                                       their readers by role
-  codegraph refs <symbol>             every use, path:line, grouped by role
-                                      (ref.watch, call, implement, ...)
-  codegraph impact <symbol|file>      what uses it, one step further, and the
-  codegraph impact --diff [--base R]  tests that reach it; --diff seeds from
-                                      the working tree or the branch since R
+  codegraph refs <symbol> [-C N]      every use, path:line, grouped by role
+                                      (ref.watch, call, implement, ...); -C N
+                                      prints N lines of source around each
   codegraph rename <symbol> <new>     dry run of a complete rename; --apply
                                       writes it, re-analyzes the affected
                                       files, and rolls back on new errors
   codegraph rename <a.dart> <b.dart>  moves a file and rewrites every import
                                       and export of it, the same way
-  codegraph why <fileA> <fileB>       the import path from one file to another
   codegraph doctor [--warm|--stop|--restart]
                                       worker and setup status
 
@@ -57,7 +51,7 @@ symbols: Name, Owner.member, path/to/file.dart:name, or path/to/file.dart:LINE
          (the outermost declaration named on that line)
 flags:   --json, --limit N (default 40 rows), --all
 
-check, refs, impact, rename and show <symbol> are answered by a background worker
+check, refs, rename and show <symbol> are answered by a background worker
 that keeps the Dart analyzer warm for this checkout and exits after 20 idle
 minutes. Its answers cover every file `dart analyze` sees, as it is on disk
 now. Exit codes: 0 answered, 1 not found or failed, 2 ambiguous (candidates
@@ -73,12 +67,15 @@ const _removed = {
   'provider': 'show <provider>',
   'callers': 'refs <symbol>',
   'impls': 'show <type> (subtypes are listed)',
-  'path': 'why <fileA> <fileB>',
-  'change': 'impact <symbol|file>',
-  'review': 'impact --diff --base <ref>',
-  'diff': 'impact --diff --base <ref>',
-  'affected-tests':
-      'impact --diff (tests section), or the repository\'s own test selector',
+  'path': 'show <file> (imports and importers)',
+  'change': 'refs <symbol>, or check for what a change broke',
+  'review': 'check, then the repository\'s own test selector',
+  'diff': 'check, then the repository\'s own test selector',
+  'affected-tests': 'the repository\'s own test selector',
+  'impact':
+      'refs <symbol> for its uses, check for what a change broke, and the '
+      'repository\'s own test selector for tests',
+  'why': 'show <file> (imports and importers)',
   'lint': 'nothing: architecture rules belong in the repository\'s tests',
   'build': 'nothing: there is nothing to build; answers are computed on demand',
   'daemon': 'doctor --warm / --stop',
@@ -88,7 +85,7 @@ const _removed = {
   'attention': 'nothing',
   'health': 'nothing',
   'unused': 'refs <symbol> (0 uses means unused)',
-  'untested': 'impact <symbol> (tests section)',
+  'untested': 'refs <symbol> (tests are listed apart)',
   'plan': 'show <dir>',
   'blueprint': 'show <dir>',
   'trace': 'find <name> for each frame',
@@ -155,54 +152,36 @@ Future<int> runCli(List<String> argv) async {
           limit: c.limit,
         ),
       );
-    case 'find':
-      if (c.args.length != 1) return _usage('codegraph find <name>');
-      return print(find(OutlineIndex.load(ws), c.args.single));
-    case 'why':
-      if (c.args.length != 2) return _usage('codegraph why <fileA> <fileB>');
-      return print(why(OutlineIndex.load(ws), c.args[0], c.args[1]));
-    case 'show':
-      if (c.args.length != 1) return _usage('codegraph show <file|dir|symbol>');
-      final idx = OutlineIndex.load(ws);
-      return switch (classifyArg(idx, c.args.single, directories: true)) {
-        FileArg(:final path) => print(showFile(idx, path)),
-        DirArg(:final path) => print(showArea(idx, path)),
-        ChoiceArg(:final candidates) => print(
-          FileChoiceAnswer('show', c.args.single, candidates),
-        ),
-        SymbolArg(:final query) => _ask(
-          ws,
-          ShowRequest(query, json: c.json, limit: c.limit),
-        ),
-      };
-    case 'refs':
-      if (c.args.length != 1) return _usage('codegraph refs <symbol>');
-      return _ask(ws, RefsRequest(c.args.single, json: c.json, limit: c.limit));
-    case 'impact':
-      if (c.args.length != (c.diff ? 0 : 1)) {
+    case 'find' || 'show':
+      if (c.args.length != 1) {
         return _usage(
-          'codegraph impact <symbol|file>, or impact --diff [--base <ref>]',
+          c.verb == 'find'
+              ? 'codegraph find <name>'
+              : 'codegraph show <file|dir|symbol>',
         );
       }
-      if (c.diff) {
+      final arg = c.args.single;
+      if (await readyWorker(ws) != null) {
         return _ask(
           ws,
-          ImpactRequest(DiffSeed(c.base), json: c.json, limit: c.limit),
+          OutlineRequest(c.verb, arg, json: c.json, limit: c.limit),
         );
       }
       final idx = OutlineIndex.load(ws);
-      final ImpactSeed seed;
-      switch (classifyArg(idx, c.args.single, directories: false)) {
-        case FileArg(:final path):
-          seed = FileSeed(path);
-        case SymbolArg(:final query):
-          seed = SymbolSeed(query);
-        case ChoiceArg(:final candidates):
-          return print(FileChoiceAnswer('impact', c.args.single, candidates));
-        case DirArg():
-          return _usage('codegraph impact <symbol|file>');
-      }
-      return _ask(ws, ImpactRequest(seed, json: c.json, limit: c.limit));
+      if (c.verb == 'find') return print(find(idx, arg));
+      if (showPath(idx, arg) case final answer?) return print(answer);
+      return _ask(ws, ShowRequest(arg, json: c.json, limit: c.limit));
+    case 'refs':
+      if (c.args.length != 1) return _usage('codegraph refs <symbol>');
+      return _ask(
+        ws,
+        RefsRequest(
+          c.args.single,
+          context: c.context,
+          json: c.json,
+          limit: c.limit,
+        ),
+      );
     case 'rename':
       if (c.args.length != 2) {
         return _usage(

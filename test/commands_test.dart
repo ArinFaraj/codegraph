@@ -1,5 +1,4 @@
 import 'package:codegraph/src/commands.dart';
-import 'package:codegraph/src/impact.dart';
 import 'package:codegraph/src/move.dart';
 import 'package:codegraph/src/refs.dart';
 import 'package:codegraph/src/rename.dart';
@@ -15,7 +14,6 @@ void main() {
     expect(c.apply, isTrue);
     expect(c.limit, 5);
     expect(Command.parse(['refs', 'x', '--all']).limit, isNull);
-    expect(Command.parse(['impact', '--base', 'dev']).diff, isTrue);
     expect(Command.parse(['refs', '--bogus']).error, 'unknown flag --bogus');
   });
 
@@ -23,9 +21,6 @@ void main() {
     final requests = <WorkerRequest>[
       RefsRequest('x', json: true, limit: null),
       ShowRequest('A.b', json: false, limit: 40),
-      ImpactRequest(SymbolSeed('x'), json: false, limit: 40),
-      ImpactRequest(FileSeed('lib/a.dart'), json: false, limit: 40),
-      ImpactRequest(DiffSeed('dev'), json: false, limit: 40),
       RenameRequest('a', 'b', apply: true, json: false, limit: 40),
       MoveRequest(
         'lib/a.dart',

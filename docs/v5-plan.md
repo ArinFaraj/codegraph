@@ -1,7 +1,8 @@
 # codegraph v5: plan
 
-Status: M1 (`check`) shipped in 4.3.0 on 2026-10-20; the rest is a
-proposal. Measured on a krdpass snapshot through the real CLI and worker:
+Status: M1 (`check`) shipped in 4.3.0 and M3 (answers with code) in 4.4.0,
+both on 2026-10-20; M2's audit is due around 2026-11-03, and M4 and M5 wait
+on it. Measured on a krdpass snapshot through the real CLI and worker:
 `check --all` 2.3s, printing exactly what `dart analyze` prints minus the 23
 riverpod_lint infos; the hook 50 to 70ms on a shell command that wrote
 nothing, 0.4 to 0.6s after a one-file edit, 3.1s after an API break that

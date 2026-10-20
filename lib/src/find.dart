@@ -1,14 +1,13 @@
-// `find`: declarations by name, from the parse-only outline (instant).
+// `find`: declarations by name, from the parse-only outline.
 import 'kinds.dart';
 import 'outline.dart';
 import 'result.dart';
 import 'workspace.dart';
 
 class FindHit {
-  FindHit(this.decl, this.path, this.mentionedBy);
+  FindHit(this.decl, this.path);
   final Decl decl;
   final String path;
-  final int mentionedBy;
 }
 
 class FindAnswer extends Answer {
@@ -36,8 +35,8 @@ class FindAnswer extends Answer {
     }
     for (final h in hits) {
       out.row(
-        '${h.decl.kind.label.padRight(11)} ${h.decl.qualified}  ${h.path}:${h.decl.line}'
-        '  (${plural(h.mentionedBy, 'file')} mention it)',
+        '${h.decl.kind.label.padRight(11)} ${h.decl.qualified}  '
+        '${h.path}:${h.decl.line}',
       );
     }
     for (final p in files) {
@@ -55,7 +54,6 @@ class FindAnswer extends Answer {
           'name': h.decl.qualified,
           'path': h.path,
           'line': h.decl.line,
-          'mentionedBy': h.mentionedBy,
         },
     ],
     'files': files,
@@ -85,10 +83,7 @@ FindAnswer find(OutlineIndex idx, String query) {
       for (final d in f.decls)
         if (!(d.kind == DeclKind.constructor && d.name == d.owner) &&
             tier(d) >= 0)
-          (
-            tier(d),
-            FindHit(d, f.path, idx.mentions(d.name, exceptFile: f.path)),
-          ),
+          (tier(d), FindHit(d, f.path)),
   ];
   int byFlag(bool a, bool b) => (a ? 1 : 0).compareTo(b ? 1 : 0);
   ranked.sort((a, b) {
@@ -98,7 +93,6 @@ FindAnswer find(OutlineIndex idx, String query) {
       byFlag(x.decl.isMember, y.decl.isMember),
       byFlag(x.decl.name != query, y.decl.name != query),
       place(x.path).compareTo(place(y.path)),
-      y.mentionedBy.compareTo(x.mentionedBy),
     ]) {
       if (c != 0) return c;
     }

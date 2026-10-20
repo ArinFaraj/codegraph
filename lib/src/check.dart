@@ -3,6 +3,7 @@
 // new against it, in the files a change wrote and everything depending on
 // them. Problems in files outside that reach stay unacknowledged, so the
 // agent whose write reaches them is the one told.
+import 'dart:convert';
 import 'dart:io';
 
 import 'analysis.dart';
@@ -10,12 +11,69 @@ import 'classify.dart';
 import 'engine.dart';
 import 'request.dart';
 import 'result.dart';
+import 'workspace.dart';
 
 /// Problems per file, by identity, as last reported or acknowledged.
 class Ledger {
   Ledger._(this._seen);
 
   final Map<String, Map<String, int>> _seen;
+
+  /// Changed since it was last saved.
+  bool _dirty = false;
+
+  /// A saved ledger is trusted this long, and only on the commit it was
+  /// saved at: after a branch switch its "known" problems belong to other
+  /// files.
+  static const maxAge = Duration(hours: 24);
+
+  static String pathFor(Workspace ws) => '${ws.stateDir}/ledger.json';
+
+  /// The ledger the last worker saved, when it is recent and on this commit.
+  static Ledger? load(Workspace ws) {
+    try {
+      final j =
+          jsonDecode(File(pathFor(ws)).readAsStringSync())
+              as Map<String, dynamic>;
+      final saved = DateTime.parse(j['saved'] as String);
+      if (j['v'] != 1 ||
+          j['head'] != gitHead(ws) ||
+          DateTime.now().difference(saved) > maxAge) {
+        return null;
+      }
+      return Ledger._({
+        for (final e in (j['seen'] as Map<String, dynamic>).entries)
+          e.key: (e.value as Map<String, dynamic>).cast<String, int>(),
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Writes the ledger for the next worker, when it changed.
+  void save(Workspace ws) {
+    if (!_dirty) return;
+    final file = File(pathFor(ws));
+    try {
+      file.parent.createSync(recursive: true);
+      File('${file.path}.$pid.tmp')
+        ..writeAsStringSync(
+          jsonEncode({
+            'v': 1,
+            'head': gitHead(ws),
+            'saved': DateTime.now().toIso8601String(),
+            'seen': {
+              for (final e in _seen.entries)
+                if (e.value.isNotEmpty) e.key: e.value,
+            },
+          }),
+        )
+        ..renameSync(file.path);
+      _dirty = false;
+    } on FileSystemException {
+      return;
+    }
+  }
 
   static Future<Ledger> build(Engine engine) async {
     final seen = <String, Map<String, int>>{};
@@ -25,7 +83,7 @@ class Ledger {
     )) {
       seen[path] = _counts(problems);
     }
-    return Ledger._(seen);
+    return Ledger._(seen).._dirty = true;
   }
 
   /// Problems in [now] beyond what the ledger holds for [path]; records
@@ -33,6 +91,7 @@ class Ledger {
   List<Problem> acknowledge(String path, List<Problem> now) {
     final before = _seen[path] ?? const {};
     final counts = _counts(now);
+    if (!_sameCounts(before, counts)) _dirty = true;
     _seen[path] = counts;
     final budget = {...before};
     final out = <Problem>[];
@@ -46,6 +105,9 @@ class Ledger {
     }
     return out;
   }
+
+  static bool _sameCounts(Map<String, int> a, Map<String, int> b) =>
+      a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
 
   static Map<String, int> _counts(List<Problem> problems) {
     final out = <String, int>{};
@@ -131,12 +193,26 @@ Future<Answer> check(
   for (final (path, problems) in await problemsOf(engine, scope.toSet())) {
     found.addAll(ledger.acknowledge(path, problems));
   }
+  ledger.save(ws);
   return CheckAnswer(
     written: [...written, ...removed]..sort(),
     checked: scope.toSet().length,
     problems: found,
     sources: engine.sources,
   );
+}
+
+/// The commit checked out in [ws], or null outside git.
+String? gitHead(Workspace ws) {
+  try {
+    final r = Process.runSync('git', [
+      'rev-parse',
+      'HEAD',
+    ], workingDirectory: ws.root);
+    return r.exitCode == 0 ? (r.stdout as String).trim() : null;
+  } on ProcessException {
+    return null;
+  }
 }
 
 String _lineText(SourceCache sources, String path, int line) {

@@ -118,6 +118,43 @@ class AmbiguousAnswer extends Answer {
   };
 }
 
+/// One answer per declaration, for a name that matches a few of them.
+class EachAnswer extends Answer {
+  EachAnswer(this.verb, this.query, this.answers);
+
+  @override
+  final String verb;
+  final String query;
+  final List<Answer> answers;
+
+  @override
+  int get exit =>
+      answers.every((a) => a.exit == Exit.ok) ? Exit.ok : answers.first.exit;
+
+  @override
+  void write(TextOut out) => out.header(
+    '"$query" names ${plural(answers.length, 'declaration')}; each is '
+    'answered below. Name one by path:line or Owner.member to see only it.',
+  );
+
+  @override
+  String render({required bool asJson, required int? limit}) {
+    if (asJson) return super.render(asJson: true, limit: limit);
+    final head = TextOut();
+    write(head);
+    return [
+      head.build(null),
+      for (final a in answers) a.render(asJson: false, limit: limit),
+    ].join('\n\n');
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'query': query,
+    'answers': [for (final a in answers) a.toJson()],
+  };
+}
+
 /// A file argument that matched no file, or several.
 class FileChoiceAnswer extends Answer {
   FileChoiceAnswer(this.verb, this.arg, this.candidates);

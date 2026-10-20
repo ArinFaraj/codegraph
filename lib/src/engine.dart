@@ -65,6 +65,23 @@ class Engine {
     final Unresolved u => lookupFailure(verb, query, u),
   };
 
+  /// Up to this many declarations sharing a name are each answered, instead
+  /// of listed for the caller to pick from.
+  static const eachTargetCap = 5;
+
+  /// Like [withTarget], but a name that matches a few declarations is
+  /// answered for each of them, so the caller does not have to ask again.
+  Future<Answer> withEachTarget(
+    String verb,
+    String query,
+    Future<Answer> Function(Target target) body,
+  ) async => switch (await resolve(query)) {
+    Resolved(:final target) => await body(target),
+    Ambiguous(:final targets) when targets.length <= eachTargetCap =>
+      EachAnswer(verb, query, [for (final t in targets) await body(t)]),
+    final Unresolved u => lookupFailure(verb, query, u),
+  };
+
   /// The element and the accessors, variable and getter/setter partners that
   /// share its name, so a property's uses are counted once, completely.
   Set<Element> propertyFamily(Element e) => switch (e) {

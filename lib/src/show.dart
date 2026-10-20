@@ -15,15 +15,17 @@ import 'symbols.dart';
 Future<Answer> showSymbol(
   Engine engine,
   String query,
-) => engine.withTarget('show', query, (t) async {
+) => engine.withEachTarget('show', query, (t) async {
   final e = t.element;
   final declared = await declarationOf(engine.analysis, t);
   final subs = e is InterfaceElement ? await engine.subtypes(e) : null;
+  final source = declared == null ? null : _source(engine, t.path, declared.$1);
   final overrides = isInstanceMember(e) ? await engine.overrideSet(e) : null;
   return ShowSymbolAnswer(
     target: t,
     query: query,
     signature: declared?.$1.sig ?? e.displayName,
+    source: source,
     doc: declared?.$1.doc,
     members: [
       for (final m in declared?.$2 ?? const <DeclNode>[])
@@ -48,6 +50,35 @@ Future<Answer> showSymbol(
     uses: await engine.usesOf(e),
   );
 });
+
+/// Source shown in full up to this many lines; longer declarations show the
+/// first lines, and types show their members instead.
+const sourceLines = 60;
+
+/// The declaration's source lines, numbered.
+SourceExcerpt? _source(Engine engine, String path, DeclNode d) {
+  final (start, end) = sourceSpan(d);
+  final lines = engine.sources.unit(path).lineInfo;
+  final first = lines.getLocation(start).lineNumber;
+  final last = lines.getLocation(end).lineNumber;
+  final text = engine.sources.text(path).split('\n');
+  if (last > text.length) return null;
+  return SourceExcerpt(first, last, [
+    for (var n = first; n <= last && n < first + sourceLines; n++) text[n - 1],
+  ]);
+}
+
+class SourceExcerpt {
+  SourceExcerpt(this.first, this.last, this.lines);
+
+  final int first;
+  final int last;
+
+  /// At most [sourceLines] lines, starting at [first].
+  final List<String> lines;
+
+  bool get complete => first + lines.length - 1 == last;
+}
 
 class ShowRequest extends WorkerRequest {
   ShowRequest(this.query, {required super.json, required super.limit});
@@ -76,6 +107,7 @@ class ShowSymbolAnswer extends Answer {
     required this.target,
     required this.query,
     required this.signature,
+    required this.source,
     required this.doc,
     required this.members,
     required this.supertypes,
@@ -88,6 +120,7 @@ class ShowSymbolAnswer extends Answer {
   final Target target;
   final String query;
   final String signature;
+  final SourceExcerpt? source;
   final String? doc;
 
   /// Line and signature of each member, for types.
@@ -124,8 +157,23 @@ class ShowSymbolAnswer extends Answer {
   @override
   void write(TextOut out) {
     out.header('${target.kind} ${target.qualified}  ${target.location}');
-    out.header('  $signature');
     if (doc != null) out.header('  $doc');
+    final src = source;
+    final showSource = src != null && (src.complete || !_isType);
+    if (showSource) {
+      final width = '${src.first + src.lines.length - 1}'.length;
+      for (var i = 0; i < src.lines.length; i++) {
+        out.header('${'${src.first + i}'.padLeft(width)}  ${src.lines[i]}');
+      }
+      if (!src.complete) {
+        out.header(
+          '... ${src.last - src.first + 1 - src.lines.length} more lines, '
+          'to line ${src.last}',
+        );
+      }
+    } else {
+      out.header('  $signature');
+    }
     if (supertypes.isNotEmpty) {
       out.header('supertypes: ${supertypes.join(', ')}');
     }
@@ -135,7 +183,7 @@ class ShowSymbolAnswer extends Answer {
         out.row('  ${s.kind} ${s.qualified}  ${s.location}');
       }
     }
-    if (members.isNotEmpty) {
+    if (members.isNotEmpty && !showSource) {
       out.section('members:');
       for (final (line, sig) in members) {
         out.row('  $line: $sig');
@@ -170,6 +218,13 @@ class ShowSymbolAnswer extends Answer {
   Map<String, Object?> toJson() => {
     'target': target.toJson(),
     'signature': signature,
+    if (source case final src?)
+      'source': {
+        'firstLine': src.first,
+        'lastLine': src.last,
+        'text': src.lines.join('\n'),
+        'complete': src.complete,
+      },
     'doc': ?doc,
     'supertypes': supertypes,
     if (_isType) 'subtypes': [for (final s in subtypes) s.toJson()],

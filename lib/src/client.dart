@@ -56,6 +56,22 @@ Future<bool> ping(WorkerState state) async {
   return r?['ok'] == true && r?['version'] == codegraphVersion;
 }
 
+/// The worker for [ws] when one is running at this version and has finished
+/// warming up; never starts one. A worker still opening the analyzer can be
+/// too busy to answer, which counts as not ready.
+Future<WorkerState?> readyWorker(Workspace ws) async {
+  final state = WorkerState.read(ws);
+  if (state == null || state.version != codegraphVersion) return null;
+  final status = await sendToWorker(
+    state,
+    {'type': 'status'},
+    connectTimeout: const Duration(milliseconds: 300),
+  ).timeout(const Duration(milliseconds: 500), onTimeout: () => null);
+  return status?['phase'] == 'ready' && status?['version'] == codegraphVersion
+      ? state
+      : null;
+}
+
 /// A running worker for [ws] at this codegraph version, starting one if
 /// needed. Null when none could be started.
 Future<WorkerState?> ensureWorker(
@@ -81,6 +97,22 @@ Future<WorkerState?> ensureWorker(
     if (await ping(state)) return state;
   }
   return null;
+}
+
+/// Starts a worker for [ws] in the background unless one is already up, at
+/// this version, answering. Does not wait for it.
+Future<void> startWorker(Workspace ws) async {
+  final state = WorkerState.read(ws);
+  if (state != null &&
+      state.version == codegraphVersion &&
+      processAlive(state.pid)) {
+    return;
+  }
+  if (state != null && state.version != codegraphVersion) {
+    await sendToWorker(state, {'type': 'stop'});
+    await _waitForExit(state.pid);
+  }
+  await _spawn(ws);
 }
 
 Future<void> stopWorker(Workspace ws) async {

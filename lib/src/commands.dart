@@ -1,6 +1,6 @@
 import 'check.dart';
-import 'impact.dart';
 import 'move.dart';
+import 'outline_request.dart';
 import 'refs.dart';
 import 'rename.dart';
 import 'request.dart';
@@ -14,12 +14,11 @@ class Command {
     this.json = false,
     this.limit = 40,
     this.apply = false,
-    this.diff = false,
-    this.base,
     this.warm = false,
     this.stop = false,
     this.restart = false,
     this.help = false,
+    this.context = 0,
     this.all = false,
     this.hook = false,
     this.error,
@@ -31,12 +30,11 @@ class Command {
     var json = false;
     int? limit = 40;
     var apply = false;
-    var diff = false;
-    String? base;
     var warm = false;
     var stop = false;
     var restart = false;
     var help = false;
+    var context = 0;
     var all = false;
     var hook = false;
     String? error;
@@ -51,8 +49,6 @@ class Command {
           hook = true;
         case '--apply':
           apply = true;
-        case '--diff':
-          diff = true;
         case '--warm':
           warm = true;
         case '--stop':
@@ -61,6 +57,14 @@ class Command {
           restart = true;
         case '--help' || '-h':
           help = true;
+        case '-C' || '--context':
+          final n = i + 1 < argv.length ? int.tryParse(argv[i + 1]) : null;
+          if (n == null || n < 0) {
+            error = '${argv[i]} needs a number of lines';
+          } else {
+            context = n;
+            i++;
+          }
         case '--limit':
           final n = i + 1 < argv.length ? int.tryParse(argv[i + 1]) : null;
           if (n == null || n < 1) {
@@ -68,13 +72,6 @@ class Command {
           } else {
             limit = n;
             i++;
-          }
-        case '--base':
-          if (i + 1 >= argv.length) {
-            error = '--base needs a git ref';
-          } else {
-            base = argv[++i];
-            diff = true;
           }
         case final a when a.startsWith('--'):
           error = 'unknown flag $a';
@@ -90,12 +87,11 @@ class Command {
       json: json,
       limit: limit,
       apply: apply,
-      diff: diff,
-      base: base,
       warm: warm,
       stop: stop,
       restart: restart,
       help: help,
+      context: context,
       all: all,
       hook: hook,
       error: error,
@@ -107,12 +103,13 @@ class Command {
   final bool json;
   final int? limit;
   final bool apply;
-  final bool diff;
-  final String? base;
   final bool warm;
   final bool stop;
   final bool restart;
   final bool help;
+
+  /// `-C N`: lines of source shown around each use.
+  final int context;
 
   /// `--all`: every row, and for `check`, the whole workspace.
   final bool all;
@@ -126,9 +123,9 @@ class Command {
 /// knows its own fields.
 WorkerRequest decodeRequest(Map<String, dynamic> j) => switch (j['verb']) {
   'check' => CheckRequest.fromJson(j),
+  'outline' => OutlineRequest.fromJson(j),
   'refs' => RefsRequest.fromJson(j),
   'show' => ShowRequest.fromJson(j),
-  'impact' => ImpactRequest.fromJson(j),
   'rename' => RenameRequest.fromJson(j),
   'move' => MoveRequest.fromJson(j),
   final v => throw FormatException('unknown worker verb $v'),

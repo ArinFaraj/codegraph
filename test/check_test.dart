@@ -191,6 +191,44 @@ class Kit {}
     expect((await checkNow(paths: ['lib/c.dart'])).problems, isEmpty);
   });
 
+  test('a saved ledger remembers what was already known', () async {
+    engine.ledger!.save(Workspace.find(root)!);
+    write('lib/a.dart', 'int answer3() => 42;\n');
+    final restarted = Engine(analysis)
+      ..ledger = Ledger.load(Workspace.find(root)!);
+    expect(restarted.ledger, isNotNull);
+    await restarted.refresh();
+    final a =
+        await check(restarted, paths: ['$root/lib/a.dart']) as CheckAnswer;
+    expect(where(a), ['lib/b.dart:3 undefined_function']);
+    write('lib/a.dart', 'int answer() => 42;\n');
+    await restarted.refresh();
+    await check(restarted, paths: ['$root/lib/a.dart']);
+    await engine.refresh();
+  });
+
+  test('writes noted while the worker warms up join the next check', () {
+    final ws = Workspace.find(root)!;
+    final t0 = DateTime(2026, 10, 20, 12);
+    Pending.add(ws, CheckRequest(since: t0, json: false, limit: 30));
+    Pending.add(
+      ws,
+      CheckRequest(paths: ['/r/lib/a.dart'], json: false, limit: 30),
+    );
+    final next = Pending.takeInto(
+      ws,
+      CheckRequest(
+        since: t0.add(const Duration(minutes: 1)),
+        json: false,
+        limit: 30,
+      ),
+    );
+    expect(next.since, t0);
+    expect(next.paths, ['/r/lib/a.dart']);
+    final after = CheckRequest(since: t0, json: false, limit: 30);
+    expect(identical(Pending.takeInto(ws, after), after), isTrue);
+  });
+
   test('hook input picks the files a tool call could have written', () {
     final now = DateTime(2026, 10, 20, 12);
     expect(
