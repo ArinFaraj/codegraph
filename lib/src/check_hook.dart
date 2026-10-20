@@ -33,12 +33,12 @@ Future<int> checkHook(Workspace ws, {Stream<List<int>>? input}) async {
       await startWorker(ws);
       return Exit.ok;
     }
-    final response = await sendToWorker(state, {
-      'type': 'run',
-      'request': Pending.takeInto(ws, request).toJson(),
-    }).timeout(_budget);
-    if (response == null || response['exit'] != Exit.failed) return Exit.ok;
-    stderr.writeln(response['out']);
+    final reply = await runOnWorker(
+      state,
+      Pending.takeInto(ws, request),
+    ).timeout(_budget);
+    if (reply == null || reply.exit != Exit.failed) return Exit.ok;
+    stderr.writeln(reply.out);
     return _report;
   } catch (_) {
     return Exit.ok;

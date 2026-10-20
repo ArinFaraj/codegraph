@@ -1,8 +1,45 @@
-// Machine-wide list of running workers, so parallel checkouts cannot pile up
-// resident analyzers. When a new worker would exceed the cap, the least
-// recently used one is asked to stop.
+// Machine-wide record of running workers, one file per checkout. It is the
+// only record of a worker: how to reach it, which version it runs, and when it
+// was last used, so parallel checkouts cannot pile up resident analyzers.
 import 'dart:convert';
 import 'dart:io';
+
+/// A running worker.
+class WorkerRecord {
+  WorkerRecord({
+    required this.root,
+    required this.pid,
+    required this.port,
+    required this.version,
+    required this.lastUsed,
+  });
+
+  /// A record written before records carried a version reads as
+  /// [unknownVersion], so the worker it names is replaced, not trusted.
+  factory WorkerRecord.fromJson(Map<String, dynamic> j) => WorkerRecord(
+    root: j['root'] as String,
+    pid: j['pid'] as int,
+    port: j['port'] as int,
+    version: j['version'] as String? ?? unknownVersion,
+    lastUsed: DateTime.parse(j['lastUsed'] as String),
+  );
+
+  static const unknownVersion = 'unknown';
+
+  final String root;
+  final int pid;
+  final int port;
+  final String version;
+  final DateTime lastUsed;
+
+  Map<String, Object?> toJson() => {
+    'root': root,
+    'pid': pid,
+    'port': port,
+    'version': version,
+    'lastUsed': lastUsed.toIso8601String(),
+  };
+}
 
 abstract final class Registry {
   static String get _dir {
@@ -14,101 +51,83 @@ abstract final class Registry {
   static int get cap =>
       int.tryParse(Platform.environment['CODEGRAPH_MAX_WORKERS'] ?? '') ?? 2;
 
-  static String _key(String root) =>
-      root.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+  static File _file(String root) =>
+      File('$_dir/${root.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_')}.json');
 
-  static File _file(String root) => File('$_dir/${_key(root)}.json');
+  /// The worker recorded for [root], alive or not.
+  static WorkerRecord? entry(String root) => _read(_file(root));
 
-  static Future<void> register(String root, int pid, int port) async {
-    Directory(_dir).createSync(recursive: true);
-    final live = entries().where((e) => e.root != root).toList()
+  /// Live workers for other checkouts that must stop before one more for
+  /// [root] fits under [cap], least recently used first.
+  static List<WorkerRecord> overCap(String root) {
+    final others = entries().where((e) => e.root != root).toList()
       ..sort((a, b) => a.lastUsed.compareTo(b.lastUsed));
-    while (live.length >= cap) {
-      await _stop(live.removeAt(0));
-    }
-    _write(root, pid, port);
+    final excess = others.length - cap + 1;
+    return excess > 0 ? others.take(excess).toList() : const [];
+  }
+
+  static void register(WorkerRecord record) {
+    Directory(_dir).createSync(recursive: true);
+    final f = _file(record.root);
+    File('${f.path}.${record.pid}.tmp')
+      ..writeAsStringSync(jsonEncode(record.toJson()))
+      ..renameSync(f.path);
   }
 
   static void touch(String root) {
-    final f = _file(root);
-    if (!f.existsSync()) return;
-    try {
-      final j = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
-      _write(root, j['pid'] as int, j['port'] as int);
-    } catch (_) {}
+    final e = entry(root);
+    if (e == null) return;
+    register(
+      WorkerRecord(
+        root: e.root,
+        pid: e.pid,
+        port: e.port,
+        version: e.version,
+        lastUsed: DateTime.now(),
+      ),
+    );
   }
 
-  static void unregister(String root) {
+  /// Removes the record for [root] when it still names [pid].
+  static void unregister(String root, int pid) {
+    if (entry(root)?.pid != pid) return;
     try {
       _file(root).deleteSync();
-    } catch (_) {}
+    } on FileSystemException {
+      return;
+    }
   }
 
-  static List<RegistryEntry> entries() {
+  /// Every live worker; records of dead ones are deleted.
+  static List<WorkerRecord> entries() {
     final dir = Directory(_dir);
     if (!dir.existsSync()) return const [];
-    final out = <RegistryEntry>[];
+    final out = <WorkerRecord>[];
     for (final f in dir.listSync().whereType<File>()) {
       if (!f.path.endsWith('.json')) continue;
-      try {
-        final j = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
-        final e = RegistryEntry(
-          j['root'] as String,
-          j['pid'] as int,
-          j['port'] as int,
-          DateTime.parse(j['lastUsed'] as String),
-        );
-        if (processAlive(e.pid)) {
-          out.add(e);
-        } else {
-          f.deleteSync();
-        }
-      } catch (_) {
+      final e = _read(f);
+      if (e != null && processAlive(e.pid)) {
+        out.add(e);
+      } else {
         try {
           f.deleteSync();
-        } catch (_) {}
+        } on FileSystemException {
+          continue;
+        }
       }
     }
     return out;
   }
 
-  static void _write(String root, int pid, int port) {
-    final f = _file(root);
-    final tmp = File('${f.path}.$pid.tmp');
-    tmp.writeAsStringSync(
-      jsonEncode({
-        'root': root,
-        'pid': pid,
-        'port': port,
-        'lastUsed': DateTime.now().toIso8601String(),
-      }),
-    );
-    tmp.renameSync(f.path);
-  }
-
-  static Future<void> _stop(RegistryEntry e) async {
+  static WorkerRecord? _read(File f) {
     try {
-      final s = await Socket.connect(
-        InternetAddress.loopbackIPv4,
-        e.port,
-        timeout: const Duration(seconds: 1),
+      return WorkerRecord.fromJson(
+        jsonDecode(f.readAsStringSync()) as Map<String, dynamic>,
       );
-      s.write('${jsonEncode({'type': 'stop'})}\n');
-      await s.flush();
-      await s.close();
     } catch (_) {
-      Process.killPid(e.pid);
+      return null;
     }
-    unregister(e.root);
   }
-}
-
-class RegistryEntry {
-  RegistryEntry(this.root, this.pid, this.port, this.lastUsed);
-  final String root;
-  final int pid;
-  final int port;
-  final DateTime lastUsed;
 }
 
 bool processAlive(int pid) {

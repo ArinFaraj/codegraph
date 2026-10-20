@@ -151,7 +151,7 @@ Future<Resolution> resolveSymbol(Analysis a, String query) async {
     int line(DeclNode d) => unit.lineInfo.getLocation(d.nameOffset).lineNumber;
     final matches = lineNo != null
         ? decls.where((d) => line(d) == lineNo).toList()
-        : decls.where((d) => d.qualified == rest || d.name == rest).toList();
+        : decls.where((d) => d.qualified == rest || _named(d, rest)).toList();
     final chosen = lineNo != null && matches.isNotEmpty
         ? [matches.reduce((x, y) => x.isMember && !y.isMember ? y : x)]
         : matches;
@@ -198,6 +198,11 @@ Future<Resolution> resolveSymbol(Analysis a, String query) async {
       if (targetOf(a, e) case final t?) t,
   ], 'no declaration named "$query"');
 }
+
+/// Whether [d] is declared under [name]. An unnamed constructor carries its
+/// class's name but is not what that name refers to.
+bool _named(DeclNode d, String name) =>
+    d.name == name && !(d.kind == DeclKind.constructor && d.name == d.owner);
 
 RegExp _exactly(String name) => RegExp('^${RegExp.escape(name)}\$');
 

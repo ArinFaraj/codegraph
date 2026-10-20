@@ -30,7 +30,7 @@ import 'workspace.dart';
 /// One use of an element: a span in an analyzed file. Paths outside this
 /// file are always workspace-relative.
 class Site {
-  Site(this.path, this.offset, this.length, this.kind, this.enclosing);
+  Site(this.path, this.offset, this.length, this.kind);
 
   final String path;
   final int offset;
@@ -39,9 +39,6 @@ class Site {
   /// The analyzer's own classification (`READ`, `WRITE`, `INVOCATION`,
   /// `REFERENCE`, `REFERENCE_BY_NAMED_ARGUMENT`, ...).
   final String kind;
-
-  /// The innermost element whose declaration holds the use.
-  final Element enclosing;
 
   String get key => '$path:$offset:$length';
 }
@@ -116,12 +113,9 @@ class Analysis {
   final Map<String, AnalysisDriver> _owner = {};
 
   int _indexed = 0;
-  bool _warm = false;
   Future<void>? _warming;
 
-  bool get warm => _warm;
   int get fileCount => _owner.length;
-  int get contextCount => _collection.contexts.length;
   int get indexedCount => _indexed;
 
   /// Every analyzed file, workspace-relative.
@@ -201,7 +195,6 @@ class Analysis {
             }
           }),
       ]);
-      _warm = true;
     }();
   }
 
@@ -248,29 +241,13 @@ class Analysis {
 
   /// Every use of [element] across every context, deduplicated, restricted
   /// to analyzed files.
-  Future<List<Site>> references(Element element) async {
-    final out = <String, Site>{};
-    for (final d in _drivers) {
-      for (final r in await d.search.references(element)) {
-        final site = _site(r);
-        if (site != null) out.putIfAbsent(site.key, () => site);
-      }
-    }
-    return _sorted(out.values);
-  }
+  Future<List<Site>> references(Element element) =>
+      _sites((s) => s.references(element));
 
   /// Uses of a member name whose receiver the analyzer could not resolve:
   /// dynamic calls, and calls on types that do not declare it.
-  Future<List<Site>> unresolvedMemberReferences(String name) async {
-    final out = <String, Site>{};
-    for (final d in _drivers) {
-      for (final r in await d.search.unresolvedMemberReferences(name)) {
-        final site = _site(r);
-        if (site != null) out.putIfAbsent(site.key, () => site);
-      }
-    }
-    return _sorted(out.values);
-  }
+  Future<List<Site>> unresolvedMemberReferences(String name) =>
+      _sites((s) => s.unresolvedMemberReferences(name));
 
   /// Direct subtypes of [type]: classes, mixins, enums and extension types
   /// that extend, implement, mix in, or constrain it.
@@ -290,26 +267,38 @@ class Analysis {
   }
 
   /// Members named [name] in any class, mixin, enum or extension.
-  Future<List<Element>> classMembers(String name) async {
-    final out = <String, Element>{};
-    for (final d in _drivers) {
-      for (final e in await d.search.classMembers(name)) {
-        final at = locate(e);
-        if (at == null) continue;
-        out.putIfAbsent('${at.path}:${at.offset}', () => e);
-      }
-    }
-    return out.values.toList();
-  }
+  Future<List<Element>> classMembers(String name) =>
+      _elements((s) => s.classMembers(name));
 
   /// Top-level declarations whose name matches [pattern].
-  Future<List<Element>> topLevelElements(RegExp pattern) async {
+  Future<List<Element>> topLevelElements(RegExp pattern) =>
+      _elements((s) => s.topLevelElements(pattern));
+
+  /// [search] run in every context, as use sites in analyzed files,
+  /// deduplicated and sorted.
+  Future<List<Site>> _sites(
+    Future<List<search.SearchResult>> Function(search.Search) search,
+  ) async {
+    final out = <String, Site>{};
+    for (final d in _drivers) {
+      for (final r in await search(d.search)) {
+        if (_site(r) case final site?) out.putIfAbsent(site.key, () => site);
+      }
+    }
+    return _sorted(out.values);
+  }
+
+  /// [search] run in every context, keeping elements declared in analyzed
+  /// files, once each.
+  Future<List<Element>> _elements(
+    Future<Iterable<Element>> Function(search.Search) search,
+  ) async {
     final out = <String, Element>{};
     for (final d in _drivers) {
-      for (final e in await d.search.topLevelElements(pattern)) {
-        final at = locate(e);
-        if (at == null) continue;
-        out.putIfAbsent('${at.path}:${at.offset}', () => e);
+      for (final e in await search(d.search)) {
+        if (locate(e) case final at?) {
+          out.putIfAbsent('${at.path}:${at.offset}', () => e);
+        }
       }
     }
     return out.values.toList();
@@ -421,13 +410,7 @@ class Analysis {
     final fullName = r.enclosingFragment.libraryFragment?.source.fullName;
     final path = fullName == null ? null : _analyzedPath(fullName);
     if (path == null) return null;
-    return Site(
-      path,
-      r.offset,
-      r.length,
-      r.kind.name,
-      r.enclosingFragment.element,
-    );
+    return Site(path, r.offset, r.length, r.kind.name);
   }
 
   List<Site> _sorted(Iterable<Site> sites) => sites.toList()

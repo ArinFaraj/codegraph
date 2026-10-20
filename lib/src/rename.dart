@@ -33,12 +33,13 @@ class Refusal {
 }
 
 class RenamePlan {
-  RenamePlan(this.target, this.newName, this.edits, this.warnings);
+  RenamePlan(this.target, this.newName, List<RenameEdit> edits, this.warnings)
+    : edits = List.unmodifiable(edits);
 
   final Target target;
   final String newName;
 
-  /// Workspace-relative edit spans. Mutable so a test can withhold one.
+  /// Workspace-relative edit spans.
   final List<RenameEdit> edits;
   final List<String> warnings;
 
@@ -174,10 +175,7 @@ Future<Planning> planRename(Engine engine, String query, String newName) async {
 
 Future<Applied> applyRename(Engine engine, RenamePlan plan) async {
   final files = plan.edits.map((e) => e.path).toSet().toList()..sort();
-  final baseline = await ErrorBaseline.take(engine, [
-    ...files,
-    for (final f in files) ...engine.outline.importers(f),
-  ]);
+  final baseline = await ErrorBaseline.take(engine, files);
 
   final PreparedTextEdits prepared;
   try {
@@ -231,7 +229,7 @@ Refusal? _unsupported(Element e) => switch (e) {
   ),
   LibraryElement() => Refusal(
     RefusalKind.unsupported,
-    'renaming files is not supported yet',
+    'to move a file, run: codegraph rename <a.dart> <b.dart>',
   ),
   Element(name: null || '') => Refusal(
     RefusalKind.unsupported,
@@ -566,8 +564,7 @@ List<String> _warnings(Engine engine, Element e, List<_Span> spans) {
 }
 
 /// String literals spelling [name] as a word, outside directives and
-/// comments, as `path:line`. The outline says which files have the word in a
-/// string at all, so only those are read.
+/// comments, as `path:line`.
 List<String> _stringMentions(Engine engine, String name) {
   if (name.length < 4) return const [];
   final pattern = RegExp(
@@ -575,8 +572,9 @@ List<String> _stringMentions(Engine engine, String name) {
   );
   final out = <String>[];
   final candidates = [
-    for (final f in engine.outline.files.values)
-      if (f.stringWords.contains(name) && !isGeneratedFile(f.path)) f.path,
+    for (final path in engine.analysis.files)
+      if (!isGeneratedFile(path) && engine.sources.text(path).contains(name))
+        path,
   ]..sort();
   for (final path in candidates) {
     for (final m in pattern.allMatches(engine.sources.text(path))) {
@@ -653,7 +651,7 @@ class RefusalAnswer extends Answer {
     if (refusal.kind == RefusalKind.unsupported) {
       out.footer(
         'codegraph cannot compute this rename yet. Renaming by hand is fine; '
-        'run `dart analyze` afterwards.',
+        'run `codegraph check` afterwards.',
       );
     }
   }
@@ -680,11 +678,7 @@ class RenameAnswer extends Answer {
   String get verb => 'rename';
 
   @override
-  int get exit => switch (applied) {
-    null || AppliedClean() => Exit.ok,
-    RolledBack() => Exit.refused,
-    NotApplied() => Exit.failed,
-  };
+  int get exit => appliedExit(applied);
 
   @override
   void write(TextOut out) {
@@ -702,28 +696,14 @@ class RenameAnswer extends Answer {
     for (final w in plan.warnings) {
       out.footer('warning: $w');
     }
-    switch (applied) {
-      case null:
-        break;
-      case AppliedClean(:final checkedFiles):
-        out.footer(
-          'applied. Analysis of ${plural(checkedFiles, 'affected file')} '
-          'shows no new errors.',
-        );
-      case RolledBack(:final errors):
-        out.footer(
-          'rolled back: the rename introduced ${plural(errors.length, 'error')}, '
-          'so every file was restored:',
-        );
-        for (final e in errors.take(15)) {
-          out.footer('  $e');
-        }
-      case NotApplied(:final message, :final details):
-        out.footer('not applied: $message');
-        for (final d in details) {
-          out.footer('  $d');
-        }
-    }
+    writeApplied(
+      out,
+      applied,
+      done: 'applied',
+      rolledBack: (errors) =>
+          'rolled back: the rename introduced '
+          '${plural(errors.length, 'error')}, so every file was restored:',
+    );
   }
 
   @override
@@ -735,21 +715,6 @@ class RenameAnswer extends Answer {
         {'path': e.path, 'line': e.line, 'offset': e.offset},
     ],
     'warnings': plan.warnings,
-    if (applied != null)
-      'applied': switch (applied!) {
-        AppliedClean(:final checkedFiles) => {
-          'result': 'applied',
-          'checkedFiles': checkedFiles,
-        },
-        RolledBack(:final errors) => {
-          'result': 'rolled back',
-          'errors': errors,
-        },
-        NotApplied(:final message, :final details) => {
-          'result': 'not applied',
-          'message': message,
-          'details': details,
-        },
-      },
+    if (applied case final a?) 'applied': appliedJson(a),
   };
 }

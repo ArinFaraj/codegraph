@@ -246,11 +246,16 @@ class Counter extends Notifier<int> {
         ])
           f: read(f),
       };
-      final plan =
+      final full =
           (await planRename(engine, 'Wallets.sandbox', 'sandboxList')
                   as PlanReady)
               .plan;
-      plan.edits.removeAt(1);
+      final plan = RenamePlan(
+        full.target,
+        full.newName,
+        [...full.edits]..removeAt(1),
+        full.warnings,
+      );
       final r = RenameAnswer(plan, await applyRename(engine, plan));
       expect(r.exit, Exit.refused, reason: text(r));
       expect(text(r), contains('rolled back'));
@@ -309,5 +314,26 @@ class Counter extends Notifier<int> {
     expect(text(r), contains('more than ${Engine.subtypeCap} subtypes'));
     final show = await showSymbol(engine, 'WideBase');
     expect(text(show), contains('partial: subtype walks stop at'));
+  });
+
+  test('a break in a file that only sees the rename through an export is '
+      'rolled back', () async {
+    void write(String rel, String content) =>
+        File('${root.path}/$rel').writeAsStringSync(content);
+    write('lib/core/alpha.dart', 'int alpha() => 1;\n');
+    write('lib/core/beta.dart', 'int beta() => 2;\n');
+    write('lib/core/barrel.dart', "export 'alpha.dart';\n");
+    write(
+      'lib/features/uses_beta.dart',
+      "import 'package:app/core/barrel.dart';\n"
+          "import 'package:app/core/beta.dart';\n"
+          '\n'
+          'int twice() => beta() * 2;\n',
+    );
+    await engine.refresh();
+    final r = await rename(engine, 'alpha', 'beta', apply: true);
+    expect(r.exit, Exit.refused, reason: text(r));
+    expect(text(r), contains('lib/features/uses_beta.dart:4'));
+    expect(read('lib/core/alpha.dart'), 'int alpha() => 1;\n');
   });
 }

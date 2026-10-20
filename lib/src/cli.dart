@@ -10,7 +10,6 @@ import 'request.dart';
 import 'show.dart';
 import 'native_install.dart' as native_install;
 import 'outline.dart';
-import 'outline_request.dart';
 import 'result.dart';
 import 'check.dart';
 import 'check_hook.dart';
@@ -32,10 +31,10 @@ codegraph $codegraphVersion - exact answers about a Dart or Flutter repository
                                       reads the hook JSON on stdin, silent
                                       unless something new broke (exit 2)
   codegraph find <name>               where something is declared (instant)
-  codegraph show <file|dir|symbol>    outline of a file, digest of a directory,
-                                      or a symbol: signature, subtypes,
-                                      overrides, use counts; providers list
-                                      their readers by role
+  codegraph show <file|dir|symbol>    a file's outline, wiring and provider
+                                      uses; a directory's pages and providers
+                                      with their outside uses; or a symbol:
+                                      source, subtypes, overrides, use counts
   codegraph refs <symbol> [-C N]      every use, path:line, grouped by role
                                       (ref.watch, call, implement, ...); -C N
                                       prints N lines of source around each
@@ -51,7 +50,7 @@ symbols: Name, Owner.member, path/to/file.dart:name, or path/to/file.dart:LINE
          (the outermost declaration named on that line)
 flags:   --json, --limit N (default 40 rows), --all
 
-check, refs, rename and show <symbol> are answered by a background worker
+check, refs, rename and show are answered by a background worker
 that keeps the Dart analyzer warm for this checkout and exits after 20 idle
 minutes. Its answers cover every file `dart analyze` sees, as it is on disk
 now. Exit codes: 0 answered, 1 not found or failed, 2 ambiguous (candidates
@@ -161,16 +160,13 @@ Future<int> runCli(List<String> argv) async {
         );
       }
       final arg = c.args.single;
-      if (await readyWorker(ws) != null) {
-        return _ask(
-          ws,
-          OutlineRequest(c.verb, arg, json: c.json, limit: c.limit),
-        );
+      if (c.verb == 'show') {
+        return _ask(ws, ShowRequest(arg, json: c.json, limit: c.limit));
       }
-      final idx = OutlineIndex.load(ws);
-      if (c.verb == 'find') return print(find(idx, arg));
-      if (showPath(idx, arg) case final answer?) return print(answer);
-      return _ask(ws, ShowRequest(arg, json: c.json, limit: c.limit));
+      if (await readyWorker(ws) != null) {
+        return _ask(ws, FindRequest(arg, json: c.json, limit: c.limit));
+      }
+      return print(find(OutlineIndex.load(ws), arg));
     case 'refs':
       if (c.args.length != 1) return _usage('codegraph refs <symbol>');
       return _ask(
@@ -222,18 +218,18 @@ Future<int> _ask(Workspace ws, WorkerRequest request) async {
     stderr.writeln(reason);
     return Exit.cannotAnalyze;
   }
-  final state = await ensureWorker(ws);
-  if (state == null) {
+  final worker = await ensureWorker(ws);
+  if (worker == null) {
     stderr.writeln(
       'could not start the codegraph worker; see '
-      '${ws.relative(WorkerState.logPath(ws))}',
+      '${ws.relative(workerLogPath(ws))}',
     );
     return Exit.failed;
   }
   var lastProgress = DateTime(0);
-  final response = await sendToWorker(
-    state,
-    {'type': 'run', 'request': request.toJson()},
+  final reply = await runOnWorker(
+    worker,
+    request,
     onProgress: (p) {
       final now = DateTime.now();
       if (now.difference(lastProgress) > const Duration(seconds: 4)) {
@@ -242,16 +238,15 @@ Future<int> _ask(Workspace ws, WorkerRequest request) async {
       }
     },
   );
-  if (response == null) {
+  if (reply == null) {
     stderr.writeln(
       'the codegraph worker stopped before answering; see '
-      '${ws.relative(WorkerState.logPath(ws))}',
+      '${ws.relative(workerLogPath(ws))}',
     );
     return Exit.failed;
   }
-  final out = response['out'] as String? ?? '';
-  if (out.isNotEmpty) stdout.writeln(out);
-  return response['exit'] as int? ?? Exit.failed;
+  if (reply.out.isNotEmpty) stdout.writeln(reply.out);
+  return reply.exit;
 }
 
 int _usage(String message) {

@@ -8,38 +8,16 @@ import 'dart:io';
 import 'analysis.dart';
 import 'byte_store.dart';
 import 'check.dart';
+import 'client.dart';
 import 'commands.dart';
 import 'engine.dart';
+import 'protocol.dart';
 import 'registry.dart';
 import 'result.dart';
 import 'version.dart';
 import 'workspace.dart';
 
-class WorkerState {
-  WorkerState(this.pid, this.port, this.version);
-
-  static WorkerState? read(Workspace ws) {
-    try {
-      final j =
-          jsonDecode(File(statePath(ws)).readAsStringSync())
-              as Map<String, dynamic>;
-      return WorkerState(
-        j['pid'] as int,
-        j['port'] as int,
-        j['version'] as String,
-      );
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static String statePath(Workspace ws) => '${ws.stateDir}/worker.json';
-  static String logPath(Workspace ws) => '${ws.stateDir}/worker.log';
-
-  final int pid;
-  final int port;
-  final String version;
-}
+String workerLogPath(Workspace ws) => '${ws.stateDir}/worker.log';
 
 /// Owns the engine's lifecycle: start, warm-up, and a restart when a
 /// pubspec, analysis options or the package config changes.
@@ -80,7 +58,7 @@ class AnalyzerHost {
         analysis.warmUp(progress: (m) => phase = m).then((_) async {
           engine.ledger ??= await Ledger.build(engine);
           await engine.resolve('codegraphWarmUpLookup');
-          phase = 'ready';
+          phase = WorkerStatus.readyPhase;
           say(
             'warm: ${analysis.fileCount} files in '
             '${DateTime.now().difference(started).inSeconds}s',
@@ -96,23 +74,20 @@ class AnalyzerHost {
     }
   }
 
-  Map<String, Object?> status() {
+  WorkerStatus status() {
     final a = _engine?.analysis;
-    return {
-      'ok': true,
-      'version': codegraphVersion,
-      'pid': pid,
-      'phase': phase,
-      'files': a?.fileCount,
-      'indexed': a?.indexedCount,
-      'warm': a?.warm ?? false,
-      'contexts': a?.contextCount,
-      'fineDeps': fineDeps,
-      'rssMb': ProcessInfo.currentRss >> 20,
-      'uptimeSeconds': DateTime.now().difference(started).inSeconds,
-      'idleMinutes': idleTimeout().inMinutes,
-      'error': ?error?.toString(),
-    };
+    return WorkerStatus(
+      version: codegraphVersion,
+      pid: pid,
+      phase: phase,
+      files: a?.fileCount,
+      indexed: a?.indexedCount,
+      fineDeps: fineDeps,
+      rssMb: ProcessInfo.currentRss >> 20,
+      uptimeSeconds: DateTime.now().difference(started).inSeconds,
+      idleMinutes: idleTimeout().inMinutes,
+      error: error?.toString(),
+    );
   }
 
   Future<void> dispose() async {
@@ -132,7 +107,7 @@ Future<int> runWorker(String root) async {
   final ws = Workspace.find(root);
   if (ws == null) return Exit.cannotAnalyze;
   Directory(ws.stateDir).createSync(recursive: true);
-  final logFile = File(WorkerState.logPath(ws));
+  final logFile = File(workerLogPath(ws));
   if (logFile.existsSync() && logFile.lengthSync() > 1 << 20) {
     logFile.renameSync('${logFile.path}.old');
   }
@@ -151,19 +126,19 @@ Future<int> runWorker(String root) async {
   }
 
   final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-  final stateFile = File(WorkerState.statePath(ws));
-  File('${stateFile.path}.$pid.tmp')
-    ..writeAsStringSync(
-      jsonEncode({
-        'pid': pid,
-        'port': server.port,
-        'version': codegraphVersion,
-        'root': ws.root,
-        'started': DateTime.now().toIso8601String(),
-      }),
-    )
-    ..renameSync(stateFile.path);
-  await Registry.register(ws.root, pid, server.port);
+  for (final other in Registry.overCap(ws.root)) {
+    say('stopping the least recently used worker, for ${other.root}');
+    await stopWorker(other);
+  }
+  Registry.register(
+    WorkerRecord(
+      root: ws.root,
+      pid: pid,
+      port: server.port,
+      version: codegraphVersion,
+      lastUsed: DateTime.now(),
+    ),
+  );
   pruneByteStores();
   say('worker $codegraphVersion pid $pid port ${server.port} for ${ws.root}');
 
@@ -196,27 +171,31 @@ Future<int> runWorker(String root) async {
     Timer? ticker;
     if (!host.isReady) {
       void progress() =>
-          send({'progress': 'waiting for the analyzer: ${host.phase}'});
+          send(progressJson('waiting for the analyzer: ${host.phase}'));
       progress();
       ticker = Timer.periodic(const Duration(seconds: 5), (_) => progress());
     }
     try {
       final engine = await host.ready();
       if (engine == null) {
-        send({
-          'exit': Exit.cannotAnalyze,
-          'out': 'the analyzer failed to start: ${host.error}',
-        });
+        send(
+          RunReply(
+            Exit.cannotAnalyze,
+            'the analyzer failed to start: ${host.error}',
+          ).toJson(),
+        );
         return;
       }
       final answer = await request.run(engine);
-      send({
-        'exit': answer.exit,
-        'out': answer.render(asJson: request.json, limit: request.limit),
-      });
+      send(
+        RunReply(
+          answer.exit,
+          answer.render(asJson: request.json, limit: request.limit),
+        ).toJson(),
+      );
     } catch (e, st) {
       say('request ${jsonEncode(message)} failed: $e\n$st');
-      send({'exit': Exit.failed, 'out': 'codegraph worker error: $e'});
+      send(RunReply(Exit.failed, 'codegraph worker error: $e').toJson());
     } finally {
       ticker?.cancel();
     }
@@ -241,18 +220,17 @@ Future<int> runWorker(String root) async {
           } catch (_) {
             return;
           }
-          switch (message['type']) {
-            case 'ping':
-              send({'ok': true, 'version': codegraphVersion});
+          switch (callOf(message)) {
+            case null:
               socket.close();
-            case 'status':
-              send(host.status());
+            case WorkerCall.status:
+              send(host.status().toJson());
               socket.close();
-            case 'stop':
+            case WorkerCall.stop:
               send({'ok': true});
               socket.close();
               stop();
-            case 'run':
+            case WorkerCall.run:
               queue = queue
                   .then((_) => run(send, message))
                   .whenComplete(() {
@@ -267,12 +245,7 @@ Future<int> runWorker(String root) async {
   await done.future;
   idle?.cancel();
   await server.close();
-  if (WorkerState.read(ws)?.pid == pid) {
-    try {
-      stateFile.deleteSync();
-    } catch (_) {}
-  }
-  Registry.unregister(ws.root);
+  Registry.unregister(ws.root, pid);
   await host.dispose();
   say('stopped');
   await log.close();

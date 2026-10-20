@@ -31,10 +31,12 @@ codegraph check --all               every problem `dart analyze` reports,
                                     except analyzer plugins
 codegraph check --hook              for an agent's after-tool hook (below)
 codegraph find <name>               where something is declared
-codegraph show <file|dir|symbol>    outline of a file, digest of a directory,
-                                    or a symbol: its source, subtypes,
-                                    overrides, use counts; providers list
-                                    their readers by role
+codegraph show <file|dir|symbol>    a file's outline, imports, importers and
+                                    provider uses; a directory's pages,
+                                    providers with their uses outside it, and
+                                    what it reads from elsewhere; or a symbol:
+                                    its source, subtypes, overrides, use
+                                    counts, and for a provider its readers
 codegraph refs <symbol> [-C N]      every use, path:line, grouped by role;
                                     -C N adds N lines of source around each
 codegraph rename <symbol> <new>     dry run of a complete rename; --apply
@@ -87,13 +89,12 @@ run `pub get`).
 
 ## How it works
 
-- `find`, `show <file>` and `show <dir>` read a parse-only outline. They are
-  exact about what a file declares and imports, never about what a name
-  resolves to. A ready worker answers them from memory in under 0.1s;
+- `find` reads a parse-only outline: what each file declares and imports,
+  never what a name resolves to. A ready worker answers it from memory;
   without one, the client reads the outline cache in
-  `.dart_tool/codegraph/outline.json`, which takes about a second on a large
-  app.
-- `check`, `refs`, `rename` and `show <symbol>` go to the worker: one
+  `.dart_tool/codegraph/outline.json` (0.1s on a 3,000-file app once
+  cached).
+- `check`, `refs`, `rename` and `show` go to the worker: one
   background process per checkout that holds the Dart analyzer with its
   search index. Before every answer it checks every analyzed file for
   changes. Its answers cover exactly what `dart analyze` covers, including
@@ -105,6 +106,8 @@ run `pub get`).
   milliseconds, and an edit is reflected within a second.
 - The worker uses 1.2 to 1.7GB once warm, exits after 20 idle minutes, and at
   most two run at once on a machine (the least recently used one is stopped).
+  Running workers are recorded in `~/.cache/codegraph/workers/`, one file per
+  checkout.
   Its analyzer cache lives in `~/.cache/codegraph/byte-store/`, one directory
   per checkout, deleted after 30 days unused.
 

@@ -9,6 +9,7 @@ import 'dart:io';
 import 'analysis.dart';
 import 'classify.dart';
 import 'engine.dart';
+import 'problem_counts.dart';
 import 'request.dart';
 import 'result.dart';
 import 'workspace.dart';
@@ -17,7 +18,7 @@ import 'workspace.dart';
 class Ledger {
   Ledger._(this._seen);
 
-  final Map<String, Map<String, int>> _seen;
+  final Map<String, ProblemCounts> _seen;
 
   /// Changed since it was last saved.
   bool _dirty = false;
@@ -43,7 +44,7 @@ class Ledger {
       }
       return Ledger._({
         for (final e in (j['seen'] as Map<String, dynamic>).entries)
-          e.key: (e.value as Map<String, dynamic>).cast<String, int>(),
+          e.key: ProblemCounts.fromJson(e.value as Map<String, dynamic>),
       });
     } catch (_) {
       return null;
@@ -64,7 +65,7 @@ class Ledger {
             'saved': DateTime.now().toIso8601String(),
             'seen': {
               for (final e in _seen.entries)
-                if (e.value.isNotEmpty) e.key: e.value,
+                if (!e.value.isEmpty) e.key: e.value.toJson(),
             },
           }),
         )
@@ -76,45 +77,23 @@ class Ledger {
   }
 
   static Future<Ledger> build(Engine engine) async {
-    final seen = <String, Map<String, int>>{};
-    for (final (path, problems) in await problemsOf(
-      engine,
-      checkedFiles(engine),
-    )) {
-      seen[path] = _counts(problems);
-    }
-    return Ledger._(seen).._dirty = true;
+    return Ledger._({
+      for (final (path, problems) in await problemsOf(
+        engine,
+        checkedFiles(engine),
+      ))
+        path: ProblemCounts.of(problems, byIdentity),
+    }).._dirty = true;
   }
 
   /// Problems in [now] beyond what the ledger holds for [path]; records
   /// [now] as seen.
   List<Problem> acknowledge(String path, List<Problem> now) {
-    final before = _seen[path] ?? const {};
-    final counts = _counts(now);
-    if (!_sameCounts(before, counts)) _dirty = true;
+    final before = _seen[path] ?? ProblemCounts.none;
+    final counts = ProblemCounts.of(now, byIdentity);
+    if (!before.sameAs(counts)) _dirty = true;
     _seen[path] = counts;
-    final budget = {...before};
-    final out = <Problem>[];
-    for (final p in now) {
-      final left = budget[p.identity] ?? 0;
-      if (left > 0) {
-        budget[p.identity] = left - 1;
-      } else {
-        out.add(p);
-      }
-    }
-    return out;
-  }
-
-  static bool _sameCounts(Map<String, int> a, Map<String, int> b) =>
-      a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
-
-  static Map<String, int> _counts(List<Problem> problems) {
-    final out = <String, int>{};
-    for (final p in problems) {
-      out[p.identity] = (out[p.identity] ?? 0) + 1;
-    }
-    return out;
+    return before.newIn(now);
   }
 }
 

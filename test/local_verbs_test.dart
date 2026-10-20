@@ -4,7 +4,6 @@ import 'package:codegraph/src/outline.dart';
 import 'package:codegraph/src/result.dart';
 import 'package:codegraph/src/args.dart';
 import 'package:codegraph/src/find.dart';
-import 'package:codegraph/src/show_file.dart';
 import 'package:codegraph/src/workspace.dart';
 import 'package:test/test.dart';
 
@@ -38,22 +37,20 @@ void main() {
     },
   );
 
-  test('outline records declarations, providers and provider uses', () {
+  test('outline records declarations as written, and directives', () {
     final session = idx.files['lib/core/session.dart']!;
-    final providers = session.providers.map((d) => d.name).toList();
-    expect(providers, ['sessionProvider', 'flagProvider']);
-    final greeting = idx.files['lib/core/greeting.dart']!;
-    expect(greeting.providers.single.name, 'greetingProvider');
+    expect(
+      session.topLevel.map((d) => '${d.kind} ${d.name}'),
+      containsAll(['variable sessionProvider', 'variable flagProvider']),
+    );
+    expect(
+      session.decls.firstWhere((d) => d.name == 'sessionProvider').sig,
+      contains('Provider<Session>('),
+    );
     final home = idx.files['lib/features/home/home_page.dart']!;
     expect(
-      home.providerUses.map((u) => '${u.role} ${u.provider}'),
-      containsAll([
-        'ref.watch sessionProvider',
-        'ref.listen sessionProvider',
-        'ref.read sessionProvider',
-        'ref.invalidate sessionProvider',
-        'ref.watch flagProvider',
-      ]),
+      home.directives.map((d) => d.uri),
+      contains('package:app/core/session.dart'),
     );
     final keys = idx.files['lib/core/keys.dart']!;
     expect(
@@ -96,17 +93,7 @@ void main() {
     expect(none, contains('for string literals use rg'));
   });
 
-  test('show file lists outline, imports, importers and provider uses', () {
-    final out = text(showFile(idx, 'lib/core/session.dart'));
-    expect(out, startsWith('lib/core/session.dart  ('));
-    expect(out, contains('sessionProvider = Provider'));
-    expect(out, contains('imported by (2):'));
-    expect(out, contains('lib/features/home/home_page.dart'));
-    expect(out, contains('test/home_test.dart'));
-    expect(out, isNot(contains('vendor/legacy.dart')));
-  });
-
-  test('show area summarizes a directory and its outside consumers', () {
+  test('arguments name a file, a directory or a symbol', () {
     expect(
       (classifyArg(idx, 'home', directories: true) as DirArg).path,
       'lib/features/home',
@@ -116,10 +103,6 @@ void main() {
       (classifyArg(idx, 'session.dart', directories: true) as FileArg).path,
       'lib/core/session.dart',
     );
-    final out = text(showArea(idx, 'lib/core'));
-    expect(out, contains('lib/core  ('));
-    expect(out, contains('sessionProvider'));
-    expect(out, contains('most used outside lib/core'));
   });
 
   test('the outline cache is reused and refreshed when a file changes', () {

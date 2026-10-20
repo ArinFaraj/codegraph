@@ -1,6 +1,7 @@
 // Every analyzed file's parse-only outline, plus the import graph between
-// them. The CLI loads it from a cache in .dart_tool/codegraph/; the worker
-// keeps it in memory and refreshes it from the analyzer's change list.
+// them. The worker keeps it in memory and refreshes it from the analyzer's
+// change list; `find` without a worker loads it from a cache in
+// .dart_tool/codegraph/.
 import 'dart:convert';
 import 'dart:io';
 
@@ -12,7 +13,7 @@ import 'workspace.dart';
 
 export 'outline_model.dart';
 
-const _cacheVersion = 8;
+const _cacheVersion = 9;
 
 /// Every analyzed file's outline, refreshed from disk on load.
 class OutlineIndex {
@@ -97,28 +98,12 @@ class OutlineIndex {
       }
     }
     _importers = null;
-    _mentionCounts = null;
   }
 
   /// Resolves an import/export/part URI written in [fromRel] to a
   /// workspace-relative path, or null when it points outside the workspace.
   String? resolveUri(String fromRel, String uri) {
-    if (uri.startsWith('dart:')) return null;
-    if (uri.startsWith('package:')) {
-      final rest = uri.substring(8);
-      final slash = rest.indexOf('/');
-      if (slash < 0) return null;
-      final root = _packageRoots[rest.substring(0, slash)];
-      if (root == null) return null;
-      final rel = workspace.relativeOrNull(
-        '$root/lib/${rest.substring(slash + 1)}',
-      );
-      return files.containsKey(rel) ? rel : null;
-    }
-    final dir = fromRel.contains('/')
-        ? fromRel.substring(0, fromRel.lastIndexOf('/'))
-        : '';
-    final rel = workspace.relativeOrNull(dir.isEmpty ? uri : '$dir/$uri');
+    final rel = _uriTarget(fromRel, uri);
     return files.containsKey(rel) ? rel : null;
   }
 
@@ -197,26 +182,5 @@ class OutlineIndex {
         ? fromRel.substring(0, fromRel.lastIndexOf('/'))
         : '';
     return workspace.relativeOrNull(dir.isEmpty ? uri : '$dir/$uri');
-  }
-
-  Map<String, int>? _mentionCounts;
-
-  /// Number of files other than [exceptFile] whose tokens mention [name].
-  int mentions(String name, {String? exceptFile}) {
-    final counts = _mentionCounts ??= () {
-      final m = <String, int>{};
-      for (final f in files.values) {
-        for (final id in f.identifiers) {
-          m[id] = (m[id] ?? 0) + 1;
-        }
-      }
-      return m;
-    }();
-    final own =
-        exceptFile != null &&
-            (files[exceptFile]?.identifiers.contains(name) ?? false)
-        ? 1
-        : 0;
-    return (counts[name] ?? 0) - own;
   }
 }

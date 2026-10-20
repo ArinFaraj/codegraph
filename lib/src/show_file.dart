@@ -1,31 +1,110 @@
 // `show <file>` and `show <dir>`: a file's outline and wiring, and a
-// directory's digest with its notes, from the parse-only outline.
+// directory's digest with its notes. Structure comes from the outline;
+// which declarations are providers, and who reads them, from resolution.
 import 'dart:collection';
 import 'dart:io';
 
+import 'package:analyzer/dart/ast/ast.dart';
+import 'package:analyzer/dart/ast/visitor.dart';
+import 'package:analyzer/dart/element/element.dart';
+
+import 'analysis.dart';
+import 'args.dart';
+import 'classify.dart';
+import 'declarations.dart';
+import 'engine.dart';
 import 'kinds.dart';
 import 'outline.dart';
 import 'result.dart';
+import 'riverpod.dart';
+import 'symbols.dart';
 import 'workspace.dart';
 
+/// `show` of the file or directory [arg] names, or null when it names a
+/// symbol.
+Future<Answer?> showPath(Engine engine, String arg) async =>
+    switch (classifyArg(engine.outline, arg, directories: true)) {
+      FileArg(:final path) => await showFile(engine, path),
+      DirArg(:final path) => await showArea(engine, path),
+      ChoiceArg(:final candidates) => FileChoiceAnswer('show', arg, candidates),
+      SymbolArg() => null,
+    };
+
+/// A provider read in a file: the use and the provider it reads.
+typedef ProviderRead = (Use use, Target provider);
+
+/// The providers [path] declares, and every place it refers to one with the
+/// role each use plays, from one resolution of the file.
+Future<(List<Target>, List<ProviderRead>)> providersIn(
+  Engine engine,
+  String path,
+) async {
+  final unit = await engine.analysis.unit(path);
+  if (unit == null) return (const <Target>[], const <ProviderRead>[]);
+  final found = <SimpleIdentifier, Element>{};
+  unit.unit.accept(_ProviderReferences(found));
+  return (
+    [
+      for (final d in declarationsOf(unit.unit))
+        if (d.element case final e? when isProvider(e))
+          ?targetOf(engine.analysis, e),
+    ],
+    [
+      for (final MapEntry(key: node, value: provider) in found.entries)
+        if (targetOf(engine.analysis, provider) case final target?)
+          (
+            classify(
+              Site(path, node.offset, node.length, 'READ'),
+              engine.sources,
+            ),
+            target,
+          ),
+    ],
+  );
+}
+
+class _ProviderReferences extends RecursiveAstVisitor<void> {
+  _ProviderReferences(this.found);
+
+  final Map<SimpleIdentifier, Element> found;
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    final e = node.element;
+    final variable = e is GetterElement ? e.variable : e;
+    if (variable != null &&
+        !node.inDeclarationContext() &&
+        isProvider(variable)) {
+      found[node] = variable;
+    }
+  }
+}
+
 class ShowFileAnswer extends Answer {
-  ShowFileAnswer(this.outline, this.imports, this.external, this.importers);
+  ShowFileAnswer(
+    this.outline,
+    this.imports,
+    this.external,
+    this.importers,
+    this.providers,
+    this.reads,
+  );
 
   final FileOutline outline;
   final List<(String, UriDirective)> imports;
   final List<String> external;
   final List<String> importers;
+  final List<Target> providers;
+  final List<ProviderRead> reads;
 
   @override
   String get verb => 'show';
-
-  Iterable<Decl> get _shown => outline.decls.where((d) => !d.generated);
 
   @override
   void write(TextOut out) {
     out.header('${outline.path}  (${outline.lines} lines)');
     out.section('outline:');
-    for (final d in _shown) {
+    for (final d in outline.decls) {
       out.row('${d.isMember ? '    ' : '  '}${d.line}: ${d.sig}');
     }
     out.section(
@@ -40,17 +119,16 @@ class ShowFileAnswer extends Answer {
     for (final p in importers) {
       out.row('  $p');
     }
-    final providers = outline.providers.toList();
     if (providers.isNotEmpty) {
       out.section('providers declared:');
       for (final p in providers) {
-        out.row('  ${p.line}: ${p.sig}');
+        out.row('  ${p.line}: ${p.name}');
       }
     }
-    if (outline.providerUses.isNotEmpty) {
+    if (reads.isNotEmpty) {
       out.section('provider uses:');
-      for (final u in outline.providerUses) {
-        out.row('  ${u.line}: ${u.role}(${u.provider})');
+      for (final (use, provider) in reads) {
+        out.row('  ${use.line}: ${use.role}(${provider.name})');
       }
     }
   }
@@ -60,25 +138,38 @@ class ShowFileAnswer extends Answer {
     'kind': 'file',
     'path': outline.path,
     'lines': outline.lines,
-    'declarations': [for (final d in _shown) d.toJson()],
+    'declarations': [for (final d in outline.decls) d.toJson()],
     'imports': [
       for (final (t, d) in imports)
         {'path': t, 'line': d.line, 'kind': d.kind.label},
     ],
     'externalImports': external,
     'importedBy': importers,
-    'providers': [for (final p in outline.providers) p.toJson()],
-    'providerUses': [for (final u in outline.providerUses) u.toJson()],
+    'providers': [for (final p in providers) p.toJson()],
+    'providerUses': [
+      for (final (use, provider) in reads)
+        {'line': use.line, 'role': use.role.label, 'provider': provider.name},
+    ],
   };
 }
 
-ShowFileAnswer showFile(OutlineIndex idx, String rel) {
+Future<ShowFileAnswer> showFile(Engine engine, String rel) async {
+  final idx = engine.outline;
   final f = idx.files[rel]!;
-  return ShowFileAnswer(f, idx.dependencies(rel), [
-    for (final d in f.directives)
-      if (d.kind == DirectiveKind.import && idx.resolveUri(rel, d.uri) == null)
-        d.uri,
-  ], idx.importers(rel));
+  final (providers, reads) = await providersIn(engine, rel);
+  return ShowFileAnswer(
+    f,
+    idx.dependencies(rel),
+    [
+      for (final d in f.directives)
+        if (d.kind == DirectiveKind.import &&
+            idx.resolveUri(rel, d.uri) == null)
+          d.uri,
+    ],
+    idx.importers(rel),
+    providers,
+    reads,
+  );
 }
 
 class ShowAreaAnswer extends Answer {
@@ -87,7 +178,7 @@ class ShowAreaAnswer extends Answer {
     required this.files,
     required this.pages,
     required this.providers,
-    required this.usedOutside,
+    required this.importedFromOutside,
     required this.consumed,
     required this.notesPath,
     required this.notes,
@@ -97,11 +188,15 @@ class ShowAreaAnswer extends Answer {
   final int files;
   final List<(Decl, String)> pages;
 
-  /// Provider, file, number of other files mentioning it.
-  final List<(Decl, String, int)> providers;
-  final List<(Decl, String, int)> usedOutside;
+  /// Each provider the area declares, with the number of files outside the
+  /// area that use it.
+  final List<(Target, int)> providers;
 
-  /// Provider name to the file declaring it, outside this area.
+  /// Files of the area imported from outside it, with how many files do.
+  final List<(String, int)> importedFromOutside;
+
+  /// Providers declared elsewhere that the area uses, by name, to the file
+  /// declaring them.
   final Map<String, String> consumed;
   final String? notesPath;
   final List<String> notes;
@@ -121,15 +216,15 @@ class ShowAreaAnswer extends Answer {
       }
     }
     if (providers.isNotEmpty) {
-      out.section('providers (by files mentioning them):');
-      for (final (p, path, n) in providers) {
-        out.row('  ${p.name}  $path:${p.line}  ($n)');
+      out.section('providers (files outside $dir using them):');
+      for (final (p, n) in providers) {
+        out.row('  ${p.name}  ${p.location}  ($n)');
       }
     }
-    if (usedOutside.isNotEmpty) {
-      out.section('most used outside $dir (files mentioning them):');
-      for (final (d, path, n) in usedOutside) {
-        out.row('  ${d.kind} ${d.name}  $path:${d.line}  ($n)');
+    if (importedFromOutside.isNotEmpty) {
+      out.section('imported from outside $dir (importing files):');
+      for (final (path, n) in importedFromOutside) {
+        out.row('  $path  ($n)');
       }
     }
     if (consumed.isNotEmpty) {
@@ -148,62 +243,63 @@ class ShowAreaAnswer extends Answer {
   }
 
   @override
-  Map<String, Object?> toJson() {
-    Map<String, Object?> decl(Decl d, String path, [int? n]) => {
-      'name': d.name,
-      'kind': d.kind.label,
-      'path': path,
-      'line': d.line,
-      'mentionedBy': ?n,
-    };
-    return {
-      'kind': 'area',
-      'path': dir,
-      'files': files,
-      'pages': [for (final (d, p) in pages) decl(d, p)],
-      'providers': [for (final (d, p, n) in providers) decl(d, p, n)],
-      'usedOutside': [for (final (d, p, n) in usedOutside) decl(d, p, n)],
-      'consumed': consumed,
-      'notes': ?notesPath,
-    };
-  }
+  Map<String, Object?> toJson() => {
+    'kind': 'area',
+    'path': dir,
+    'files': files,
+    'pages': [
+      for (final (d, p) in pages) {'name': d.name, 'path': p, 'line': d.line},
+    ],
+    'providers': [
+      for (final (p, n) in providers) {...p.toJson(), 'usedOutside': n},
+    ],
+    'importedFromOutside': [
+      for (final (p, n) in importedFromOutside) {'path': p, 'importers': n},
+    ],
+    'consumed': consumed,
+    'notes': ?notesPath,
+  };
 }
 
-ShowAreaAnswer showArea(OutlineIndex idx, String dir) {
+Future<ShowAreaAnswer> showArea(Engine engine, String dir) async {
+  final idx = engine.outline;
+  bool inside(String path) => path.startsWith('$dir/');
   final lib =
       idx.files.values
           .where(
             (f) =>
-                f.path.startsWith('$dir/') &&
+                inside(f.path) &&
                 !isGeneratedFile(f.path) &&
                 !isTestPath(f.path),
           )
           .toList()
         ..sort((a, b) => a.path.compareTo(b.path));
 
-  int outside(String name) => idx.files.values
-      .where((f) => !f.path.startsWith('$dir/') && f.identifiers.contains(name))
-      .length;
-
-  final providers = [
-    for (final f in lib)
-      for (final p in f.providers)
-        (p, f.path, idx.mentions(p.name, exceptFile: f.path)),
-  ]..sort((a, b) => b.$3.compareTo(a.$3));
-  final declaredHere = {for (final (p, _, _) in providers) p.name};
-  final providerHome = {
-    for (final f in idx.files.values)
-      for (final p in f.providers) p.name: f.path,
-  };
+  final declared = <Target>[];
   final consumed = SplayTreeMap<String, String>();
   for (final f in lib) {
-    for (final u in f.providerUses) {
-      final home = providerHome[u.provider];
-      if (home != null && !declaredHere.contains(u.provider)) {
-        consumed[u.provider] = home;
-      }
+    final (here, reads) = await providersIn(engine, f.path);
+    declared.addAll(here);
+    for (final (_, provider) in reads) {
+      if (!inside(provider.path)) consumed[provider.name] = provider.path;
     }
   }
+  final providers = await Future.wait([
+    for (final p in declared)
+      engine
+          .usesOf(p.element)
+          .then(
+            (uses) => (
+              p,
+              {
+                for (final u in uses)
+                  if (!inside(u.path)) u.path,
+              }.length,
+            ),
+          ),
+  ]);
+  providers.sort((a, b) => b.$2.compareTo(a.$2));
+
   final notes = _notesFor(idx.workspace, dir);
   return ShowAreaAnswer(
     dir: dir,
@@ -217,14 +313,13 @@ ShowAreaAnswer showArea(OutlineIndex idx, String dir) {
             (d, f.path),
     ],
     providers: providers,
-    usedOutside:
+    importedFromOutside:
         ([
-                for (final f in lib)
-                  for (final d in f.topLevel)
-                    if (!d.name.startsWith('_') && d.kind != DeclKind.provider)
-                      (d, f.path, outside(d.name)),
-              ].where((s) => s.$3 > 0).toList()
-              ..sort((a, b) => b.$3.compareTo(a.$3)))
+              for (final f in lib)
+                (f.path, idx.importers(f.path).where((p) => !inside(p)).length),
+            ].where((e) => e.$2 > 0).toList()..sort(
+              (a, b) => b.$2.compareTo(a.$2),
+            ))
             .take(15)
             .toList(),
     consumed: consumed,

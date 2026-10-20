@@ -8,7 +8,9 @@ import 'package:codegraph/src/analysis.dart';
 import 'package:codegraph/src/engine.dart';
 import 'package:codegraph/src/refs.dart';
 import 'package:codegraph/src/show.dart';
+import 'package:codegraph/src/show_file.dart';
 import 'package:codegraph/src/result.dart';
+import 'package:codegraph/src/symbols.dart';
 import 'package:codegraph/src/workspace.dart';
 import 'package:test/test.dart';
 
@@ -35,6 +37,67 @@ void main() {
   });
 
   String text(Answer a) => a.render(asJson: false, limit: null);
+
+  test(
+    'show file lists outline, wiring, and resolved provider facts',
+    () async {
+      final session = text((await showPath(engine, 'lib/core/session.dart'))!);
+      expect(session, startsWith('lib/core/session.dart  (17 lines)'));
+      expect(
+        session,
+        contains(
+          'imported by (2):\n  lib/features/home/home_page.dart\n'
+          '  test/home_test.dart',
+        ),
+      );
+      expect(
+        session,
+        contains(
+          'providers declared:\n  8: sessionProvider\n  10: flagProvider',
+        ),
+      );
+      final home = text(
+        (await showPath(engine, 'lib/features/home/home_page.dart'))!,
+      );
+      expect(
+        home,
+        contains(
+          'provider uses:\n'
+          '  9: ref.watch(sessionProvider)\n'
+          '  10: ref.listen(sessionProvider)\n'
+          '  17: ref.read(sessionProvider)\n'
+          '  18: ref.invalidate(sessionProvider)\n'
+          '  22: ref.watch(flagProvider)',
+        ),
+      );
+    },
+  );
+
+  test('show dir counts provider uses outside the area exactly', () async {
+    final core = text((await showPath(engine, 'lib/core'))!);
+    expect(
+      core,
+      contains(
+        'providers (files outside lib/core using them):\n'
+        '  sessionProvider  lib/core/session.dart:8  (2)\n'
+        '  flagProvider  lib/core/session.dart:10  (1)',
+      ),
+    );
+    expect(core, contains('  lib/core/session.dart  (2)'));
+    final home = text((await showPath(engine, 'home'))!);
+    expect(
+      home,
+      contains('pages:\n  HomePage  lib/features/home/home_page.dart:7'),
+    );
+    expect(
+      home,
+      contains(
+        'providers used from other areas:\n'
+        '  flagProvider  lib/core/session.dart\n'
+        '  sessionProvider  lib/core/session.dart',
+      ),
+    );
+  });
 
   test('refs finds provider reads through a ref held in a field', () async {
     final r = await refs(engine, 'sessionProvider');
@@ -159,6 +222,15 @@ void main() {
       ),
     );
   });
+
+  test(
+    'a class named by file and name is the class, not its constructor',
+    () async {
+      final r = await engine.resolve('lib/core/session.dart:Session');
+      expect(r, isA<Resolved>());
+      expect((r as Resolved).target.kind.label, 'class');
+    },
+  );
 
   test('symbols can be named by file and line or file and name', () async {
     final byLine = await refs(engine, 'lib/core/keys.dart:16');

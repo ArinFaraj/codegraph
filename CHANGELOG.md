@@ -4,6 +4,44 @@ The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
 and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
 
+## 4.6.0 - 2026-10-20
+
+### Changed
+
+- `show <file>` and `show <dir>` are answered by the worker from resolved
+  data. A file lists the providers it declares and every provider use with
+  its role; a directory counts, for each provider it declares, the files
+  outside it that use it, and lists the providers it reads from elsewhere.
+  These used to match names, so two classes called `NetworkFailure` shared
+  one count (46 files where the right answer was 6).
+- `show <dir>`'s "most used outside" ranking by name is replaced by "imported
+  from outside": the area's files with how many files outside import them,
+  from the import graph. JSON: `usedOutside` and `mentionedBy` give way to
+  `providers[].usedOutside` and `importedFromOutside`.
+- The outline holds only declarations and directives. Identifier and string
+  word sets, syntactic provider uses and guessed `@riverpod` providers are
+  gone (a generated provider is found in its `.g.dart` file); the cache is a
+  third smaller and a cold `find` takes 0.1s instead of 0.8s. `find` labels a
+  provider by its syntax, `variable`.
+- An applied rename or move checks every file that depends on what it
+  edited, transitively, as `check` does. It used to check the edited files
+  and their direct importers, so a rename that broke a file seeing it only
+  through an export was kept. Only errors beyond the earlier count roll it
+  back, and only those are listed.
+- A running worker is recorded once, in `~/.cache/codegraph/workers/`;
+  `.dart_tool/codegraph/worker.json` is gone. A worker from an earlier
+  version is stopped and replaced on the next call.
+
+### Fixed
+
+- `path.dart:ClassName` named both the class and its unnamed constructor.
+- `doctor` named the removed `impact`; rename's refusal for a library said
+  files cannot be moved; the `UNSUPPORTED` footer pointed at `dart analyze`
+  instead of `codegraph check`.
+- The release comparison's provider filter compared an enum with a string
+  and excluded nothing; it is removed, as earlier runs already included
+  providers.
+
 ## 4.5.2 - 2026-10-20
 
 ### Fixed

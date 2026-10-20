@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:isolate';
 
+import 'result.dart';
+
 /// Compiles the currently installed Codegraph package to a real executable.
 ///
 /// `dart pub global activate` installs a shell launcher that runs
@@ -11,7 +13,7 @@ Future<int> run(List<String> args) async {
   final outputFlag = args.indexOf('--output');
   if (outputFlag >= 0 && outputFlag + 1 >= args.length) {
     stderr.writeln('usage: codegraph install-native [--output <path>]');
-    return 64;
+    return Exit.usage;
   }
   final home = Platform.environment['HOME'];
   if (outputFlag < 0 && (home == null || home.isEmpty)) {
@@ -19,7 +21,7 @@ Future<int> run(List<String> args) async {
       'cannot choose a default install path because HOME is unavailable; '
       'pass --output <path>',
     );
-    return 66;
+    return Exit.cannotAnalyze;
   }
   final target = File(
     outputFlag >= 0 ? args[outputFlag + 1] : '$home/.local/bin/codegraph',
@@ -32,14 +34,14 @@ Future<int> run(List<String> args) async {
       'cannot locate the installed Codegraph source; run this command through '
       '~/.pub-cache/bin/codegraph after `dart pub global activate`',
     );
-    return 66;
+    return Exit.cannotAnalyze;
   }
   final source = File.fromUri(packageUri);
   final packageRoot = source.parent.parent.parent;
   final entrypoint = File('${packageRoot.path}/bin/codegraph.dart');
   if (!entrypoint.existsSync()) {
     stderr.writeln('cannot find Codegraph entrypoint at ${entrypoint.path}');
-    return 66;
+    return Exit.cannotAnalyze;
   }
 
   target.parent.createSync(recursive: true);
@@ -58,7 +60,7 @@ Future<int> run(List<String> args) async {
   if (result.stderr.toString().isNotEmpty) stderr.write(result.stderr);
   if (result.exitCode != 0 || !temporary.existsSync()) {
     if (temporary.existsSync()) temporary.deleteSync();
-    return result.exitCode == 0 ? 1 : result.exitCode;
+    return result.exitCode == 0 ? Exit.failed : result.exitCode;
   }
 
   final verification = await Process.run(temporary.path, ['--version']);
@@ -68,17 +70,17 @@ Future<int> run(List<String> args) async {
       'compiled executable failed its version check; not installed',
     );
     temporary.deleteSync();
-    return 1;
+    return Exit.failed;
   }
   try {
     temporary.renameSync(target.path);
   } on FileSystemException catch (error) {
     stderr.writeln('could not install ${target.path}: $error');
     if (temporary.existsSync()) temporary.deleteSync();
-    return 1;
+    return Exit.failed;
   }
   stdout.writeln(
     'installed ${verification.stdout.toString().trim()} at ${target.path}',
   );
-  return 0;
+  return Exit.ok;
 }

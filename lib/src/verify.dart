@@ -1,8 +1,9 @@
 // What an applied change did to the build: the errors a set of files had
 // before, compared with after. Rename and move both refuse to keep a change
 // that introduced one.
-import 'analysis.dart';
 import 'engine.dart';
+import 'problem_counts.dart';
+import 'result.dart';
 
 sealed class Applied {}
 
@@ -22,21 +23,73 @@ class NotApplied extends Applied {
   final List<String> details;
 }
 
-/// Error counts by diagnostic code, per file, taken before a change.
+/// The exit code of a change that was [applied], or of a dry run when null.
+int appliedExit(Applied? applied) => switch (applied) {
+  null || AppliedClean() => Exit.ok,
+  RolledBack() => Exit.refused,
+  NotApplied() => Exit.failed,
+};
+
+/// What happened to an applied change, as footer lines. [done] says what a
+/// clean change did ("applied", "moved"); [rolledBack] heads the errors.
+void writeApplied(
+  TextOut out,
+  Applied? applied, {
+  required String done,
+  required String Function(List<String> errors) rolledBack,
+}) {
+  switch (applied) {
+    case null:
+      break;
+    case AppliedClean(:final checkedFiles):
+      out.footer(
+        '$done. Analysis of ${plural(checkedFiles, 'affected file')} '
+        'shows no new errors.',
+      );
+    case RolledBack(:final errors):
+      out.footer(rolledBack(errors));
+      for (final e in errors.take(15)) {
+        out.footer('  $e');
+      }
+    case NotApplied(:final message, :final details):
+      out.footer('not applied: $message');
+      for (final d in details) {
+        out.footer('  $d');
+      }
+  }
+}
+
+Map<String, Object?> appliedJson(Applied applied) => switch (applied) {
+  AppliedClean(:final checkedFiles) => {
+    'result': 'applied',
+    'checkedFiles': checkedFiles,
+  },
+  RolledBack(:final errors) => {'result': 'rolled back', 'errors': errors},
+  NotApplied(:final message, :final details) => {
+    'result': 'not applied',
+    'message': message,
+    'details': details,
+  },
+};
+
+/// The errors every file a change can reach had before it: the changed
+/// files and everything depending on them, transitively, as `check` scopes.
 class ErrorBaseline {
-  ErrorBaseline._(this._counts);
+  ErrorBaseline._(this._before);
 
-  final Map<String, Map<String, int>> _counts;
+  final Map<String, ProblemCounts> _before;
 
-  int get fileCount => _counts.length;
+  int get fileCount => _before.length;
 
   static Future<ErrorBaseline> take(
     Engine engine,
-    Iterable<String> files,
+    Iterable<String> changed,
   ) async {
+    final scope = engine.outline.affectedBy(changed).toList();
+    final errors = await Future.wait(scope.map(engine.analysis.errors));
     return ErrorBaseline._({
-      for (final f in files.toSet())
-        f: _countByCode(await engine.analysis.errors(f)),
+      for (var i = 0; i < scope.length; i++)
+        scope[i]: ProblemCounts.of(errors[i], byCode),
     });
   }
 
@@ -46,29 +99,18 @@ class ErrorBaseline {
     Engine engine, {
     Map<String, String> renamed = const {},
   }) async {
-    final out = <String>[];
-    for (final e in _counts.entries) {
-      final path = renamed[e.key] ?? e.key;
-      final now = await engine.analysis.errors(path);
-      final counts = _countByCode(now);
-      for (final d in now) {
-        final code = d.code;
-        if ((counts[code] ?? 0) > (e.value[code] ?? 0)) {
-          out.add('$path:${d.line}  ${d.message}');
-        }
-      }
-    }
-    return out;
+    final before = [
+      for (final e in _before.entries) (renamed[e.key] ?? e.key, e.value),
+    ];
+    final now = await Future.wait([
+      for (final (path, _) in before) engine.analysis.errors(path),
+    ]);
+    return [
+      for (var i = 0; i < before.length; i++)
+        for (final e in before[i].$2.newIn(now[i]))
+          '${before[i].$1}:${e.line}  ${e.message}',
+    ];
   }
-}
-
-Map<String, int> _countByCode(List<Problem> problems) {
-  final out = <String, int>{};
-  for (final d in problems) {
-    final code = d.code;
-    out[code] = (out[code] ?? 0) + 1;
-  }
-  return out;
 }
 
 /// Tells the analyzer and the engine's caches about files this process wrote.

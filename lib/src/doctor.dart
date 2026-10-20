@@ -6,7 +6,6 @@ import 'registry.dart';
 import 'result.dart';
 import 'sdk.dart';
 import 'version.dart';
-import 'worker.dart';
 import 'workspace.dart';
 
 /// Worker and setup status, or worker control with [warm], [stop] and
@@ -18,7 +17,7 @@ Future<int> doctor(
   required bool restart,
 }) async {
   if (stop || restart) {
-    await stopWorker(ws);
+    if (Registry.entry(ws.root) case final w?) await stopWorker(w);
     if (stop) {
       stdout.writeln('worker stopped');
       return 0;
@@ -61,22 +60,24 @@ Future<int> doctor(
 }
 
 Future<String> _workerLine(Workspace ws) async {
-  final state = WorkerState.read(ws);
-  if (state == null) {
-    return 'worker: not running (starts on the first refs, impact, rename or '
+  final w = Registry.entry(ws.root);
+  if (w == null || !processAlive(w.pid)) {
+    return 'worker: not running (starts on the first check, refs, rename or '
         'show <symbol>)';
   }
-  final s = await sendToWorker(state, {
-    'type': 'status',
-  }, connectTimeout: const Duration(milliseconds: 800));
+  final s = await workerStatus(
+    w,
+    connect: const Duration(milliseconds: 800),
+    reply: const Duration(seconds: 2),
+  );
   if (s == null) {
-    return 'worker: not responding (pid ${state.pid}); doctor --restart';
+    return 'worker: not responding (pid ${w.pid}); doctor --restart';
   }
-  return 'worker: ${s['version']} pid ${s['pid']}, ${s['phase']}, '
-      '${s['files']} files, ${s['indexed']} indexed, ${s['rssMb']}MB, '
-      'up ${s['uptimeSeconds']}s, exits after ${s['idleMinutes']} idle minutes'
-      '${s['fineDeps'] == true ? ', fine dependencies' : ''}'
-      '${s['error'] != null ? ', error: ${s['error']}' : ''}';
+  return 'worker: ${s.version} pid ${s.pid}, ${s.phase}, '
+      '${s.files} files, ${s.indexed} indexed, ${s.rssMb}MB, '
+      'up ${s.uptimeSeconds}s, exits after ${s.idleMinutes} idle minutes'
+      '${s.fineDeps ? ', fine dependencies' : ''}'
+      '${s.error != null ? ', error: ${s.error}' : ''}';
 }
 
 bool _newer(String sdk, String languageVersion) {

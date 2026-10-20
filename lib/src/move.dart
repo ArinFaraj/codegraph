@@ -328,11 +328,7 @@ class MoveAnswer extends Answer {
   String get verb => 'rename';
 
   @override
-  int get exit => switch (applied) {
-    null || AppliedClean() => Exit.ok,
-    RolledBack() => Exit.refused,
-    NotApplied() => Exit.failed,
-  };
+  int get exit => appliedExit(applied);
 
   @override
   void write(TextOut out) {
@@ -347,25 +343,12 @@ class MoveAnswer extends Answer {
     for (final e in [...plan.importers, ...plan.own]) {
       out.row('  ${e.path}:${e.line}  ${e.before} -> ${e.after}');
     }
-    switch (applied) {
-      case null:
-        break;
-      case AppliedClean(:final checkedFiles):
-        out.footer(
-          'moved. Analysis of ${plural(checkedFiles, 'affected file')} '
-          'shows no new errors.',
-        );
-      case RolledBack(:final errors):
-        out.footer('rolled back: every file is as it was:');
-        for (final e in errors.take(15)) {
-          out.footer('  $e');
-        }
-      case NotApplied(:final message, :final details):
-        out.footer('not applied: $message');
-        for (final d in details) {
-          out.footer('  $d');
-        }
-    }
+    writeApplied(
+      out,
+      applied,
+      done: 'moved',
+      rolledBack: (_) => 'rolled back: every file is as it was:',
+    );
   }
 
   @override
@@ -376,21 +359,6 @@ class MoveAnswer extends Answer {
       for (final e in [...plan.importers, ...plan.own])
         {'path': e.path, 'line': e.line, 'before': e.before, 'after': e.after},
     ],
-    if (applied != null)
-      'applied': switch (applied!) {
-        AppliedClean(:final checkedFiles) => {
-          'result': 'applied',
-          'checkedFiles': checkedFiles,
-        },
-        RolledBack(:final errors) => {
-          'result': 'rolled back',
-          'errors': errors,
-        },
-        NotApplied(:final message, :final details) => {
-          'result': 'not applied',
-          'message': message,
-          'details': details,
-        },
-      },
+    if (applied case final a?) 'applied': appliedJson(a),
   };
 }

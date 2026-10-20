@@ -33,10 +33,7 @@ Future<void> main(List<String> args) async {
     for (final f in outline.files.values)
       if (f.path.startsWith('lib/') && !isGeneratedFile(f.path))
         for (final d in f.decls)
-          if (!d.isMember &&
-              d.kind != 'provider' &&
-              !d.name.startsWith('_') &&
-              !d.name.startsWith('<'))
+          if (!d.isMember && !d.name.startsWith('_') && !d.name.startsWith('<'))
             (f.path, d),
   ]..shuffle(Random(4));
   final picked = candidates.take(sample).toList();

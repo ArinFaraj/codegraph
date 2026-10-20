@@ -1,6 +1,6 @@
 import 'check.dart';
 import 'move.dart';
-import 'outline_request.dart';
+import 'find.dart';
 import 'refs.dart';
 import 'rename.dart';
 import 'request.dart';
@@ -123,7 +123,7 @@ class Command {
 /// knows its own fields.
 WorkerRequest decodeRequest(Map<String, dynamic> j) => switch (j['verb']) {
   'check' => CheckRequest.fromJson(j),
-  'outline' => OutlineRequest.fromJson(j),
+  'find' => FindRequest.fromJson(j),
   'refs' => RefsRequest.fromJson(j),
   'show' => ShowRequest.fromJson(j),
   'rename' => RenameRequest.fromJson(j),

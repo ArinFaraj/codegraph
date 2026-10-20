@@ -1,5 +1,6 @@
-// `show <symbol>`: a declaration's signature, its place in the type
-// hierarchy, and how it is used. Providers list their readers by role.
+// `show <symbol>`: a declaration's source, its place in the type hierarchy,
+// and how it is used. Providers list their readers by role. A `show` that
+// names a file or directory is answered from the outline instead.
 import 'package:analyzer/dart/element/element.dart';
 
 import 'classify.dart';
@@ -10,6 +11,7 @@ import 'refs.dart';
 import 'request.dart';
 import 'result.dart';
 import 'riverpod.dart';
+import 'show_file.dart';
 import 'symbols.dart';
 
 Future<Answer> showSymbol(
@@ -99,7 +101,8 @@ class ShowRequest extends WorkerRequest {
   Map<String, Object?> get fields => {'query': query};
 
   @override
-  Future<Answer> run(Engine engine) => showSymbol(engine, query);
+  Future<Answer> run(Engine engine) async =>
+      await showPath(engine, query) ?? await showSymbol(engine, query);
 }
 
 class ShowSymbolAnswer extends Answer {

@@ -1,6 +1,8 @@
 // `find`: declarations by name, from the parse-only outline.
+import 'engine.dart';
 import 'kinds.dart';
 import 'outline.dart';
+import 'request.dart';
 import 'result.dart';
 import 'workspace.dart';
 
@@ -112,4 +114,26 @@ FindAnswer find(OutlineIndex idx, String query) {
     files,
     idx.files.length,
   );
+}
+
+class FindRequest extends WorkerRequest {
+  FindRequest(this.query, {required super.json, required super.limit});
+
+  FindRequest.fromJson(Map<String, dynamic> j)
+    : this(
+        j['query'] as String,
+        json: j['json'] as bool,
+        limit: j['limit'] as int?,
+      );
+
+  final String query;
+
+  @override
+  String get verb => 'find';
+
+  @override
+  Map<String, Object?> get fields => {'query': query};
+
+  @override
+  Future<Answer> run(Engine engine) async => find(engine.outline, query);
 }
