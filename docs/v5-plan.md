@@ -474,7 +474,9 @@ has `errors()` and rename's verify step to build on.
    already fires there. I have not confirmed that `PostToolUse` with exit 2
    behaves the same there.
 5. **Plugin lints** (2% of analyze runs) stay with `dart analyze` and CI.
-   The v4 suspicion that CI never runs riverpod_lint is still unconfirmed.
+   Settled 2026-10-20: `flutter analyze` returns before plugins report
+   (dart-lang/sdk#63787), so CI never ran riverpod_lint. krdpass CI now runs
+   `dart analyze --fatal-infos` plus a canary step (`93129a534`).
 6. **CI failures are mostly tests.** About 42 of 57 failed runs were
    assertions, goldens or timeouts, which codegraph cannot prevent while local
    tests are banned. Worth raising separately: run the tests
