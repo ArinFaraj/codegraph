@@ -4,7 +4,11 @@
 // same arguments, and compare.
 //
 //   dart run tool/session_audit.dart --project krdpass-app \
-//       --since 2026-10-20 --until 2026-11-03 [--exclude <session id prefix>]
+//       --since 2026-10-20 --until 2026-11-03 [--started-after <ISO time>]
+//       [--exclude <session id prefix>]
+//
+// A session started before the change being judged runs with the old
+// instructions and hooks loaded; --started-after leaves such sessions out.
 import 'dart:convert';
 import 'dart:io';
 
@@ -61,11 +65,13 @@ void main(List<String> argv) {
   if (since == null || until == null) {
     stderr.writeln(
       'usage: dart run tool/session_audit.dart --since YYYY-MM-DD '
-      '--until YYYY-MM-DD [--project NAME] [--exclude SESSION_PREFIX]...',
+      '--until YYYY-MM-DD [--project NAME] [--started-after ISO_TIME] '
+      '[--exclude SESSION_PREFIX]...',
     );
     exit(64);
   }
   final project = option('project') ?? 'krdpass-app';
+  final startedAfter = option('started-after') ?? '';
   final excluded = [
     for (var i = 0; i < argv.length - 1; i++)
       if (argv[i] == '--exclude') argv[i + 1],
@@ -88,15 +94,22 @@ void main(List<String> argv) {
         if (!name.endsWith('.jsonl') || excluded.any(name.startsWith)) {
           continue;
         }
-        _session(f, since, until, counts);
+        _session(f, since, until, startedAfter, counts);
       }
     }
   }
   _report(counts, since, until, project);
 }
 
-void _session(File f, String since, String until, _Counts counts) {
+void _session(
+  File f,
+  String since,
+  String until,
+  String startedAfter,
+  _Counts counts,
+) {
   final calls = <_Call>[];
+  String? started;
   final byId = <String, _Call>{};
   var inWindow = false;
   for (final line in f.readAsLinesSync()) {
@@ -107,6 +120,7 @@ void _session(File f, String since, String until, _Counts counts) {
       continue;
     }
     final ts = j['timestamp'] as String? ?? '';
+    if (ts.isNotEmpty) started ??= ts;
     if (ts.compareTo(since) < 0 || ts.compareTo(until) >= 0) continue;
     inWindow = true;
     if (j['attachment'] case {
@@ -139,7 +153,7 @@ void _session(File f, String since, String until, _Counts counts) {
       }
     }
   }
-  if (!inWindow) return;
+  if (!inWindow || (started ?? '').compareTo(startedAfter) < 0) return;
   counts.sessions++;
 
   for (var i = 0; i < calls.length; i++) {

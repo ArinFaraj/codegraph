@@ -498,6 +498,11 @@ the baseline and the judged window with the same arguments.
 | Hook reports to agents | - | 0 |
 
 The tool's baseline analyze count (2,005) agrees with section 1.1's (1,990).
+The first-day column is not evidence either way: its analyze runs all come
+from two sessions that started before the hook commit (krdpass `1a686ef41`,
+2026-10-20 08:30 UTC), one of them codegraph's own development. Judge M2 and
+M3 with `--started-after 2026-10-20T08:30` and codegraph development sessions
+excluded.
 Across all of 2026-10-20, the only hook warnings delivered anywhere were
 codegraph's own probes, plus three in a baran session: one real report of an
 edit's effect (a deprecation info), one 31-problem report covering 113
