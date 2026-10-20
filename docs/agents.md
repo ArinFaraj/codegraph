@@ -25,7 +25,7 @@ run `codegraph check --all`. Symbols go to `codegraph`, exact strings go to
 ```markdown
 ---
 name: code-map
-description: Exact answers about this Dart/Flutter repository - what an edit broke, where a class, provider or function is declared and what its source is, every use of it with its line and role, complete renames and file moves. Use before renaming anything, when tracing who watches or reads a provider, who implements a type or overrides a method, or what a change broke. Not for string literals (use rg).
+description: Exact answers about this Dart/Flutter repository - what an edit broke, where a class, provider or function is declared and what its source is, every use of it with its line and role, complete renames and file moves, and a translation key's text in every locale with its uses. Use before renaming anything, when tracing who watches or reads a provider, who implements a type or overrides a method, or what a change broke. Not for string literals (use rg).
 ---
 
 # code-map
@@ -40,6 +40,7 @@ description: Exact answers about this Dart/Flutter repository - what an edit bro
 | What does this file contain and who imports it? | `codegraph show path/to/file.dart` |
 | What is in this feature directory? | `codegraph show lib/features/payment` |
 | Every use of X with its line | `codegraph refs X` (`-C 3` for source around each) |
+| A translation key's text in each locale, and its uses | `codegraph refs t.x.y` (or `x.y`); names locales missing it |
 | Rename X everywhere | `codegraph rename X newName`, read the edits, then add `--apply` |
 | Move a file and fix every import | `codegraph rename lib/a.dart lib/b/a.dart`, then `--apply` |
 

@@ -64,6 +64,22 @@ A name shared by up to five declarations is answered for each of them by
 prints a declaration's source up to 60 lines; a longer type shows its members
 instead, a longer function its first 60 lines.
 
+In a [slang](https://pub.dev/packages/slang) project generated with
+`translation_overrides: true`, `refs` and `show` also take a translation key,
+dotted (`home.title`) or as Dart reads it (`t.home.title`). The key is
+matched exactly through the generated getter, so the answer is that getter's
+uses, preceded by the key's line in each locale file and the locales missing
+it:
+
+```text
+$ codegraph refs home.unused
+translation key home.unused, missing in ar
+  en   lib/i18n/yaml/en.yaml:4  Never shown
+  ar   missing from lib/i18n/yaml/ar.yaml
+refs TranslationsHomeEn.unused (getter, lib/i18n/strings_en.g.dart:24): 0 uses in 0 files
+no uses in 17 analyzed files
+```
+
 Exit codes: 0 answered, 1 not found, failed, or `check` found problems, 2
 ambiguous (candidates listed), 3 rename refused or rolled back, 64 usage, 66
 cannot analyze (no `pubspec.yaml`, or no `.dart_tool/package_config.json`:

@@ -11,6 +11,7 @@ import 'files.dart';
 import 'outline.dart';
 import 'result.dart';
 import 'symbols.dart';
+import 'translations.dart';
 import 'workspace.dart';
 
 /// A list a query stopped filling early, and whether it did.
@@ -46,8 +47,22 @@ class Engine {
     return delta;
   }
 
+  Future<TranslationIndex?>? _translations;
+  String? _translationsFile;
+
+  /// The slang translation index, rebuilt when the generated base file
+  /// changes.
+  Future<TranslationIndex?> translations() =>
+      _translations ??= TranslationIndex.build(this).then((index) {
+        _translationsFile = index?.config.baseFile;
+        return index;
+      });
+
   void filesChanged(Iterable<String> paths) {
     final list = paths.toList();
+    if (_translationsFile != null && list.contains(_translationsFile)) {
+      _translations = null;
+    }
     sources.invalidate(list);
     outline.refresh(list, sources.text);
   }
@@ -71,6 +86,7 @@ class Engine {
 
   /// Like [withTarget], but a name that matches a few declarations is
   /// answered for each of them, so the caller does not have to ask again.
+  /// A name that matches no declaration is tried as a translation key.
   Future<Answer> withEachTarget(
     String verb,
     String query,
@@ -79,6 +95,9 @@ class Engine {
     Resolved(:final target) => await body(target),
     Ambiguous(:final targets) when targets.length <= eachTargetCap =>
       EachAnswer(verb, query, [for (final t in targets) await body(t)]),
+    final Missing m =>
+      await translationAnswer(this, query, body) ??
+          lookupFailure(verb, query, m),
     final Unresolved u => lookupFailure(verb, query, u),
   };
 

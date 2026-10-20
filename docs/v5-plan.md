@@ -1,8 +1,11 @@
 # codegraph v5: plan
 
 Status: M1 (`check`) shipped in 4.3.0 and M3 (answers with code) in 4.4.0,
-both on 2026-10-20; M2's audit is due around 2026-11-03, and M4 and M5 wait
-on it. Measured on a krdpass snapshot through the real CLI and worker:
+both on 2026-10-20, and M4's translation-key link in 4.5.0 the same day,
+ahead of the audit because it was exact and nearly free once `show` answered
+with code. M2's audit is due around 2026-11-03; gates, channels and M5 wait
+on it. Risk 4 is settled: a `PostToolUse` exit-2 report on a Bash call
+reaches the agent under T3 Code (probed 2026-10-20). Measured on a krdpass snapshot through the real CLI and worker:
 `check --all` 2.3s, printing exactly what `dart analyze` prints minus the 23
 riverpod_lint infos; the hook 50 to 70ms on a shell command that wrote
 nothing, 0.4 to 0.6s after a one-file edit, 3.1s after an API break that

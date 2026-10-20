@@ -4,6 +4,17 @@ The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
 and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
 
+## 4.5.0 - 2026-10-20
+
+### Added
+
+- `refs` and `show` take a slang translation key, dotted or as Dart reads it
+  (`t.update.restart`). The key resolves exactly through the generated getter,
+  whose body carries it, and the answer adds the key's line in each locale
+  YAML file and names the locales missing it. Translation strings were 6 to 9%
+  of all greps in the reference app's agent sessions. Needs
+  `translation_overrides: true` in `slang.yaml`; YAML locale files only.
+
 ## 4.4.0 - 2026-10-20
 
 ### Added
