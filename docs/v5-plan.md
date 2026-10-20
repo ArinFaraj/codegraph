@@ -479,6 +479,30 @@ release, and the rename post-apply check. New:
 M1 and M2 come first: they carry the measured hours, and the worker already
 has `errors()` and rename's verify step to build on.
 
+### 6.1 Measuring the audits
+
+`dart run tool/session_audit.dart --project krdpass-app --since A --until B`
+counts every number the milestones above are judged on, from the session
+transcripts. Hook reports are counted from the warnings Claude Code actually
+delivered (`hook_blocking_error` attachments), with probes excluded. Run it on
+the baseline and the judged window with the same arguments.
+
+| | Baseline 2026-09-30 to 10-20 (20 days) | 2026-10-20, first day with the hook (3 sessions) |
+|---|---:|---:|
+| Dart writes, Edit/Write + Bash, per day | 22 + 99 | 21 + 91 |
+| `dart`/`flutter analyze` runs per day | 100 | 81 |
+| `check --all` runs | 0 | 1 |
+| Greps per codegraph `find`/`show`/`refs` | 241 | 189 |
+| Grep lookups followed by a read of a hit | 46.4% of 4,069 | 49.6% of 131 |
+| Greps over `i18n/yaml` per day | 7.3 | 1 |
+| Hook reports to agents | - | 0 |
+
+The tool's baseline analyze count (2,005) agrees with section 1.1's (1,990).
+Across all of 2026-10-20, the only hook warnings delivered anywhere were
+codegraph's own probes, plus three in a baran session: one real report of an
+edit's effect (a deprecation info), one 31-problem report covering 113
+changed files, and one probe written by another session, blamed on this one.
+
 ## 7. Risks and open questions
 
 1. **Hook overhead on every Bash call.** Agents run thousands of Bash
