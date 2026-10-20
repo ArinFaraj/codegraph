@@ -1,7 +1,29 @@
 # Changelog
 
 The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
-The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
+The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
+and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
+
+## 4.3.0 - 2026-10-20
+
+### Added
+
+- `check [files...]` reports the problems a change introduced, in the
+  changed files and everything depending on them, against a ledger of what
+  each file had before. `check --all` lists every problem `dart analyze`
+  reports, except analyzer plugins. On the reference app (3,391 files),
+  `check --all` takes about 2 seconds against 55 for `dart analyze`, and
+  prints the same problems once riverpod_lint's are set aside.
+- `check --hook` runs after an agent's tool calls: Edit and Write by the
+  file they name, shell commands by the files modified while they ran.
+  Silent unless something new broke, then the problems on stderr and exit 2.
+- Problems follow `dart analyze`: each file's own analysis options
+  (`errors:` severities and `ignore`), no TODOs, and pubspec validation.
+
+### Changed
+
+- Rename and move compare errors after the same filtering, so an error code a
+  package's options ignore no longer blocks or rolls back a change.
 
 ## 4.2.0 - 2026-10-19
 

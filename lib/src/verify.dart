@@ -1,8 +1,7 @@
 // What an applied change did to the build: the errors a set of files had
 // before, compared with after. Rename and move both refuse to keep a change
 // that introduced one.
-import 'package:analyzer/diagnostic/diagnostic.dart';
-
+import 'analysis.dart';
 import 'engine.dart';
 
 sealed class Applied {}
@@ -53,11 +52,9 @@ class ErrorBaseline {
       final now = await engine.analysis.errors(path);
       final counts = _countByCode(now);
       for (final d in now) {
-        final code = d.diagnosticCode.lowerCaseName;
+        final code = d.code;
         if ((counts[code] ?? 0) > (e.value[code] ?? 0)) {
-          out.add(
-            '$path:${engine.sources.lineOf(path, d.offset)}  ${d.message}',
-          );
+          out.add('$path:${d.line}  ${d.message}');
         }
       }
     }
@@ -65,10 +62,10 @@ class ErrorBaseline {
   }
 }
 
-Map<String, int> _countByCode(List<Diagnostic> diagnostics) {
+Map<String, int> _countByCode(List<Problem> problems) {
   final out = <String, int>{};
-  for (final d in diagnostics) {
-    final code = d.diagnosticCode.lowerCaseName;
+  for (final d in problems) {
+    final code = d.code;
     out[code] = (out[code] ?? 0) + 1;
   }
   return out;

@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'files.dart';
+import 'kinds.dart';
 import 'outline_model.dart';
 import 'outline_parse.dart';
 import 'workspace.dart';
@@ -147,6 +148,55 @@ class OutlineIndex {
       return m;
     }();
     return map[rel] ?? const [];
+  }
+
+  /// Every file whose analysis can change when [changed] change: the files
+  /// themselves, the libraries they are parts of, the parts of those
+  /// libraries, and everything importing or exporting any of them,
+  /// transitively. [removed] files are matched by the URIs that name them,
+  /// since they are no longer in the index.
+  Set<String> affectedBy(
+    Iterable<String> changed, {
+    Iterable<String> removed = const [],
+  }) {
+    final out = <String>{};
+    final queue = <String>[...changed];
+    final gone = removed.toSet();
+    if (gone.isNotEmpty) {
+      for (final from in files.keys) {
+        for (final d in files[from]!.directives) {
+          if (gone.contains(_uriTarget(from, d.uri))) queue.add(from);
+        }
+      }
+    }
+    while (queue.isNotEmpty) {
+      final rel = queue.removeLast();
+      if (!files.containsKey(rel) || !out.add(rel)) continue;
+      queue.addAll(importers(rel));
+      for (final d in files[rel]!.directives) {
+        if (d.kind == DirectiveKind.part || d.kind == DirectiveKind.partOf) {
+          if (resolveUri(rel, d.uri) case final other?) queue.add(other);
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Where [uri] written in [fromRel] points, whether or not a file is there.
+  String? _uriTarget(String fromRel, String uri) {
+    if (uri.startsWith('package:')) {
+      final rest = uri.substring(8);
+      final slash = rest.indexOf('/');
+      final root = slash < 0 ? null : _packageRoots[rest.substring(0, slash)];
+      return root == null
+          ? null
+          : workspace.relativeOrNull('$root/lib/${rest.substring(slash + 1)}');
+    }
+    if (uri.contains(':')) return null;
+    final dir = fromRel.contains('/')
+        ? fromRel.substring(0, fromRel.lastIndexOf('/'))
+        : '';
+    return workspace.relativeOrNull(dir.isEmpty ? uri : '$dir/$uri');
   }
 
   Map<String, int>? _mentionCounts;

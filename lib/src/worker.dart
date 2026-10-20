@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'analysis.dart';
 import 'byte_store.dart';
+import 'check.dart';
 import 'commands.dart';
 import 'engine.dart';
 import 'registry.dart';
@@ -65,16 +66,18 @@ class AnalyzerHost {
     say('configuration changed; restarting the analyzer');
     await engine.analysis.dispose();
     _engine = null;
-    return _starting = _start();
+    return _starting = _start(ledger: engine.ledger);
   }
 
-  Future<Engine?> _start() async {
+  Future<Engine?> _start({Ledger? ledger}) async {
     phase = 'starting the analyzer';
     try {
       final analysis = await Analysis.open(workspace, fineDeps: fineDeps);
       phase = 'indexing workspace';
+      final engine = Engine(analysis)..ledger = ledger;
       unawaited(
-        analysis.warmUp(progress: (m) => phase = m).then((_) {
+        analysis.warmUp(progress: (m) => phase = m).then((_) async {
+          engine.ledger ??= await Ledger.build(engine);
           phase = 'ready';
           say(
             'warm: ${analysis.fileCount} files in '
@@ -82,7 +85,7 @@ class AnalyzerHost {
           );
         }),
       );
-      return _engine = Engine(analysis);
+      return _engine = engine;
     } catch (e) {
       error = e;
       phase = 'failed';

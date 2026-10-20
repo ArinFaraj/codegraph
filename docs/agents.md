@@ -9,7 +9,9 @@ on each verb are the reference.
 ```markdown
 ## Navigating the code
 
-Symbols go to `codegraph`, exact strings go to `rg`.
+Problems your edits cause are reported after each tool call. Before pushing,
+run `codegraph check --all`. Symbols go to `codegraph`, exact strings go to
+`rg`.
 
 - `codegraph find <name>` / `codegraph show <file|dir|symbol>`: where it is and what it looks like
 - `codegraph refs <symbol>`: every use with its line and role (ref.watch, call, implements, ...)
@@ -33,6 +35,7 @@ description: Exact answers about this Dart/Flutter repository - where a class, p
 
 | Question | Command |
 |---|---|
+| What did my edits break? | Reported after each tool call by the hook; `codegraph check` for everything new, `codegraph check --all` before pushing |
 | Where is X declared? | `codegraph find X` |
 | What does this file contain and who imports it? | `codegraph show path/to/file.dart` |
 | What is in this feature directory? | `codegraph show lib/features/payment` |
@@ -63,16 +66,23 @@ visible only as a rename refusal. The first `refs`/`impact`/`rename`/`show
 `codegraph doctor` shows the worker's state.
 ```
 
-## Session hook (optional)
+## Hooks
 
-Starting the worker when a session starts hides the analyzer warm-up. It
-prints nothing and costs no tokens:
+The first starts the worker when a session starts, which hides the analyzer
+warm-up. The second reports what each tool call broke. Both print nothing
+when there is nothing to say:
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       {"hooks": [{"type": "command", "command": "codegraph doctor --warm >/dev/null 2>&1 &"}]}
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [{"type": "command", "command": "codegraph check --hook", "timeout": 20}]
+      }
     ]
   }
 }

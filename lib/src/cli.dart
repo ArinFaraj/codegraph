@@ -13,6 +13,8 @@ import 'native_install.dart' as native_install;
 import 'outline.dart';
 import 'result.dart';
 import 'args.dart';
+import 'check.dart';
+import 'check_hook.dart';
 import 'find.dart';
 import 'show_file.dart';
 import 'why.dart';
@@ -24,6 +26,14 @@ const help =
     '''
 codegraph $codegraphVersion - exact answers about a Dart or Flutter repository
 
+  codegraph check [files...]          new errors, warnings and lints these files
+                                      cause, in them and in everything that
+                                      depends on them; no files: everything new
+  codegraph check --all               every problem `dart analyze` reports,
+                                      except analyzer plugins
+  codegraph check --hook              for a coding agent's after-tool hook:
+                                      reads the hook JSON on stdin, silent
+                                      unless something new broke (exit 2)
   codegraph find <name>               where something is declared (instant)
   codegraph show <file|dir|symbol>    outline of a file, digest of a directory,
                                       or a symbol: signature, subtypes,
@@ -47,7 +57,7 @@ symbols: Name, Owner.member, path/to/file.dart:name, or path/to/file.dart:LINE
          (the outermost declaration named on that line)
 flags:   --json, --limit N (default 40 rows), --all
 
-refs, impact, rename and show <symbol> are answered by a background worker
+check, refs, impact, rename and show <symbol> are answered by a background worker
 that keeps the Dart analyzer warm for this checkout and exits after 20 idle
 minutes. Its answers cover every file `dart analyze` sees, as it is on disk
 now. Exit codes: 0 answered, 1 not found or failed, 2 ambiguous (candidates
@@ -71,7 +81,6 @@ const _removed = {
       'impact --diff (tests section), or the repository\'s own test selector',
   'lint': 'nothing: architecture rules belong in the repository\'s tests',
   'build': 'nothing: there is nothing to build; answers are computed on demand',
-  'check': 'nothing: no generated files exist to check',
   'daemon': 'doctor --warm / --stop',
   'init': 'nothing: no scaffolding is installed',
   'upgrade': 'nothing: no scaffolding is installed',
@@ -117,6 +126,7 @@ Future<int> runCli(List<String> argv) async {
   }
 
   final ws = Workspace.find();
+  if (ws == null && c.verb == 'check' && c.hook) return Exit.ok;
   if (ws == null) {
     stderr.writeln(
       'no pubspec.yaml here or above; run codegraph inside a Dart or Flutter '
@@ -131,6 +141,20 @@ Future<int> runCli(List<String> argv) async {
   }
 
   switch (c.verb) {
+    case 'check':
+      if (c.hook) return checkHook(ws);
+      if (c.all && c.args.isNotEmpty) {
+        return _usage('codegraph check [files...] or codegraph check --all');
+      }
+      return _ask(
+        ws,
+        CheckRequest(
+          paths: [for (final p in c.args) File(p).absolute.path],
+          all: c.all,
+          json: c.json,
+          limit: c.limit,
+        ),
+      );
     case 'find':
       if (c.args.length != 1) return _usage('codegraph find <name>');
       return print(find(OutlineIndex.load(ws), c.args.single));

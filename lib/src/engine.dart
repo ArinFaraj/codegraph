@@ -5,6 +5,7 @@
 import 'package:analyzer/dart/element/element.dart';
 
 import 'analysis.dart';
+import 'check.dart' show Ledger;
 import 'classify.dart';
 import 'files.dart';
 import 'outline.dart';
@@ -28,12 +29,19 @@ class Engine {
   final SourceCache sources;
   late final OutlineIndex outline;
 
+  /// What every file's problems were when last checked; built once the
+  /// workspace is indexed, and kept across analyzer restarts.
+  Ledger? ledger;
+
+  /// What the most recent [refresh] found changed on disk.
+  FileDelta? lastDelta;
+
   Workspace get workspace => analysis.workspace;
 
   /// Syncs the analyzer with the disk and drops everything derived from the
   /// files that changed.
   Future<FileDelta> refresh() async {
-    final delta = await analysis.sync();
+    final delta = lastDelta = await analysis.sync();
     filesChanged(delta.all);
     return delta;
   }

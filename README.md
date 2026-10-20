@@ -1,9 +1,10 @@
 # codegraph
 
 Exact answers about a Dart or Flutter repository, for coding agents and the
-people working next to them: where something is declared, every place it is
-used and how (`ref.watch`, call, implements, ...), what a change reaches, and
-renames that are complete or refused with a reason.
+people working next to them: what an edit just broke, where something is
+declared, every place it is used and how (`ref.watch`, call, implements,
+...), what a change reaches, and renames that are complete or refused with a
+reason.
 
 It writes nothing into your repository, needs no CI step, and has nothing to
 regenerate. Answers come from the Dart analyzer, kept warm by a background
@@ -24,6 +25,11 @@ query.
 ## Use
 
 ```text
+codegraph check [files...]          new problems these files cause, in them
+                                    and everything that depends on them
+codegraph check --all               every problem `dart analyze` reports,
+                                    except analyzer plugins
+codegraph check --hook              for an agent's after-tool hook (below)
 codegraph find <name>               where something is declared (instant)
 codegraph show <file|dir|symbol>    outline of a file, digest of a directory,
                                     or a symbol: signature, subtypes,
@@ -66,7 +72,7 @@ listed), 3 rename refused or rolled back, 64 usage, 66 cannot analyze (no
   exact about what a file declares and imports, never about what a name
   resolves to, and they answer in a fraction of a second without the worker.
   Their cache lives in `.dart_tool/codegraph/outline.json`.
-- `refs`, `impact`, `rename` and `show <symbol>` go to the worker: one
+- `check`, `refs`, `impact`, `rename` and `show <symbol>` go to the worker: one
   background process per checkout that holds the Dart analyzer with its
   search index. Before every answer it checks every analyzed file for
   changes. Its answers cover exactly what `dart analyze` covers, including
@@ -84,6 +90,49 @@ listed), 3 rename refused or rolled back, 64 usage, 66 cannot analyze (no
 Settings, all optional: `CODEGRAPH_IDLE_MINUTES` (20), `CODEGRAPH_MAX_WORKERS`
 (2), `CODEGRAPH_FINE_DEPS=1` (faster updates after API edits, about twice the
 memory), `CODEGRAPH_BYTE_STORE` (cache directory).
+
+## Check
+
+`check` answers "what did my edit break" from the warm analyzer, in about a
+second where `dart analyze` takes most of a minute on a large app. Its
+problems are the ones `dart analyze` prints: analyzer errors, warnings and
+lints with each package's own `analysis_options.yaml` applied, TODOs left
+out, and the pubspec checks (missing assets and the like). Analyzer plugins
+such as riverpod_lint are not run.
+
+The worker keeps a ledger of every file's problems. `check <files>` reports
+only problems that are new against it, in those files and in every file that
+depends on them, and then records them as seen. Problems in files outside
+that reach are left for the change that caused them, so several agents can
+share a checkout without being told about each other's half-finished work.
+`check` with no files reports everything new anywhere. `check --all` lists
+every current problem and is the gate to run before pushing.
+
+`check --hook` is meant to run after every tool call a coding agent makes. It
+reads the hook's JSON on stdin. For a tool that writes one file (Edit, Write)
+it checks that file; for a shell command it checks every file whose
+modification time falls inside the command's run. It prints nothing and
+exits 0 unless something new broke, and then it prints the problems on
+stderr and exits 2, which Claude Code shows to the agent next to the tool
+result. A shell command that wrote nothing costs about 60ms; a check after an
+edit takes under a second, after an API change a few seconds. It gives up
+silently after 15 seconds, and while the worker is still warming up.
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [{"type": "command", "command": "codegraph check --hook", "timeout": 20}]
+      }
+    ]
+  }
+}
+```
+
+Shell commands matter: in the sessions this was built from, most Dart edits
+were made by scripts and `sed`, not by the Edit tool.
 
 ## Rename
 

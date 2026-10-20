@@ -1,3 +1,4 @@
+import 'check.dart';
 import 'impact.dart';
 import 'move.dart';
 import 'refs.dart';
@@ -19,6 +20,8 @@ class Command {
     this.stop = false,
     this.restart = false,
     this.help = false,
+    this.all = false,
+    this.hook = false,
     this.error,
   });
 
@@ -34,6 +37,8 @@ class Command {
     var stop = false;
     var restart = false;
     var help = false;
+    var all = false;
+    var hook = false;
     String? error;
     for (var i = 0; i < argv.length; i++) {
       switch (argv[i]) {
@@ -41,6 +46,9 @@ class Command {
           json = true;
         case '--all':
           limit = null;
+          all = true;
+        case '--hook':
+          hook = true;
         case '--apply':
           apply = true;
         case '--diff':
@@ -88,6 +96,8 @@ class Command {
       stop: stop,
       restart: restart,
       help: help,
+      all: all,
+      hook: hook,
       error: error,
     );
   }
@@ -103,12 +113,19 @@ class Command {
   final bool stop;
   final bool restart;
   final bool help;
+
+  /// `--all`: every row, and for `check`, the whole workspace.
+  final bool all;
+
+  /// `check --hook`: read a coding agent's hook input on stdin.
+  final bool hook;
   final String? error;
 }
 
 /// Rebuilds a request on the worker side. One line per verb; each request
 /// knows its own fields.
 WorkerRequest decodeRequest(Map<String, dynamic> j) => switch (j['verb']) {
+  'check' => CheckRequest.fromJson(j),
   'refs' => RefsRequest.fromJson(j),
   'show' => ShowRequest.fromJson(j),
   'impact' => ImpactRequest.fromJson(j),

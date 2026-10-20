@@ -99,6 +99,15 @@ class FileTracker {
     return FileDelta(added, changed, removed, config: config);
   }
 
+  /// Tracked files whose recorded modification time is at or after [t].
+  List<String> modifiedSince(DateTime t) {
+    final since = t.microsecondsSinceEpoch;
+    return [
+      for (final e in _files.entries)
+        if ((int.tryParse(e.value.split(':').first) ?? -1) >= since) e.key,
+    ]..sort();
+  }
+
   /// Records the current stamps of files this process just wrote, so the
   /// next [sync] does not report them again.
   void restamp(Iterable<String> paths) {

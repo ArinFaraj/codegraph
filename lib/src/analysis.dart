@@ -2,17 +2,23 @@
 // when the analyzer is upgraded should change here.
 import 'dart:async';
 
+import 'package:analyzer/dart/analysis/analysis_options.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:analyzer/error/error.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
+import 'package:analyzer/source/error_processor.dart';
+import 'package:analyzer/source/file_source.dart';
+import 'package:analyzer/source/line_info.dart';
 // ignore_for_file: implementation_imports
 import 'package:analyzer/src/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart';
 import 'package:analyzer/src/dart/analysis/experiments.dart';
 import 'package:analyzer/src/dart/analysis/file_byte_store.dart';
 import 'package:analyzer/src/dart/analysis/search.dart' as search;
+import 'package:analyzer/src/pubspec/pubspec_validator.dart';
+import 'package:yaml/yaml.dart';
 
 import 'byte_store.dart';
 import 'files.dart';
@@ -46,6 +52,45 @@ class Location {
   final String path;
   final int offset;
   final int line;
+}
+
+/// A diagnostic as `dart analyze` reports it: after the analysis options of
+/// its file have raised, lowered or silenced it.
+class Problem {
+  Problem(
+    this.path,
+    this.offset,
+    this.line,
+    this.column,
+    this.severity,
+    this.code,
+    this.message,
+  );
+
+  /// Workspace-relative.
+  final String path;
+  final int offset;
+  final int line;
+  final int column;
+
+  /// `error`, `warning` or `info`.
+  final String severity;
+  final String code;
+  final String message;
+
+  bool get isError => severity == 'error';
+
+  /// What identifies a problem across edits that move it to another line.
+  String get identity => '$severity|$code|$message';
+
+  Map<String, Object?> toJson() => {
+    'path': path,
+    'line': line,
+    'column': column,
+    'severity': severity,
+    'code': code,
+    'message': message,
+  };
 }
 
 typedef Progress = void Function(String message);
@@ -160,6 +205,9 @@ class Analysis {
 
   bool isAnalyzed(String path) => _owner.containsKey(path);
 
+  /// Analyzed files last modified at or after [t], as of the last [sync].
+  List<String> modifiedSince(DateTime t) => _tracker.modifiedSince(t);
+
   /// The workspace-relative path of an analyzer source, when it is analyzed.
   String? _analyzedPath(String fullName) {
     final rel = workspace.relativeOrNull(fullName);
@@ -265,16 +313,94 @@ class Analysis {
     return out.values.toList();
   }
 
-  /// Error-severity diagnostics in [path].
-  Future<List<Diagnostic>> errors(String path) async {
+  /// Error-severity problems in [path].
+  Future<List<Problem>> errors(String path) async => [
+    for (final p in await problems(path))
+      if (p.isError) p,
+  ];
+
+  /// What `dart analyze` reports for [path]: the analyzer's diagnostics with
+  /// TODOs dropped and the `errors:` settings of the file's own analysis
+  /// options applied.
+  Future<List<Problem>> problems(String path) async {
     final driver = _owner[path];
     if (driver == null) return const [];
-    final r = await driver.getErrors(workspace.absolute(path));
+    final abs = workspace.absolute(path);
+    final r = await driver.getErrors(abs);
     if (r is! ErrorsResult) return const [];
-    return [
-      for (final d in r.diagnostics)
-        if (d.diagnosticCode.severity == DiagnosticSeverity.ERROR) d,
-    ];
+    return _processed(path, abs, r.diagnostics, r.lineInfo);
+  }
+
+  /// What the pubspec validator reports for a `pubspec.yaml`: missing assets,
+  /// bad dependency entries and the like.
+  List<Problem> pubspecProblems(String path) {
+    final abs = workspace.absolute(path);
+    final file = PhysicalResourceProvider.INSTANCE.getFile(abs);
+    if (!file.exists) return const [];
+    final String text;
+    final YamlNode contents;
+    try {
+      text = file.readAsStringSync();
+      contents = loadYamlNode(text, sourceUrl: file.toUri());
+    } on Exception {
+      return const [];
+    }
+    final diagnostics = validatePubspec(
+      contents: contents,
+      source: FileSource(file),
+      provider: PhysicalResourceProvider.INSTANCE,
+      analysisOptions: _optionsFor(abs),
+    );
+    return _processed(path, abs, diagnostics, LineInfo.fromContent(text));
+  }
+
+  AnalysisOptions? _optionsFor(String abs) {
+    try {
+      return _collection
+          .contextFor(abs)
+          .getAnalysisOptionsForFile(
+            PhysicalResourceProvider.INSTANCE.getFile(abs),
+          );
+    } on StateError {
+      return null;
+    }
+  }
+
+  List<Problem> _processed(
+    String path,
+    String abs,
+    List<Diagnostic> diagnostics,
+    LineInfo lines,
+  ) {
+    final options = _optionsFor(abs);
+    final out = <Problem>[];
+    for (final d in diagnostics) {
+      if (d.diagnosticCode.type == DiagnosticType.TODO) continue;
+      var severity = d.diagnosticCode.severity;
+      final processor = ErrorProcessor.getProcessor(options, d);
+      if (processor != null) {
+        final s = processor.severity;
+        if (s == null) continue;
+        severity = s;
+      }
+      final at = lines.getLocation(d.offset);
+      out.add(
+        Problem(
+          path,
+          d.offset,
+          at.lineNumber,
+          at.columnNumber,
+          switch (severity) {
+            DiagnosticSeverity.ERROR => 'error',
+            DiagnosticSeverity.WARNING => 'warning',
+            _ => 'info',
+          },
+          d.diagnosticCode.lowerCaseName,
+          d.message,
+        ),
+      );
+    }
+    return out..sort((a, b) => a.offset.compareTo(b.offset));
   }
 
   Site? _site(search.SearchResult r) {
