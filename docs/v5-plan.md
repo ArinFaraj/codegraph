@@ -390,12 +390,32 @@ hover to the shared worker, and publishes diagnostics from the ledger for
 written files and their dependents. A small Claude Code plugin with a
 `.lsp.json` (`".dart": "dart"`) registers it.
 
-It gives native symbol navigation with no Bash and no CLAUDE.md lines. But
-Claude Code's after-edit diagnostics come from the editing tools, and most
-edits here go through Bash (section 1.1). So the hook stays the delivery path
-for `check`, and the LSP front is about navigation only. It is built only if
-the M3 audit shows codegraph's read verbs being used. If they aren't, a
-native tool may be what's missing, and this is the experiment that tests it.
+It gives native symbol navigation with no Bash and no CLAUDE.md lines. It is
+built only if the M3 audit shows codegraph's read verbs being used. If they
+aren't, a native tool may be what's missing, and this is the experiment that
+tests it.
+
+Measured 2026-10-20 (Claude Code 2.1.304, Haiku, a three-file package where
+`c` imports `b` imports `a`), with a plain plugin whose `.lsp.json` runs
+`dart language-server` and no codegraph:
+
+- An Edit to `a.dart` that breaks `b.dart` is reported, `b.dart` included,
+  but with the next tool result, not the edit's. A session whose last call
+  is the breaking edit never sees it.
+- The server starts at the first Edit or Write. A session that has only run
+  Bash gets nothing: a `sed` break was not reported (debug log: 0 pending).
+- Once started, the server watches the disk: a `sed` break made after an
+  Edit was reported one call later.
+- So writes by any process are reported to every session running the
+  plugin, including another agent's half-done work in a shared checkout,
+  and each session starts its own analyzer for the whole app.
+
+For a checkout one agent works in, the plugin alone covers most of what the
+hook does. For krdpass, where several agents share a checkout, the hook stays:
+it reports only what a call wrote, from one shared worker. Navigation is
+covered by the same evidence as the read verbs: agents choose symbol tools
+for reference questions and grep for the rest (arXiv 2608.13568: free-choice
+semantic use 0 to 6% on localization, about half on reference tasks).
 
 ### 3.7 Cut
 
