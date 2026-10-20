@@ -4,6 +4,15 @@ The v3 changelog, plans and benchmarks are in [`archive/v3/`](archive/v3/).
 The reasoning behind v4 is in [`docs/rewrite-plan.md`](docs/rewrite-plan.md),
 and the plan that 4.3.0 starts is [`docs/v5-plan.md`](docs/v5-plan.md).
 
+## 4.5.1 - 2026-10-20
+
+### Fixed
+
+- `check --all` named riverpod_lint and said CI runs it in every repository.
+  It now names the analyzer plugins the workspace's `analysis_options.yaml`
+  enables, top-level or legacy, says `dart analyze` runs them, and prints
+  nothing when there are none. JSON carries them as `pluginsNotRun`.
+
 ## 4.5.0 - 2026-10-20
 
 ### Added

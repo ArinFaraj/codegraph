@@ -58,8 +58,7 @@ Rename refusals:
   restored; the errors are listed.
 
 Limits: string literals are not symbols; dynamic dispatch is visible only as
-a rename refusal; `check` does not run analyzer plugins (riverpod_lint), CI
-does. Which tests a change reaches: `dart run tools/test_changed.dart --list`.
+a rename refusal; `check` does not run analyzer plugins, `dart analyze` does.
 `codegraph doctor` shows the worker's state.
 ```
 

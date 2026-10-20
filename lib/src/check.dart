@@ -160,6 +160,7 @@ Future<Answer> check(
       [for (final (_, ps) in found) ...ps],
       found.length,
       engine.sources,
+      engine.workspace.analyzerPlugins(),
     );
   }
   final ledger = engine.ledger;
@@ -303,11 +304,14 @@ class CheckAnswer extends Answer {
 }
 
 class AllProblemsAnswer extends Answer {
-  AllProblemsAnswer(this.problems, this.checked, this.sources);
+  AllProblemsAnswer(this.problems, this.checked, this.sources, this.plugins);
 
   final List<Problem> problems;
   final int checked;
   final SourceCache sources;
+
+  /// Analyzer plugins the workspace enables, which `check` does not run.
+  final List<String> plugins;
 
   @override
   String get verb => 'check';
@@ -324,13 +328,19 @@ class AllProblemsAnswer extends Answer {
                 '${plural(checked, 'file')}',
     );
     _writeProblems(out, problems, sources);
-    out.footer('analyzer plugins (riverpod_lint) are not run; CI runs them');
+    if (plugins.isNotEmpty) {
+      out.footer(
+        'not run here: analyzer plugins ${plugins.join(', ')}; '
+        'dart analyze runs them',
+      );
+    }
   }
 
   @override
   Map<String, Object?> toJson() => {
     'checked': checked,
     'problems': [for (final p in problems) p.toJson()],
+    'pluginsNotRun': plugins,
   };
 }
 

@@ -129,6 +129,7 @@ class Kit {}
     expect(text, contains('pubspec.yaml:7:'));
     expect(text, isNot(contains('kit.dart')));
     expect(text, isNot(contains('vendor/')));
+    expect(text, isNot(contains('analyzer plugins')));
   });
 
   test('a breaking edit is reported in its dependents, once', () async {

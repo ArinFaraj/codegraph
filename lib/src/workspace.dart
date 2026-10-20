@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:analyzer/file_system/physical_file_system.dart';
 // ignore: implementation_imports
 import 'package:analyzer/src/dart/analysis/context_locator.dart';
+import 'package:yaml/yaml.dart';
 
 /// The repository codegraph answers for: the outermost directory above the
 /// working directory that holds a `pubspec.yaml`, stopping at a git root.
@@ -11,6 +12,32 @@ class Workspace {
   Workspace._(this.root);
 
   final String root;
+
+  /// Analyzer plugins the root `analysis_options.yaml` enables, in either
+  /// the top-level `plugins:` form or the legacy `analyzer: plugins:` one.
+  /// `check` cannot run them; `dart analyze` does.
+  List<String> analyzerPlugins() {
+    final file = File('$root/analysis_options.yaml');
+    if (!file.existsSync()) return const [];
+    try {
+      final y = loadYaml(file.readAsStringSync());
+      if (y is! Map) return const [];
+      final top = y['plugins'];
+      final analyzer = y['analyzer'];
+      final legacy = analyzer is Map ? analyzer['plugins'] : null;
+      return {
+        if (top is Map)
+          for (final k in top.keys)
+            if (k != 'dependency_overrides') '$k',
+        if (legacy is List)
+          for (final k in legacy) '$k',
+        if (legacy is Map)
+          for (final k in legacy.keys) '$k',
+      }.toList();
+    } on Exception {
+      return const [];
+    }
+  }
 
   static Workspace? find([String? from]) {
     var dir = Directory(from ?? Directory.current.path).absolute;

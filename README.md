@@ -119,7 +119,8 @@ second where `dart analyze` takes most of a minute on a large app. Its
 problems are the ones `dart analyze` prints: analyzer errors, warnings and
 lints with each package's own `analysis_options.yaml` applied, TODOs left
 out, and the pubspec checks (missing assets and the like). Analyzer plugins
-such as riverpod_lint are not run.
+are not run; `check --all` names the ones the workspace enables, so you know
+to leave them to `dart analyze`.
 
 The worker keeps a ledger of every file's problems. `check <files>` reports
 only problems that are new against it, in those files and in every file that
